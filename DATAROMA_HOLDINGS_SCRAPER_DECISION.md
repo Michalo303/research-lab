@@ -77,6 +77,14 @@ For the research lab:
 3. Add our own minimal Dataroma holdings parser only for whitelisted managers.
 4. Use Apify only if we want quick quarterly full-universe snapshots and accept the scraping dependency.
 
+Implementation note:
+
+```bash
+python scripts/run_apify_dataroma_import.py --superinvestors BRK,HC,BAUPOST --max-results 100
+```
+
+Default script limits are deliberately small to avoid accidental spend.
+
 Estimated Apify cost from the actor description:
 
 ```text
@@ -96,4 +104,3 @@ Full holdings help swing trading mainly as a universe and conviction filter:
 - sector concentration context
 
 They do not provide timing. Timing still comes from deterministic price/volatility rules and backtests.
-

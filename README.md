@@ -87,6 +87,14 @@ python scripts/import_smartmoney_candidates.py --smartmoney-path C:\Users\lojka\
 
 The import treats 13F/Dataroma activity as a swing-trading universe filter only. Entries and exits must still come from price/volatility rules and deterministic backtests.
 
+Apify Dataroma holdings import:
+
+```bash
+python scripts/run_apify_dataroma_import.py --superinvestors BRK,HC,BAUPOST --max-results 100
+```
+
+This is intentionally limited by default. It imports holdings as hypotheses only; it does not validate or trade.
+
 Massive/Polygon Stocks Starter data:
 
 ```bash
