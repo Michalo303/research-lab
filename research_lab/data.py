@@ -117,8 +117,16 @@ def load_massive_daily_universe(
     if not api_key:
         raise ValueError("MASSIVE_API_KEY is required for the massive data provider")
     frames = {}
+    failed_symbols = {}
+    required_symbols = set(symbols[:4])
     for symbol in symbols:
-        frames[symbol] = _fetch_massive_daily(symbol, api_key, base_url, start_date, adjusted)
+        try:
+            frames[symbol] = _fetch_massive_daily(symbol, api_key, base_url, start_date, adjusted)
+        except Exception as exc:
+            if symbol in required_symbols:
+                raise
+            failed_symbols[symbol] = str(exc)
+            continue
         time.sleep(0.15)
     panel = pd.concat(frames, axis=1).sort_index()
     raw_path = root / "data" / "processed" / "massive_daily_universe.csv"
@@ -132,6 +140,7 @@ def load_massive_daily_universe(
             "adjusted": adjusted,
             "api_key_present": True,
             "stored_csv": str(raw_path),
+            "failed_symbols": failed_symbols,
         }
     )
     (root / "data" / "manifests" / "daily_universe.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")

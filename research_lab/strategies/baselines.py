@@ -90,6 +90,23 @@ def queued_hypothesis_strategies(root: Path, limit: int = 4) -> list[StrategySpe
     return list(reversed(specs))
 
 
+def queued_daily_symbols(root: Path, limit: int = 8) -> list[str]:
+    queue_path = root / "registry" / "hypothesis_queue.jsonl"
+    if not queue_path.exists():
+        return []
+    symbols = []
+    for line in reversed(queue_path.read_text(encoding="utf-8").splitlines()):
+        if not line.strip():
+            continue
+        item = json.loads(line)
+        ticker = str(item.get("ticker", "")).strip().upper()
+        if ticker and ticker not in symbols:
+            symbols.append(ticker)
+        if len(symbols) >= limit:
+            break
+    return list(reversed(symbols))
+
+
 def build_weights(spec: StrategySpec, daily_panel: pd.DataFrame, intraday: pd.DataFrame | None = None) -> pd.DataFrame:
     builders = {
         "long_term_trend_filter": long_term_trend_filter,
@@ -252,6 +269,7 @@ def _spec_from_hypothesis(item: dict) -> StrategySpec | None:
             builder="rotation_momentum_drawdown_filter",
         )
     if family == "SWING":
+        ticker = str(item.get("ticker", "QQQ")).strip().upper() or "QQQ"
         return StrategySpec(
             family="SWING",
             asset_class="ETF",
@@ -259,7 +277,7 @@ def _spec_from_hypothesis(item: dict) -> StrategySpec | None:
             short_name="QUEUE_PULLBACK",
             hypothesis=f"{title}: {item.get('rationale', '')}",
             parameters={
-                "symbol": "QQQ",
+                "symbol": ticker,
                 "fast_sma": 50,
                 "slow_sma": 150,
                 "rsi_entry": 40,

@@ -10,7 +10,7 @@ from research_lab.config import LabConfig, ensure_project_structure
 from research_lab.data import load_daily_universe, load_intraday_symbol, load_massive_daily_universe
 from research_lab.registry import append_jsonl, write_allocation_model, write_leaderboard
 from research_lab.reports import write_daily_report, write_strategy_card
-from research_lab.strategies.baselines import build_weights, baseline_strategies, queued_hypothesis_strategies
+from research_lab.strategies.baselines import build_weights, baseline_strategies, queued_daily_symbols, queued_hypothesis_strategies
 from research_lab.tiering import classify_strategy
 
 
@@ -21,7 +21,7 @@ def run_daily_research(root: Path | None = None) -> list[dict]:
     ensure_project_structure(config.root)
 
     if config.data_provider == "massive":
-        daily_symbols = ["SPY", "QQQ", "TLT", "GLD"]
+        daily_symbols = _unique(["SPY", "QQQ", "TLT", "GLD"] + queued_daily_symbols(config.root, limit=8))
         daily_bundle = load_massive_daily_universe(
             config.root,
             daily_symbols,
@@ -43,6 +43,20 @@ def run_daily_research(root: Path | None = None) -> list[dict]:
         strategy_id = spec.strategy_id(sequence)
         data_bundle = intraday_bundle if spec.family == "INTRADAY" else daily_bundle
         panel = data_bundle.data
+        missing_symbols = _missing_symbols(spec, panel)
+        if missing_symbols:
+            append_jsonl(
+                config.root / "registry" / "data_gaps.jsonl",
+                {
+                    "strategy_id": strategy_id,
+                    "family": spec.family,
+                    "short_name": spec.short_name,
+                    "missing_symbols": missing_symbols,
+                    "reason": "Required symbol is not present in the loaded data universe.",
+                    "research_only": True,
+                },
+            )
+            continue
         weights = build_weights(spec, daily_bundle.data, intraday_bundle.data)
         close = close_frame(panel)
         if spec.family == "INTRADAY":
@@ -90,6 +104,28 @@ def run_daily_research(root: Path | None = None) -> list[dict]:
     write_allocation_model(config.root / "registry" / "allocation_model.csv", leaderboard_rows)
     write_daily_report(config.root / "reports" / "daily" / f"{date.today().isoformat()}.md", results)
     return results
+
+
+def _unique(items: list[str]) -> list[str]:
+    result = []
+    for item in items:
+        if item not in result:
+            result.append(item)
+    return result
+
+
+def _missing_symbols(spec, panel) -> list[str]:
+    if spec.family == "INTRADAY":
+        return []
+    if not hasattr(panel, "columns"):
+        return []
+    available = set(panel.columns.get_level_values(0)) if getattr(panel.columns, "nlevels", 1) > 1 else set(panel.columns)
+    required = []
+    if "symbol" in spec.parameters:
+        required.append(str(spec.parameters["symbol"]).upper())
+    if "symbols" in spec.parameters:
+        required.extend(str(symbol).upper() for symbol in spec.parameters["symbols"])
+    return [symbol for symbol in required if symbol not in available]
 
 
 def _persist_result(root: Path, result: dict) -> None:

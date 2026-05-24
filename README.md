@@ -77,6 +77,14 @@ python scripts/write_hermes_hypothesis_prompt.py
 
 Hermes is allowed to generate hypotheses and read research. It is not allowed to validate, tier, allocate, or execute.
 
+Smartmoney shortlist import:
+
+```bash
+python scripts/import_smartmoney_candidates.py --smartmoney-path C:\Users\lojka\trading\smartmoney
+```
+
+The import treats 13F/Dataroma activity as a swing-trading universe filter only. Entries and exits must still come from price/volatility rules and deterministic backtests.
+
 Massive/Polygon Stocks Starter data:
 
 ```bash
