@@ -17,3 +17,5 @@ data = [
 pythonpath = ["."]
 testpaths = ["tests"]
 
+[tool.setuptools.packages.find]
+include = ["research_lab*"]
