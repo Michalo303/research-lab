@@ -40,6 +40,7 @@ The runner creates:
 - strategy cards in `reports/strategy_cards/`
 - source scan reports in `reports/source_scans/`
 - self-improvement reports in `reports/self_improvement/`
+- weekly robustness and stability CSVs in `reports/weekly/`
 
 Default behavior is intentionally conservative. If real market data is not enabled, the runner uses deterministic synthetic OHLCV data only as a smoke test. Synthetic results cannot become deployment candidates, and normal rejection rules still apply.
 
@@ -123,3 +124,11 @@ Hetzner 24/7 install helper:
 cd /opt/trading/research-lab
 bash deploy/install_systemd_timers.sh
 ```
+
+Weekly validation:
+
+```bash
+python scripts/run_weekly_deep_research.py
+```
+
+The weekly job runs limited paid Apify Dataroma ingestion when configured, then writes robustness and stability CSVs. These are conservative research gates only; they cannot authorize deployment.

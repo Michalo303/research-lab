@@ -7,6 +7,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from research_lab.apify_dataroma import DEFAULT_SUPERINVESTORS, run_dataroma_actor
+from research_lab.robustness import summarize_weekly_robustness, write_weekly_robustness_outputs
 
 
 if __name__ == "__main__":
@@ -29,6 +30,8 @@ if __name__ == "__main__":
         with leaderboard.open(newline="", encoding="utf-8") as handle:
             rows = list(csv.DictReader(handle))
     iso_year, iso_week, _ = date.today().isocalendar()
+    report_stem = f"{iso_year}-W{iso_week:02d}"
+    robustness = write_weekly_robustness_outputs(root, report_stem)
     report = report_dir / f"{iso_year}-W{iso_week:02d}.md"
     lines = [
         f"# Weekly Deep Research Report - {iso_year}-W{iso_week:02d}",
@@ -40,16 +43,23 @@ if __name__ == "__main__":
         f"- Tier B candidates: {sum(1 for row in rows if row.get('tier') == 'B')}",
         f"- rejected: {sum(1 for row in rows if row.get('tier') == 'Rejected')}",
         f"- Apify Dataroma holdings: {apify_status}",
+        f"- robustness CSV: {robustness['robustness_path']}",
+        f"- stability CSV: {robustness['stability_path']}",
         "",
-        "## Findings",
+        "## Robustness Findings",
         "",
-        "- Walk-forward and parameter-neighborhood stability are not implemented yet.",
-        "- No deployment recommendation is allowed from this weekly placeholder.",
+        *summarize_weekly_robustness(robustness["robustness_rows"], robustness["stability_rows"]),
+        "",
+        "## Research Findings",
+        "",
+        "- Walk-forward scoring uses train/validation/unseen split consistency as a conservative weekly gate.",
+        "- Parameter stability is currently measured across repeated runs of the same strategy group; true parameter-grid sweeps are still a future upgrade.",
+        "- No deployment recommendation is allowed from this report.",
         "",
         "## Next Actions",
         "",
-        "- Add rolling walk-forward windows for top non-rejected strategies.",
-        "- Add parameter stability grids and cost-sensitivity summaries.",
+        "- Add true rolling walk-forward windows using regenerated weights per window.",
+        "- Add parameter-neighborhood sweeps for top non-rejected strategy groups.",
         "- Add portfolio combination tests once real data-backed candidates exist.",
     ]
     report.write_text("\n".join(lines) + "\n", encoding="utf-8")
