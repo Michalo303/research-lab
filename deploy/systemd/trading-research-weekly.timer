@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Trading Research Lab weekly deep research
+
+[Timer]
+OnCalendar=Sun *-*-* 03:30:00 UTC
+Persistent=true
+Unit=trading-research-weekly.service
+
+[Install]
+WantedBy=timers.target
+

@@ -18,16 +18,23 @@ Primary file:
 Deterministic runner:
 
 - `python scripts/run_daily_research.py`
+- `python scripts/run_hourly_research.py`
+- `python scripts/run_self_improvement.py`
+- `python scripts/run_research_orchestrator.py`
 
 The runner creates:
 
 - data manifests in `data/manifests/`
 - full backtest JSON in `backtests/runs/`
 - append-only registries in `registry/experiments.jsonl` and `registry/strategy_registry.jsonl`
+- source discoveries in `registry/source_items.jsonl`
+- queued ideas in `registry/hypothesis_queue.jsonl`
 - ranked output in `registry/leaderboard.csv`
 - model-only allocation suggestions in `registry/allocation_model.csv`
 - daily reports in `reports/daily/`
 - strategy cards in `reports/strategy_cards/`
+- source scan reports in `reports/source_scans/`
+- self-improvement reports in `reports/self_improvement/`
 
 Default behavior is intentionally conservative. If real market data is not enabled, the runner uses deterministic synthetic OHLCV data only as a smoke test. Synthetic results cannot become deployment candidates, and normal rejection rules still apply.
 
@@ -51,3 +58,18 @@ RESEARCH_LAB_USE_YFINANCE=1 python scripts/run_daily_research.py
 ```
 
 No broker/exchange execution libraries or live keys are required.
+
+Optional source scanning:
+
+```bash
+RESEARCH_LAB_NETWORK=1 python scripts/run_hourly_research.py
+```
+
+Network scanning is off by default. The configured source scanner uses public arXiv/RSS-style sources and treats forums as watchlists unless a compliant adapter is added later.
+
+Hetzner 24/7 install helper:
+
+```bash
+cd /opt/trading/research-lab
+bash deploy/install_systemd_timers.sh
+```

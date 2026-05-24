@@ -1,0 +1,51 @@
+{
+  "network_default": false,
+  "paper_sources": [
+    {
+      "name": "arxiv_q_fin_trading",
+      "kind": "arxiv",
+      "url": "https://export.arxiv.org/api/query?search_query=cat:q-fin.TR+OR+cat:q-fin.PM+OR+cat:q-fin.ST&sortBy=submittedDate&sortOrder=descending&max_results=25",
+      "enabled": true
+    }
+  ],
+  "watchlist_sources": [
+    {
+      "name": "quantocracy",
+      "kind": "rss",
+      "url": "https://quantocracy.com/feed/",
+      "enabled": true,
+      "notes": "Public quant research aggregator; use summaries only and follow source links for detail."
+    },
+    {
+      "name": "alpha_architect",
+      "kind": "rss",
+      "url": "https://alphaarchitect.com/feed/",
+      "enabled": true,
+      "notes": "Factor investing and systematic portfolio research."
+    }
+  ],
+  "forum_sources": [
+    {
+      "name": "r_algotrading",
+      "kind": "manual_watchlist",
+      "url": "https://www.reddit.com/r/algotrading/",
+      "enabled": true,
+      "notes": "Do not scrape aggressively. Use public RSS/API-compatible access only if later enabled."
+    },
+    {
+      "name": "r_quant",
+      "kind": "manual_watchlist",
+      "url": "https://www.reddit.com/r/quant/",
+      "enabled": true,
+      "notes": "Forum ideas are weak evidence; every idea must pass code validation."
+    },
+    {
+      "name": "forexfactory_systems",
+      "kind": "manual_watchlist",
+      "url": "https://www.forexfactory.com/forum/71-trading-systems",
+      "enabled": true,
+      "notes": "Use for hypothesis inspiration only; no copying black-box rules without reproducible tests."
+    }
+  ]
+}
+

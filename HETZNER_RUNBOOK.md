@@ -93,6 +93,115 @@ EnvironmentFile=-/opt/trading/research-lab/.env
 ExecStart=/opt/trading/research-lab/.venv/bin/python /opt/trading/research-lab/scripts/run_daily_research.py
 ```
 
+## 24/7 Autonomous Research Timers
+
+Use timers instead of one endless process. If the machine reboots, systemd resumes the schedule and writes each run as normal files in the project.
+
+Hourly source scan and hypothesis queue:
+
+```ini
+[Unit]
+Description=Trading Research Lab hourly source scan
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/trading/research-lab
+EnvironmentFile=-/opt/trading/research-lab/.env
+ExecStart=/opt/trading/research-lab/.venv/bin/python /opt/trading/research-lab/scripts/run_hourly_research.py
+```
+
+```ini
+[Unit]
+Description=Run Trading Research Lab hourly source scan
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+Unit=trading-research-hourly.service
+
+[Install]
+WantedBy=timers.target
+```
+
+Daily deterministic validation:
+
+```ini
+[Unit]
+Description=Trading Research Lab daily deterministic validation
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/trading/research-lab
+EnvironmentFile=-/opt/trading/research-lab/.env
+ExecStart=/opt/trading/research-lab/.venv/bin/python /opt/trading/research-lab/scripts/run_daily_research.py
+```
+
+```ini
+[Unit]
+Description=Run Trading Research Lab daily deterministic validation
+
+[Timer]
+OnCalendar=*-*-* 02:30:00 UTC
+Persistent=true
+Unit=trading-research-daily.service
+
+[Install]
+WantedBy=timers.target
+```
+
+Self-improvement review:
+
+```ini
+[Unit]
+Description=Trading Research Lab self-improvement cycle
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/trading/research-lab
+EnvironmentFile=-/opt/trading/research-lab/.env
+ExecStart=/opt/trading/research-lab/.venv/bin/python /opt/trading/research-lab/scripts/run_self_improvement.py
+```
+
+```ini
+[Unit]
+Description=Run Trading Research Lab self-improvement cycle
+
+[Timer]
+OnCalendar=*-*-* 04:00:00 UTC
+Persistent=true
+Unit=trading-research-self-improvement.service
+
+[Install]
+WantedBy=timers.target
+```
+
+Enable:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now trading-research-hourly.timer
+sudo systemctl enable --now trading-research-daily.timer
+sudo systemctl enable --now trading-research-self-improvement.timer
+```
+
+Optional network source scanning:
+
+```bash
+RESEARCH_LAB_NETWORK=1
+```
+
+Keep this disabled until you are comfortable with source volume and logs. Forum sources are watchlists by default; do not run aggressive scrapers against public forums.
+
+The same units are also stored under `deploy/systemd/`. To install them from the server checkout:
+
+```bash
+cd /opt/trading/research-lab
+bash deploy/install_systemd_timers.sh
+```
+
 ## First Deployment Principle
 
 Start in research-only mode.

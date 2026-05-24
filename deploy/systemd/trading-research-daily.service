@@ -1,0 +1,10 @@
+[Unit]
+Description=Trading Research Lab daily deterministic validation
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/trading/research-lab
+EnvironmentFile=-/opt/trading/research-lab/.env
+ExecStart=/opt/trading/research-lab/.venv/bin/python /opt/trading/research-lab/scripts/run_daily_research.py
+

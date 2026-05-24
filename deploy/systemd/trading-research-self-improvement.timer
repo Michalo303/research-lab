@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Trading Research Lab self-improvement cycle
+
+[Timer]
+OnCalendar=*-*-* 04:00:00 UTC
+Persistent=true
+Unit=trading-research-self-improvement.service
+
+[Install]
+WantedBy=timers.target
+

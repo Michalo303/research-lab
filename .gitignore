@@ -21,3 +21,6 @@ data/processed/*
 # Generated caches and local logs
 *.log
 
+# Local runtime state
+tmp/
+registry/source_items.jsonl

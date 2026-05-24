@@ -1,0 +1,10 @@
+[Unit]
+Description=Trading Research Lab weekly deep research
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/trading/research-lab
+EnvironmentFile=-/opt/trading/research-lab/.env
+ExecStart=/opt/trading/research-lab/.venv/bin/python /opt/trading/research-lab/scripts/run_weekly_deep_research.py
+

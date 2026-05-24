@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Trading Research Lab hourly source scan
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+Unit=trading-research-hourly.service
+
+[Install]
+WantedBy=timers.target
+
