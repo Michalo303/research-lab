@@ -130,9 +130,15 @@ def _fetch_rss(source: dict) -> list[dict]:
 
 def _download(url: str) -> str:
     request = urllib.request.Request(url, headers={"User-Agent": "research-lab/0.1 research-only"})
-    with urllib.request.urlopen(request, timeout=20) as response:
-        charset = response.headers.get_content_charset() or "utf-8"
-        return response.read().decode(charset, errors="replace")
+    last_error: Exception | None = None
+    for timeout in (15, 30, 45):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                charset = response.headers.get_content_charset() or "utf-8"
+                return response.read().decode(charset, errors="replace")
+        except Exception as exc:
+            last_error = exc
+    raise RuntimeError(f"download failed after retries: {last_error}")
 
 
 def _item(source: dict, title: str, summary: str, url: str, published: str) -> dict:

@@ -4,7 +4,19 @@
     {
       "name": "arxiv_q_fin_trading",
       "kind": "arxiv",
-      "url": "https://export.arxiv.org/api/query?search_query=cat:q-fin.TR+OR+cat:q-fin.PM+OR+cat:q-fin.ST&sortBy=submittedDate&sortOrder=descending&max_results=25",
+      "url": "https://export.arxiv.org/api/query?search_query=cat:q-fin.TR&sortBy=submittedDate&sortOrder=descending&max_results=10",
+      "enabled": true
+    },
+    {
+      "name": "arxiv_q_fin_portfolio",
+      "kind": "arxiv",
+      "url": "https://export.arxiv.org/api/query?search_query=cat:q-fin.PM&sortBy=submittedDate&sortOrder=descending&max_results=10",
+      "enabled": true
+    },
+    {
+      "name": "arxiv_q_fin_statistical_finance",
+      "kind": "arxiv",
+      "url": "https://export.arxiv.org/api/query?search_query=cat:q-fin.ST&sortBy=submittedDate&sortOrder=descending&max_results=10",
       "enabled": true
     }
   ],
@@ -48,4 +60,3 @@
     }
   ]
 }
-
