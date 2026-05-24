@@ -9,8 +9,9 @@ from pathlib import Path
 def run_self_improvement(root: Path) -> Path:
     leaderboard = _read_csv(root / "registry" / "leaderboard.csv")
     hypotheses = _read_jsonl(root / "registry" / "hypothesis_queue.jsonl")
+    hypothesis_results = _read_jsonl(root / "registry" / "hypothesis_results.jsonl")
     rejected = [row for row in leaderboard if row.get("tier") == "Rejected"]
-    weak_points = _weak_points(leaderboard, hypotheses)
+    weak_points = _weak_points(leaderboard, hypotheses, hypothesis_results)
     report = root / "reports" / "self_improvement" / f"{date.today().isoformat()}.md"
     report.parent.mkdir(parents=True, exist_ok=True)
     lines = [
@@ -21,6 +22,7 @@ def run_self_improvement(root: Path) -> Path:
         f"- leaderboard rows: {len(leaderboard)}",
         f"- rejected strategies: {len(rejected)}",
         f"- queued hypotheses: {len(hypotheses)}",
+        f"- hypothesis-derived tests: {len(hypothesis_results)}",
         "- live trading permission: not present",
         "",
         "## Weak Points",
@@ -58,7 +60,7 @@ def _read_jsonl(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
-def _weak_points(leaderboard: list[dict], hypotheses: list[dict]) -> list[str]:
+def _weak_points(leaderboard: list[dict], hypotheses: list[dict], hypothesis_results: list[dict]) -> list[str]:
     points = []
     if not leaderboard:
         points.append("No leaderboard exists yet; daily research must run first.")
@@ -68,4 +70,6 @@ def _weak_points(leaderboard: list[dict], hypotheses: list[dict]) -> list[str]:
         points.append("All tested strategies are rejected; prioritize data quality and broader baseline coverage.")
     if len(hypotheses) < 5:
         points.append("Hypothesis queue is thin; enable controlled network scanning or add curated paper/forum sources.")
+    if hypotheses and not hypothesis_results:
+        points.append("Hypotheses exist but have not yet been converted into deterministic strategy tests.")
     return points or ["No critical weakness detected, but promotion still requires walk-forward and cost robustness."]

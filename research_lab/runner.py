@@ -10,7 +10,7 @@ from research_lab.config import LabConfig, ensure_project_structure
 from research_lab.data import load_daily_universe, load_intraday_symbol, load_massive_daily_universe
 from research_lab.registry import append_jsonl, write_allocation_model, write_leaderboard
 from research_lab.reports import write_daily_report, write_strategy_card
-from research_lab.strategies.baselines import build_weights, baseline_strategies
+from research_lab.strategies.baselines import build_weights, baseline_strategies, queued_hypothesis_strategies
 from research_lab.tiering import classify_strategy
 
 
@@ -37,7 +37,8 @@ def run_daily_research(root: Path | None = None) -> list[dict]:
 
     results = []
     start_sequence = _next_sequence(config.root)
-    for offset, spec in enumerate(baseline_strategies()):
+    specs = baseline_strategies() + queued_hypothesis_strategies(config.root, limit=4)
+    for offset, spec in enumerate(specs):
         sequence = start_sequence + offset
         strategy_id = spec.strategy_id(sequence)
         data_bundle = intraday_bundle if spec.family == "INTRADAY" else daily_bundle
@@ -81,6 +82,7 @@ def run_daily_research(root: Path | None = None) -> list[dict]:
             "research_only": True,
         }
         _persist_result(config.root, result)
+        _persist_hypothesis_result(config.root, result)
         results.append(result)
 
     leaderboard_rows = [_leaderboard_row(r) for r in results]
@@ -108,6 +110,24 @@ def _persist_result(root: Path, result: dict) -> None:
         },
     )
     write_strategy_card(root / "reports" / "strategy_cards" / f"{result['strategy_id']}.md", result)
+
+
+def _persist_hypothesis_result(root: Path, result: dict) -> None:
+    hypothesis_id = result["parameters"].get("source_hypothesis_id")
+    if not hypothesis_id:
+        return
+    append_jsonl(
+        root / "registry" / "hypothesis_results.jsonl",
+        {
+            "hypothesis_id": hypothesis_id,
+            "strategy_id": result["strategy_id"],
+            "tier": result["tier"],
+            "tier_reason": result["tier_reason"],
+            "family": result["family"],
+            "unseen_cagr": result["split_metrics"]["unseen"]["cagr"],
+            "unseen_max_drawdown": result["split_metrics"]["unseen"]["max_drawdown"],
+        },
+    )
 
 
 def _next_sequence(root: Path) -> int:
