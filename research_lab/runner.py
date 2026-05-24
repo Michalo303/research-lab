@@ -20,8 +20,8 @@ def run_daily_research(root: Path | None = None) -> list[dict]:
         raise RuntimeError("Refusing to run unless RESEARCH_LAB_MODE=research_only.")
     ensure_project_structure(config.root)
 
-    daily_symbols = ["SPY", "QQQ", "TLT", "GLD", "BTC-USD"]
     if config.data_provider == "massive":
+        daily_symbols = ["SPY", "QQQ", "TLT", "GLD"]
         daily_bundle = load_massive_daily_universe(
             config.root,
             daily_symbols,
@@ -31,6 +31,7 @@ def run_daily_research(root: Path | None = None) -> list[dict]:
             config.massive_adjusted,
         )
     else:
+        daily_symbols = ["SPY", "QQQ", "TLT", "GLD", "BTC-USD"]
         daily_bundle = load_daily_universe(config.root, daily_symbols, config.use_yfinance)
     intraday_bundle = load_intraday_symbol(config.root, "BTCUSDT")
 
