@@ -94,6 +94,7 @@ python scripts/run_apify_dataroma_import.py --superinvestors BRK,HC,BAUPOST --ma
 ```
 
 This is intentionally limited by default. It imports holdings as hypotheses only; it does not validate or trade.
+If `APIFY_TOKEN` is present in `/opt/trading/research-lab/.env`, the weekly deep research timer also runs a limited Apify Dataroma import. Override the weekly limit with `APIFY_DATAROMA_MAX_RESULTS=200`.
 
 Massive/Polygon Stocks Starter data:
 

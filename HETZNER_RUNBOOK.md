@@ -209,6 +209,14 @@ sudo systemctl enable --now trading-research-daily.timer
 sudo systemctl enable --now trading-research-self-improvement.timer
 ```
 
+Weekly deep research also runs a limited Apify Dataroma holdings import when `APIFY_TOKEN` is set in `/opt/trading/research-lab/.env`. Keep it bounded:
+
+```bash
+APIFY_DATAROMA_MAX_RESULTS=200
+```
+
+At the actor's public example rate of $2 per 1000 holding rows, 200 rows is about $0.40 per weekly run before any platform-level charges.
+
 Optional network source scanning:
 
 ```bash
