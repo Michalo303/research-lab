@@ -33,7 +33,7 @@ def run_self_improvement(root: Path) -> Path:
         "",
         "## Next Engineering Actions",
         "",
-        "- Implement real data adapters before treating any performance metric as investment evidence.",
+        "- Extend real data coverage and add longer-history EOD sources before treating long-term metrics as investment evidence.",
         "- Implement walk-forward windows and parameter-neighborhood stability grids.",
         "- Monitor source deduplication and add stronger semantic duplicate detection if RSS titles repeat with different URLs.",
         "- Add portfolio correlation scoring once at least two real-data candidates survive rejection.",
@@ -66,8 +66,11 @@ def _weak_points(leaderboard: list[dict], hypotheses: list[dict], hypothesis_res
     points = []
     if not leaderboard:
         points.append("No leaderboard exists yet; daily research must run first.")
-    if leaderboard and all(row.get("data_source") != "yfinance" for row in leaderboard):
+    real_data_sources = {"yfinance", "massive"}
+    if leaderboard and all(row.get("data_source") not in real_data_sources for row in leaderboard):
         points.append("Current leaderboard is synthetic-only; capital relevance is zero until real data ingestion runs.")
+    if leaderboard and any(row.get("data_source") == "massive" for row in leaderboard):
+        points.append("Massive real EOD data is running, but current history is still too short for long-term promotion.")
     if leaderboard and all(row.get("tier") == "Rejected" for row in leaderboard):
         points.append("All tested strategies are rejected; prioritize data quality and broader baseline coverage.")
     if len(hypotheses) < 5:
