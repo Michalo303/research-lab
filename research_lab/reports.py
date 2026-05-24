@@ -55,6 +55,9 @@ def write_daily_report(path: Path, results: list[dict]) -> None:
     accepted = [r for r in results if r["tier"] in {"A", "B"}]
     rejected = [r for r in results if r["tier"] == "Rejected"]
     best = max(results, key=lambda r: r["split_metrics"]["unseen"]["mar"]) if results else None
+    sources = sorted({r["data_manifest"]["source"] for r in results})
+    source_note = _source_note(results)
+    next_actions = _next_actions(results)
     rows = [
         "| strategy_id | family | asset | timeframe | train | validation | unseen | max_dd | tier |",
         "|---|---|---|---|---:|---:|---:|---:|---|",
@@ -82,7 +85,8 @@ def write_daily_report(path: Path, results: list[dict]) -> None:
         f"- accepted: {len(accepted)}",
         f"- rejected: {len(rejected)}",
         f"- best research result: {best['strategy_id'] if best else 'none'}",
-        "- biggest risk discovered: synthetic data cannot validate capital allocation; real data ingestion and walk-forward stability remain required.",
+        f"- data sources: {', '.join(sources) if sources else 'none'}",
+        f"- biggest risk discovered: {source_note}",
         "",
         "## New Strategies Tested",
         "",
@@ -91,7 +95,7 @@ def write_daily_report(path: Path, results: list[dict]) -> None:
         "## Important Findings",
         "",
         "- The deterministic runner, registry, leaderboard, and strategy-card pipeline are now operational.",
-        "- Synthetic data can validate the runner, but it cannot validate capital allocation.",
+        f"- {source_note}",
         "- Negative unseen results, excessive drawdown, failed cost stress, or too few trades are rejected even during smoke tests.",
         "",
         "## Rejections",
@@ -104,8 +108,31 @@ def write_daily_report(path: Path, results: list[dict]) -> None:
         "",
         "## Next Actions",
         "",
+        *next_actions,
+    ]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _source_note(results: list[dict]) -> str:
+    sources = {r["data_manifest"]["source"] for r in results}
+    if "massive" in sources:
+        years = max(float(r["data_manifest"].get("years", 0.0)) for r in results if r["data_manifest"]["source"] == "massive")
+        return f"Massive real EOD data is enabled, but available history is only {years:.1f} years; long-term promotion still needs 10+ years plus walk-forward validation."
+    if "yfinance" in sources:
+        return "Free EOD data is enabled; data integrity, adjusted prices, and survivorship assumptions still need validation."
+    return "Synthetic data cannot validate capital allocation; real data ingestion and walk-forward stability remain required."
+
+
+def _next_actions(results: list[dict]) -> list[str]:
+    sources = {r["data_manifest"]["source"] for r in results}
+    if "massive" in sources:
+        return [
+            "- Run daily Massive-backed research for 7-14 days before judging the subscription.",
+            "- Add walk-forward and parameter-neighborhood stability for the weekly deep run.",
+            "- Add a longer-history EOD source before promoting long-term or rotation systems above Tier C.",
+        ]
+    return [
         "- Enable real EOD data ingestion on Hetzner if network/dependencies allow it.",
         "- Add walk-forward and parameter-neighborhood stability for the weekly deep run.",
         "- Add data integrity checks before any strategy can rise above paper-only research.",
     ]
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
