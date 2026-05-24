@@ -1,0 +1,105 @@
+{
+  "strategy_id": "LONGTERM_ETF_1D_TREND_FILTER_20260524_001",
+  "family": "LONGTERM",
+  "asset_class": "ETF",
+  "timeframe": "1D",
+  "short_name": "TREND_FILTER",
+  "hypothesis": "A long-only equity allocation with a 200-day trend filter should reduce drawdown versus always-on exposure.",
+  "rules": "Hold SPY when close is above its 200-day SMA; otherwise hold cash.",
+  "parameters": {
+    "symbol": "SPY",
+    "sma": 200
+  },
+  "parameter_count": 2,
+  "variants_tried": 1,
+  "data_manifest": {
+    "name": "daily_universe",
+    "source": "synthetic",
+    "symbols": [
+      "SPY",
+      "QQQ",
+      "TLT",
+      "GLD",
+      "BTC-USD"
+    ],
+    "rows": 3600,
+    "start": "2012-01-02 00:00:00",
+    "end": "2025-10-17 00:00:00",
+    "created_at": "2026-05-24T07:51:31.861704+00:00",
+    "research_only": true
+  },
+  "cost_stress": {
+    "normal_cost_bps": 5.0,
+    "double_cost_bps": 10.0,
+    "normal_unseen_cagr": -0.018616863335593647,
+    "double_unseen_cagr": -0.023581680464755506,
+    "survives_double_cost": false
+  },
+  "metrics": {
+    "total_return": 0.8029759639673759,
+    "cagr": 0.04212375482948327,
+    "annual_return": 0.04212375482948327,
+    "annual_volatility": 0.11629082665105094,
+    "sharpe": 0.41296173251311863,
+    "max_drawdown": -0.23130084788183525,
+    "mar": 0.18211673331609685,
+    "dominant_month_profit_share": 0.0453637665976781,
+    "trade_count": 54,
+    "win_rate": 0.25925925925925924,
+    "profit_factor": 2.534259961601488,
+    "expectancy_per_trade": 0.012659257440210802,
+    "max_losing_streak": 13
+  },
+  "split_metrics": {
+    "train": {
+      "total_return": 0.6529950580230761,
+      "cagr": 0.08131780219656704,
+      "annual_return": 0.08131780219656704,
+      "annual_volatility": 0.12986615804138993,
+      "sharpe": 0.6670442356326262,
+      "max_drawdown": -0.17239310090525017,
+      "mar": 0.4716998636810908,
+      "dominant_month_profit_share": 0.07403921164963517,
+      "trade_count": 22,
+      "win_rate": 0.36363636363636365,
+      "profit_factor": 4.885803725350214,
+      "expectancy_per_trade": 0.025746749185250696,
+      "max_losing_streak": 5
+    },
+    "validation": {
+      "total_return": 0.16645038481367824,
+      "cagr": 0.03657834026777995,
+      "annual_return": 0.03657834026777995,
+      "annual_volatility": 0.11306222086642145,
+      "sharpe": 0.3742490172165447,
+      "max_drawdown": -0.20120547428855384,
+      "mar": 0.1817959496237266,
+      "dominant_month_profit_share": 0.1715150594844499,
+      "trade_count": 15,
+      "win_rate": 0.2,
+      "profit_factor": 1.9687600620060213,
+      "expectancy_per_trade": 0.012819778162340412,
+      "max_losing_streak": 8
+    },
+    "unseen": {
+      "total_return": -0.06491280216876172,
+      "cagr": -0.018616863335593647,
+      "annual_return": -0.018616863335593647,
+      "annual_volatility": 0.09149199956783975,
+      "sharpe": -0.15967641924947756,
+      "max_drawdown": -0.2313008478818357,
+      "mar": -0.08048765711876861,
+      "dominant_month_profit_share": 0.25240100121117504,
+      "trade_count": 19,
+      "win_rate": 0.15789473684210525,
+      "profit_factor": 0.7171860331151619,
+      "expectancy_per_trade": -0.0031025914935187866,
+      "max_losing_streak": 13
+    }
+  },
+  "average_turnover": 0.029722222222222223,
+  "average_exposure": 0.5302777777777777,
+  "tier": "C",
+  "tier_reason": "Synthetic or non-production data source; usable for runner validation only, not capital research.",
+  "research_only": true
+}

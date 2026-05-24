@@ -1,0 +1,107 @@
+{
+  "strategy_id": "SWING_ETF_1D_RSI_PULLBACK_20260524_003",
+  "family": "SWING",
+  "asset_class": "ETF",
+  "timeframe": "1D",
+  "short_name": "RSI_PULLBACK",
+  "hypothesis": "Buying oversold pullbacks only inside a rising long-term trend may produce positive expectancy with bounded exposure.",
+  "rules": "Enter long when SPY is above SMA100 and RSI14 is below 35; exit when RSI14 exceeds 55 or price closes below SMA100.",
+  "parameters": {
+    "symbol": "SPY",
+    "trend_sma": 100,
+    "rsi_entry": 35,
+    "rsi_exit": 55
+  },
+  "parameter_count": 4,
+  "variants_tried": 1,
+  "data_manifest": {
+    "name": "daily_universe",
+    "source": "synthetic",
+    "symbols": [
+      "SPY",
+      "QQQ",
+      "TLT",
+      "GLD",
+      "BTC-USD"
+    ],
+    "rows": 3600,
+    "start": "2012-01-02 00:00:00",
+    "end": "2025-10-17 00:00:00",
+    "created_at": "2026-05-24T07:51:31.861704+00:00",
+    "research_only": true
+  },
+  "cost_stress": {
+    "normal_cost_bps": 5.0,
+    "double_cost_bps": 10.0,
+    "normal_unseen_cagr": 0.0006778527753452668,
+    "double_unseen_cagr": -2.4284310006561505e-05,
+    "survives_double_cost": false
+  },
+  "metrics": {
+    "total_return": -0.16125422360476627,
+    "cagr": -0.012233883888274288,
+    "annual_return": -0.012233883888274288,
+    "annual_volatility": 0.03966178879871378,
+    "sharpe": -0.2904778087958959,
+    "max_drawdown": -0.21293149397126476,
+    "mar": -0.0574545533876039,
+    "dominant_month_profit_share": 0.19096416827336574,
+    "trade_count": 28,
+    "win_rate": 0.35714285714285715,
+    "profit_factor": 0.6468018675213972,
+    "expectancy_per_trade": -0.005810140712981336,
+    "max_losing_streak": 5
+  },
+  "split_metrics": {
+    "train": {
+      "total_return": -0.11395577166967974,
+      "cagr": -0.018644421169627723,
+      "annual_return": -0.018644421169627723,
+      "annual_volatility": 0.04292522463853034,
+      "sharpe": -0.4169244072693512,
+      "max_drawdown": -0.12060050401111466,
+      "mar": -0.15459654437189943,
+      "dominant_month_profit_share": 0.33721943894306394,
+      "trade_count": 16,
+      "win_rate": 0.3125,
+      "profit_factor": 0.598475844056528,
+      "expectancy_per_trade": -0.007070140339078816,
+      "max_losing_streak": 5
+    },
+    "validation": {
+      "total_return": -0.0556697174260915,
+      "cagr": -0.013276252324333826,
+      "annual_return": -0.013276252324333826,
+      "annual_volatility": 0.04398836505258982,
+      "sharpe": -0.28178565968832475,
+      "max_drawdown": -0.1049932259243832,
+      "mar": -0.12644865616278395,
+      "dominant_month_profit_share": 0.27053329094106826,
+      "trade_count": 10,
+      "win_rate": 0.3,
+      "profit_factor": 0.5492702689522219,
+      "expectancy_per_trade": -0.005474726220248449,
+      "max_losing_streak": 3
+    },
+    "unseen": {
+      "total_return": 0.0024230133955858157,
+      "cagr": 0.0006778527753452668,
+      "annual_return": 0.0006778527753452668,
+      "annual_volatility": 0.025548131786063518,
+      "sharpe": 0.039325907054048634,
+      "max_drawdown": -0.060698869050432536,
+      "mar": 0.011167469607746117,
+      "dominant_month_profit_share": 0.6055095525717367,
+      "trade_count": 3,
+      "win_rate": 0.6666666666666666,
+      "profit_factor": 1.0890267266563278,
+      "expectancy_per_trade": 0.0017401383632535221,
+      "max_losing_streak": 1
+    }
+  },
+  "average_turnover": 0.015555555555555555,
+  "average_exposure": 0.06805555555555555,
+  "tier": "C",
+  "tier_reason": "Synthetic or non-production data source; usable for runner validation only, not capital research.",
+  "research_only": true
+}

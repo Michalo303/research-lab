@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Local configuration
+.env
+
+# Large or replaceable market data
+data/raw/*
+data/processed/*
+
+# Preserve empty data dirs in git.
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+# Generated caches and local logs
+*.log
+

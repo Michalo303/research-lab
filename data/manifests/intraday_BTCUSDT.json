@@ -1,0 +1,12 @@
+{
+  "name": "intraday_BTCUSDT",
+  "source": "synthetic",
+  "symbols": [
+    "BTCUSDT"
+  ],
+  "rows": 6760,
+  "start": "2024-01-02 09:30:00",
+  "end": "2024-12-30 15:45:00",
+  "created_at": "2026-05-24T07:53:25.284118+00:00",
+  "research_only": true
+}
