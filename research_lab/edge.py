@@ -132,6 +132,10 @@ def _item_text(item: dict[str, Any]) -> str:
     parts = [
         str(item.get("title", "")),
         str(item.get("rationale", "")),
+        str(item.get("hypothesis", "")),
+        str(item.get("rules", "")),
+        str(item.get("short_name", "")),
+        str(item.get("family", "")),
         str(item.get("source_title", "")),
         " ".join(str(tag) for tag in item.get("tags", [])),
     ]

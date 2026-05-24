@@ -18,6 +18,14 @@ def test_classify_edge_detects_momentum():
     assert edge["edge_bucket"] == "behavioral_momentum"
 
 
+def test_classify_edge_reads_backtest_hypothesis_fields():
+    item = {"strategy_id": "S1", "hypothesis": "Monthly top-N momentum rotation may improve risk-adjusted return."}
+
+    edge = classify_edge(item)
+
+    assert edge["edge_bucket"] == "behavioral_momentum"
+
+
 def test_classify_edge_marks_unclear_idea():
     edge = classify_edge({"title": "Interesting chart setup"})
 
