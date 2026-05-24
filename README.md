@@ -18,6 +18,7 @@ Primary file:
 - `SEC_13F_WATCHER_DESIGN.md`
 - `DATAROMA_HOLDINGS_SCRAPER_DECISION.md`
 - `APIFY_ACTOR_EVALUATION.md`
+- `EDGE_THESIS.md`
 - `IBKR_PAPER_RUNBOOK.md`
 
 Deterministic runner:
@@ -36,6 +37,7 @@ The runner creates:
 - queued ideas in `registry/hypothesis_queue.jsonl`
 - ranked output in `registry/leaderboard.csv`
 - model-only allocation suggestions in `registry/allocation_model.csv`
+- edge classification audit in `registry/edge_audit.csv`
 - daily reports in `reports/daily/`
 - strategy cards in `reports/strategy_cards/`
 - source scan reports in `reports/source_scans/`

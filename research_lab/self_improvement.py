@@ -5,12 +5,15 @@ import json
 from datetime import date
 from pathlib import Path
 
+from research_lab.edge import run_edge_audit, summarize_edge_audit
+
 
 def run_self_improvement(root: Path) -> Path:
     leaderboard = _read_csv(root / "registry" / "leaderboard.csv")
     hypotheses = _read_jsonl(root / "registry" / "hypothesis_queue.jsonl")
     ideas = _read_jsonl(root / "registry" / "creative_ideas.jsonl")
     hypothesis_results = _read_jsonl(root / "registry" / "hypothesis_results.jsonl")
+    edge_audit = run_edge_audit(root)
     rejected = [row for row in leaderboard if row.get("tier") == "Rejected"]
     weak_points = _weak_points(leaderboard, hypotheses, hypothesis_results)
     report = root / "reports" / "self_improvement" / f"{date.today().isoformat()}.md"
@@ -25,7 +28,12 @@ def run_self_improvement(root: Path) -> Path:
         f"- queued hypotheses: {len(hypotheses)}",
         f"- creative ideas: {len(ideas)}",
         f"- hypothesis-derived tests: {len(hypothesis_results)}",
+        f"- edge audit csv: {edge_audit['csv_path']}",
         "- live trading permission: not present",
+        "",
+        "## Edge Audit",
+        "",
+        *summarize_edge_audit(edge_audit["rows"]),
         "",
         "## Weak Points",
         "",
@@ -43,6 +51,7 @@ def run_self_improvement(root: Path) -> Path:
         "- Prefer simple hypotheses first.",
         "- Penalize every extra parameter.",
         "- Promote nothing from source/forum popularity alone.",
+        "- A hypothesis without a named edge remains research-only even if a backtest looks good.",
         "- Preserve failures because they are training data for the lab.",
     ]
     report.write_text("\n".join(lines) + "\n", encoding="utf-8")
