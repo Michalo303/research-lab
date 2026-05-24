@@ -9,6 +9,7 @@ from pathlib import Path
 def run_self_improvement(root: Path) -> Path:
     leaderboard = _read_csv(root / "registry" / "leaderboard.csv")
     hypotheses = _read_jsonl(root / "registry" / "hypothesis_queue.jsonl")
+    ideas = _read_jsonl(root / "registry" / "creative_ideas.jsonl")
     hypothesis_results = _read_jsonl(root / "registry" / "hypothesis_results.jsonl")
     rejected = [row for row in leaderboard if row.get("tier") == "Rejected"]
     weak_points = _weak_points(leaderboard, hypotheses, hypothesis_results)
@@ -22,6 +23,7 @@ def run_self_improvement(root: Path) -> Path:
         f"- leaderboard rows: {len(leaderboard)}",
         f"- rejected strategies: {len(rejected)}",
         f"- queued hypotheses: {len(hypotheses)}",
+        f"- creative ideas: {len(ideas)}",
         f"- hypothesis-derived tests: {len(hypothesis_results)}",
         "- live trading permission: not present",
         "",

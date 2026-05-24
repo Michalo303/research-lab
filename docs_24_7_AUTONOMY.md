@@ -10,7 +10,8 @@ Use four independent loops:
    - Reads `config/research_sources.json`.
    - Collects paper/RSS items only when `RESEARCH_LAB_NETWORK=1`.
    - Writes `registry/source_items.jsonl`.
-   - Converts new items into queued hypotheses in `registry/hypothesis_queue.jsonl`.
+   - Generates a broad creative idea pool in `registry/creative_ideas.jsonl`.
+   - Promotes selected ideas into queued hypotheses in `registry/hypothesis_queue.jsonl`.
 
 2. Daily deterministic validation
    - Runs baseline and queued strategy tests.
@@ -34,6 +35,11 @@ Hermes or another LLM should be used as a creativity layer only:
 - suggest new parameter neighborhoods
 - explain failure modes
 - write research notes
+
+The system deliberately separates divergent and convergent thinking:
+
+- divergent: generate many creative hypotheses cheaply
+- convergent: run deterministic tests, penalize parameters, reject weak results
 
 It must not:
 
@@ -62,4 +68,3 @@ Bad sources:
 ## Server Principle
 
 Prefer systemd timers over a single daemon. Each cycle is resumable, observable, and has its own log in `journalctl`.
-
