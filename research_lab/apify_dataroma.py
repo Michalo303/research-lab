@@ -11,6 +11,7 @@ from research_lab.registry import append_jsonl
 
 
 DEFAULT_SUPERINVESTORS = ["BRK", "HC", "BAUPOST", "PI", "AM"]
+DEFAULT_ACTOR = "parsebird/superinvestor-scraper"
 
 
 def run_dataroma_actor(
@@ -22,7 +23,7 @@ def run_dataroma_actor(
     token = os.getenv("APIFY_TOKEN", "").strip()
     if not token:
         raise RuntimeError("APIFY_TOKEN is required.")
-    actor = actor_id or os.getenv("APIFY_DATAROMA_ACTOR", "parsebird/dataroma-superinvestor-scraper")
+    actor = actor_id or os.getenv("APIFY_DATAROMA_ACTOR", DEFAULT_ACTOR)
     run_input = {
         "superinvestors": superinvestors or DEFAULT_SUPERINVESTORS,
         "maxResults": max_results,
@@ -150,4 +151,3 @@ def _existing_source_keys(path: Path) -> set[str]:
         if key:
             keys.add(str(key))
     return keys
-
