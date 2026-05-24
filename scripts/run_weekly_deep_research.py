@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from research_lab.apify_dataroma import DEFAULT_SUPERINVESTORS, run_dataroma_actor
 from research_lab.parameter_sweep import run_parameter_sweep, summarize_parameter_sweep
+from research_lab.portfolio import run_portfolio_scoring, summarize_portfolio_scoring
 from research_lab.robustness import summarize_weekly_robustness, write_weekly_robustness_outputs
 
 
@@ -34,6 +35,7 @@ if __name__ == "__main__":
     report_stem = f"{iso_year}-W{iso_week:02d}"
     robustness = write_weekly_robustness_outputs(root, report_stem)
     parameter_sweep = run_parameter_sweep(root, report_stem)
+    portfolio = run_portfolio_scoring(root, report_stem)
     report = report_dir / f"{iso_year}-W{iso_week:02d}.md"
     lines = [
         f"# Weekly Deep Research Report - {iso_year}-W{iso_week:02d}",
@@ -48,6 +50,7 @@ if __name__ == "__main__":
         f"- robustness CSV: {robustness['robustness_path']}",
         f"- stability CSV: {robustness['stability_path']}",
         f"- parameter sweep CSV: {parameter_sweep['path']}",
+        f"- portfolio candidates CSV: {portfolio['path']}",
         "",
         "## Robustness Findings",
         "",
@@ -57,10 +60,15 @@ if __name__ == "__main__":
         "",
         *summarize_parameter_sweep(parameter_sweep["rows"]),
         "",
+        "## Portfolio Findings",
+        "",
+        *summarize_portfolio_scoring(portfolio["rows"]),
+        "",
         "## Research Findings",
         "",
         "- Walk-forward scoring uses train/validation/unseen split consistency as a conservative weekly gate.",
         "- Parameter stability is tested with bounded neighborhood sweeps around eligible real-data EOD groups.",
+        "- Portfolio scoring is model-only and penalizes clustered families/strategy groups; it does not authorize allocation.",
         "- No deployment recommendation is allowed from this report.",
         "",
         "## Next Actions",

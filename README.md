@@ -42,7 +42,7 @@ The runner creates:
 - strategy cards in `reports/strategy_cards/`
 - source scan reports in `reports/source_scans/`
 - self-improvement reports in `reports/self_improvement/`
-- weekly robustness, stability, and parameter-neighborhood CSVs in `reports/weekly/`
+- weekly robustness, stability, parameter-neighborhood, and portfolio candidate CSVs in `reports/weekly/`
 
 Default behavior is intentionally conservative. If real market data is not enabled, the runner uses deterministic synthetic OHLCV data only as a smoke test. Synthetic results cannot become deployment candidates, and normal rejection rules still apply.
 
@@ -133,4 +133,4 @@ Weekly validation:
 python scripts/run_weekly_deep_research.py
 ```
 
-The weekly job runs limited paid Apify Dataroma ingestion when configured, then writes robustness, stability, and bounded parameter-neighborhood CSVs. These are conservative research gates only; they cannot authorize deployment.
+The weekly job runs limited paid Apify Dataroma ingestion when configured, then writes robustness, stability, bounded parameter-neighborhood, and portfolio candidate CSVs. These are conservative research gates only; they cannot authorize deployment.
