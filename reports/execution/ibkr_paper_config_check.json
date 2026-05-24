@@ -1,0 +1,11 @@
+{
+  "checked_at": "2026-05-24T09:16:33.609850+00:00",
+  "account": "jcbfp583",
+  "mode": "paper",
+  "host": "127.0.0.1",
+  "port": 4002,
+  "client_id": 583,
+  "read_only": true,
+  "status": "configured_read_only",
+  "live_trading": false
+}

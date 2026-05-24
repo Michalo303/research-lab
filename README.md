@@ -14,6 +14,7 @@ Purpose:
 Primary file:
 
 - `HERMES_RESEARCH_LAB_PROMPT.md`
+- `IBKR_PAPER_RUNBOOK.md`
 
 Deterministic runner:
 
@@ -58,6 +59,14 @@ RESEARCH_LAB_USE_YFINANCE=1 python scripts/run_daily_research.py
 ```
 
 No broker/exchange execution libraries or live keys are required.
+
+IBKR paper scaffolding:
+
+```bash
+python scripts/check_ibkr_paper_config.py
+```
+
+This validates local paper execution configuration only. It does not connect to IBKR or place orders.
 
 Massive/Polygon Stocks Starter data:
 
