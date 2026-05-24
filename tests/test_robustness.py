@@ -1,7 +1,7 @@
 from research_lab.robustness import build_robustness_rows, build_stability_rows
 
 
-def _result(strategy_id: str, cagr: float, cost: bool = True, tier: str = "C") -> dict:
+def _result(strategy_id: str, cagr: float, cost: bool = True, tier: str = "C", short_name: str = "DUAL_MOMENTUM") -> dict:
     split = {
         "cagr": cagr,
         "max_drawdown": -0.05,
@@ -13,7 +13,7 @@ def _result(strategy_id: str, cagr: float, cost: bool = True, tier: str = "C") -
     return {
         "strategy_id": strategy_id,
         "family": "ROTATION",
-        "short_name": "DUAL_MOMENTUM",
+        "short_name": short_name,
         "tier": tier,
         "data_manifest": {"source": "massive", "years": 5.0},
         "split_metrics": {"train": split, "validation": split, "unseen": split},
@@ -40,4 +40,17 @@ def test_build_stability_rows_scores_repeated_positive_group():
 
     assert rows[0]["run_count"] == 3
     assert rows[0]["positive_unseen_share"] == 1.0
+    assert rows[0]["stability_verdict"] == "stable"
+
+
+def test_stability_sorting_prefers_stable_over_weak():
+    rows = build_stability_rows(
+        [
+            _result("A", -0.10, cost=False, tier="Rejected"),
+            _result("B", 0.10, short_name="QUEUE_MOM_DD"),
+            _result("C", 0.08, short_name="QUEUE_MOM_DD"),
+            _result("D", 0.04, short_name="QUEUE_MOM_DD"),
+        ]
+    )
+
     assert rows[0]["stability_verdict"] == "stable"

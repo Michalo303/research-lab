@@ -55,7 +55,11 @@ def load_backtest_results(root: Path) -> list[dict[str, Any]]:
 
 def build_robustness_rows(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     rows = [_robustness_row(item) for item in results]
-    return sorted(rows, key=lambda row: (row["robustness_verdict"], row["walk_forward_score"], row["unseen_cagr"]), reverse=True)
+    return sorted(
+        rows,
+        key=lambda row: (_robustness_rank(row["robustness_verdict"]), row["walk_forward_score"], row["unseen_cagr"]),
+        reverse=True,
+    )
 
 
 def build_stability_rows(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -91,7 +95,11 @@ def build_stability_rows(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "stability_verdict": _stability_verdict(len(items), positive_share, cost_share, rejected),
         }
         rows.append(row)
-    return sorted(rows, key=lambda row: (row["stability_verdict"], row["positive_unseen_share"], row["median_unseen_cagr"]), reverse=True)
+    return sorted(
+        rows,
+        key=lambda row: (_stability_rank(row["stability_verdict"]), row["positive_unseen_share"], row["median_unseen_cagr"]),
+        reverse=True,
+    )
 
 
 def write_weekly_robustness_outputs(root: Path, report_stem: str) -> dict[str, Any]:
@@ -194,6 +202,14 @@ def _stability_verdict(run_count: int, positive_share: float, cost_share: float,
     if run_count >= 2 and positive_share >= 0.50:
         return "mixed"
     return "weak"
+
+
+def _robustness_rank(verdict: str) -> int:
+    return {"pass": 3, "borderline": 2, "fail": 1}.get(verdict, 0)
+
+
+def _stability_rank(verdict: str) -> int:
+    return {"stable": 3, "mixed": 2, "weak": 1}.get(verdict, 0)
 
 
 def _metric(item: dict[str, Any], split: str, key: str) -> float:
