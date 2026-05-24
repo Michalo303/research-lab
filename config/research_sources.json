@@ -2,6 +2,20 @@
   "network_default": false,
   "paper_sources": [
     {
+      "name": "sec_current_13f_hr",
+      "kind": "sec_current_atom",
+      "url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=13F-HR&count=100&output=atom",
+      "enabled": true,
+      "notes": "Official SEC current filings feed for 13F-HR. Use compliant User-Agent and low request rate."
+    },
+    {
+      "name": "sec_current_13f_hr_a",
+      "kind": "sec_current_atom",
+      "url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=13F-HR%2FA&count=100&output=atom",
+      "enabled": true,
+      "notes": "Official SEC current filings feed for amended 13F-HR/A filings."
+    },
+    {
       "name": "arxiv_q_fin_trading",
       "kind": "arxiv",
       "url": "https://export.arxiv.org/api/query?search_query=cat:q-fin.TR&sortBy=submittedDate&sortOrder=descending&max_results=10",

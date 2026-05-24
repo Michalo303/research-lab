@@ -13,6 +13,7 @@ from research_lab.registry import append_jsonl
 
 
 KEYWORDS = {
+    "smart_money": ["13f", "13f-hr", "institutional", "holdings", "whale", "manager"],
     "momentum": ["momentum", "trend", "relative strength", "cross-sectional"],
     "mean_reversion": ["mean reversion", "reversal", "overreaction", "pullback"],
     "volatility": ["volatility", "risk parity", "vol targeting", "drawdown"],
@@ -40,6 +41,8 @@ def run_source_scan(root: Path) -> dict:
         try:
             if source["kind"] == "arxiv":
                 items.extend(_fetch_arxiv(source))
+            elif source["kind"] == "sec_current_atom":
+                items.extend(_fetch_sec_current_atom(source))
             elif source["kind"] == "rss":
                 items.extend(_fetch_rss(source))
         except Exception as exc:
@@ -115,6 +118,25 @@ def _fetch_arxiv(source: dict) -> list[dict]:
     return items
 
 
+def _fetch_sec_current_atom(source: dict) -> list[dict]:
+    text = _download(source["url"])
+    root = ET.fromstring(text)
+    ns = {"atom": "http://www.w3.org/2005/Atom"}
+    items = []
+    for entry in root.findall("atom:entry", ns):
+        title = _clean(entry.findtext("atom:title", default="", namespaces=ns))
+        summary = _clean(entry.findtext("atom:summary", default="", namespaces=ns))
+        url = ""
+        for link_node in entry.findall("atom:link", ns):
+            href = link_node.attrib.get("href", "")
+            if href:
+                url = href
+                break
+        published = entry.findtext("atom:updated", default="", namespaces=ns)
+        items.append(_item(source, title, summary, url, published))
+    return items
+
+
 def _fetch_rss(source: dict) -> list[dict]:
     text = _download(source["url"])
     root = ET.fromstring(text)
@@ -129,7 +151,8 @@ def _fetch_rss(source: dict) -> list[dict]:
 
 
 def _download(url: str) -> str:
-    request = urllib.request.Request(url, headers={"User-Agent": "research-lab/0.1 research-only"})
+    user_agent = os.getenv("SEC_USER_AGENT", "research-lab/0.1 research-only")
+    request = urllib.request.Request(url, headers={"User-Agent": user_agent})
     last_error: Exception | None = None
     for timeout in (15, 30, 45):
         try:
@@ -187,6 +210,12 @@ def _hypothesis_for_tags(tags: list[str], item: dict) -> dict:
             "title": "Volatility-targeted defensive allocation",
             "family": "LONGTERM",
             "rationale": f"Test whether '{title}' can reduce max drawdown without relying on CAGR-only optimization.",
+        }
+    if "smart_money" in tags:
+        return {
+            "title": "Fresh 13F filing universe candidate",
+            "family": "SWING",
+            "rationale": f"Use '{title}' as a source event only; parse holdings later and test price-based swing entries after deterministic filtering.",
         }
     return {
         "title": "Simple baseline variant with strict out-of-sample gate",

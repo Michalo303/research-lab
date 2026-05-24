@@ -15,6 +15,7 @@ Primary file:
 
 - `HERMES_RESEARCH_LAB_PROMPT.md`
 - `HERMES_ROLE_CONTRACT.md`
+- `SEC_13F_WATCHER_DESIGN.md`
 - `IBKR_PAPER_RUNBOOK.md`
 
 Deterministic runner:
