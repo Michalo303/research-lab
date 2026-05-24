@@ -1,0 +1,112 @@
+{
+  "strategy_id": "ROTATION_ETF_1D_DUAL_MOMENTUM_20260524_014",
+  "family": "ROTATION",
+  "asset_class": "ETF",
+  "timeframe": "1D",
+  "short_name": "DUAL_MOMENTUM",
+  "hypothesis": "Monthly top-N momentum rotation across equity, bond, gold, and growth ETFs may improve risk-adjusted return.",
+  "rules": "At month end rank by 126-day momentum and hold the top two assets equally for the next month.",
+  "parameters": {
+    "symbols": [
+      "SPY",
+      "QQQ",
+      "TLT",
+      "GLD"
+    ],
+    "lookback": 126,
+    "top_n": 2
+  },
+  "parameter_count": 3,
+  "variants_tried": 1,
+  "data_manifest": {
+    "name": "daily_universe",
+    "source": "synthetic",
+    "symbols": [
+      "SPY",
+      "QQQ",
+      "TLT",
+      "GLD",
+      "BTC-USD"
+    ],
+    "rows": 3600,
+    "start": "2012-01-02 00:00:00",
+    "end": "2025-10-17 00:00:00",
+    "years": 13.790554414784394,
+    "created_at": "2026-05-24T08:27:07.284174+00:00",
+    "research_only": true
+  },
+  "cost_stress": {
+    "normal_cost_bps": 5.0,
+    "double_cost_bps": 10.0,
+    "normal_unseen_cagr": -0.09766311735846678,
+    "double_unseen_cagr": -0.09993270987762848,
+    "survives_double_cost": false
+  },
+  "metrics": {
+    "total_return": -0.35589284457856263,
+    "cagr": -0.030323057902431727,
+    "annual_return": -0.030323057902431727,
+    "annual_volatility": 0.12124910856604157,
+    "sharpe": -0.19331326608521088,
+    "max_drawdown": -0.49710469731976226,
+    "mar": -0.06099933890370471,
+    "dominant_month_profit_share": 0.03853295348115939,
+    "trade_count": 1,
+    "win_rate": 0.0,
+    "profit_factor": 0.0,
+    "expectancy_per_trade": -0.35589284457856263,
+    "max_losing_streak": 1
+  },
+  "split_metrics": {
+    "train": {
+      "total_return": -0.2371405271218825,
+      "cagr": -0.04123185620347747,
+      "annual_return": -0.04123185620347747,
+      "annual_volatility": 0.11755430957266119,
+      "sharpe": -0.2993510895547585,
+      "max_drawdown": -0.4836026573567114,
+      "mar": -0.08525978006168054,
+      "dominant_month_profit_share": 0.09391678034303519,
+      "trade_count": 1,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "expectancy_per_trade": -0.2371405271218825,
+      "max_losing_streak": 1
+    },
+    "validation": {
+      "total_return": 0.21873994864743485,
+      "cagr": 0.04723924992485995,
+      "annual_return": 0.04723924992485995,
+      "annual_volatility": 0.11925046678668506,
+      "sharpe": 0.44668564759272156,
+      "max_drawdown": -0.2987457240504554,
+      "mar": 0.15812527551651812,
+      "dominant_month_profit_share": 0.10061739252440728,
+      "trade_count": 1,
+      "win_rate": 1.0,
+      "profit_factor": null,
+      "expectancy_per_trade": 0.21873994864743485,
+      "max_losing_streak": 0
+    },
+    "unseen": {
+      "total_return": -0.3072085275245241,
+      "cagr": -0.09766311735846678,
+      "annual_return": -0.09766311735846678,
+      "annual_volatility": 0.12968191131817167,
+      "sharpe": -0.7274352374424171,
+      "max_drawdown": -0.4837502995255094,
+      "mar": -0.2018874560992737,
+      "dominant_month_profit_share": 0.1355191444372705,
+      "trade_count": 1,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "expectancy_per_trade": -0.3072085275245241,
+      "max_losing_streak": 1
+    }
+  },
+  "average_turnover": 0.01972222222222222,
+  "average_exposure": 0.9638888888888889,
+  "tier": "Rejected",
+  "tier_reason": "Negative unseen result.",
+  "research_only": true
+}

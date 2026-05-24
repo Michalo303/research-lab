@@ -7,7 +7,7 @@ import re
 
 from research_lab.backtest import close_frame, cost_stress, weighted_backtest
 from research_lab.config import LabConfig, ensure_project_structure
-from research_lab.data import load_daily_universe, load_intraday_symbol
+from research_lab.data import load_daily_universe, load_intraday_symbol, load_massive_daily_universe
 from research_lab.registry import append_jsonl, write_allocation_model, write_leaderboard
 from research_lab.reports import write_daily_report, write_strategy_card
 from research_lab.strategies.baselines import build_weights, baseline_strategies
@@ -21,7 +21,17 @@ def run_daily_research(root: Path | None = None) -> list[dict]:
     ensure_project_structure(config.root)
 
     daily_symbols = ["SPY", "QQQ", "TLT", "GLD", "BTC-USD"]
-    daily_bundle = load_daily_universe(config.root, daily_symbols, config.use_yfinance)
+    if config.data_provider == "massive":
+        daily_bundle = load_massive_daily_universe(
+            config.root,
+            daily_symbols,
+            config.massive_api_key,
+            config.massive_base_url,
+            config.massive_start_date,
+            config.massive_adjusted,
+        )
+    else:
+        daily_bundle = load_daily_universe(config.root, daily_symbols, config.use_yfinance)
     intraday_bundle = load_intraday_symbol(config.root, "BTCUSDT")
 
     results = []
@@ -41,7 +51,13 @@ def run_daily_research(root: Path | None = None) -> list[dict]:
             cost_bps = config.eod_cost_bps
         backtest = weighted_backtest(close, weights, cost_bps, periods_per_year)
         stress = cost_stress(close, weights, cost_bps, periods_per_year)
-        tier, tier_reason = classify_strategy(spec.family, backtest["split_metrics"], stress, data_bundle.manifest["source"])
+        tier, tier_reason = classify_strategy(
+            spec.family,
+            backtest["split_metrics"],
+            stress,
+            data_bundle.manifest["source"],
+            float(data_bundle.manifest.get("years", 0.0)),
+        )
         result = {
             "strategy_id": strategy_id,
             "family": spec.family,

@@ -79,6 +79,28 @@ RESEARCH_LAB_USE_YFINANCE=1 python scripts/run_daily_research.py
 
 Without optional data support, the runner uses deterministic synthetic OHLCV data as a smoke test only. Synthetic results must not be promoted to deployment candidates.
 
+## Massive Stocks Starter Setup
+
+Add only the server-side `.env` values:
+
+```bash
+RESEARCH_LAB_DATA_PROVIDER=massive
+MASSIVE_API_KEY=your_key_here
+MASSIVE_BASE_URL=https://api.massive.com
+MASSIVE_START_DATE=2021-05-24
+MASSIVE_ADJUSTED=true
+```
+
+Run one manual validation:
+
+```bash
+cd /opt/trading/research-lab
+. .venv/bin/activate
+python scripts/run_daily_research.py
+```
+
+Massive's Stocks Starter history is currently suitable for validating the data adapter and medium-term experiments. Long-term and rotation strategies still require 10+ years of EOD evidence before promotion above paper research.
+
 ## Suggested systemd Unit For Python Runner
 
 ```ini

@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -103,6 +106,38 @@ def load_daily_universe(root: Path, symbols: list[str], use_yfinance: bool) -> D
     return DataBundle("daily_universe", "1D", panel, manifest)
 
 
+def load_massive_daily_universe(
+    root: Path,
+    symbols: list[str],
+    api_key: str,
+    base_url: str,
+    start_date: str,
+    adjusted: bool,
+) -> DataBundle:
+    if not api_key:
+        raise ValueError("MASSIVE_API_KEY is required for the massive data provider")
+    frames = {}
+    for symbol in symbols:
+        frames[symbol] = _fetch_massive_daily(symbol, api_key, base_url, start_date, adjusted)
+        time.sleep(0.15)
+    panel = pd.concat(frames, axis=1).sort_index()
+    raw_path = root / "data" / "processed" / "massive_daily_universe.csv"
+    raw_path.parent.mkdir(parents=True, exist_ok=True)
+    panel.to_csv(raw_path)
+    manifest = _write_manifest(root, "daily_universe", "massive", list(frames), panel)
+    manifest.update(
+        {
+            "provider": "massive",
+            "base_url": base_url,
+            "adjusted": adjusted,
+            "api_key_present": True,
+            "stored_csv": str(raw_path),
+        }
+    )
+    (root / "data" / "manifests" / "daily_universe.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    return DataBundle("daily_universe", "1D", panel, manifest)
+
+
 def load_intraday_symbol(root: Path, symbol: str) -> DataBundle:
     data = synthetic_intraday_ohlcv(symbol)
     manifest = _write_manifest(root, f"intraday_{symbol}", "synthetic", [symbol], data)
@@ -110,13 +145,19 @@ def load_intraday_symbol(root: Path, symbol: str) -> DataBundle:
 
 
 def _write_manifest(root: Path, name: str, source: str, symbols: list[str], data: pd.DataFrame) -> dict:
+    start = data.index.min()
+    end = data.index.max()
+    years = 0.0
+    if isinstance(start, pd.Timestamp) and isinstance(end, pd.Timestamp):
+        years = max((end - start).days / 365.25, 0.0)
     payload = {
         "name": name,
         "source": source,
         "symbols": symbols,
         "rows": int(len(data)),
-        "start": str(data.index.min()),
-        "end": str(data.index.max()),
+        "start": str(start),
+        "end": str(end),
+        "years": years,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "research_only": True,
     }
@@ -125,3 +166,43 @@ def _write_manifest(root: Path, name: str, source: str, symbols: list[str], data
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return payload
 
+
+def _fetch_massive_daily(symbol: str, api_key: str, base_url: str, start_date: str, adjusted: bool) -> pd.DataFrame:
+    end_date = date.today().isoformat()
+    url = (
+        f"{base_url.rstrip('/')}/v2/aggs/ticker/{urllib.parse.quote(symbol)}/range/1/day/"
+        f"{start_date}/{end_date}"
+    )
+    params = urllib.parse.urlencode(
+        {
+            "adjusted": str(adjusted).lower(),
+            "sort": "asc",
+            "limit": 50000,
+            "apiKey": api_key,
+        }
+    )
+    payload = _download_json(f"{url}?{params}")
+    rows = payload.get("results", [])
+    if not rows:
+        raise ValueError(f"Massive returned no daily bars for {symbol}")
+    frame = pd.DataFrame(rows)
+    frame["date"] = pd.to_datetime(frame["t"], unit="ms", utc=True).dt.tz_convert(None).dt.normalize()
+    frame = frame.set_index("date").sort_index()
+    output = pd.DataFrame(
+        {
+            "open": frame["o"].astype(float),
+            "high": frame["h"].astype(float),
+            "low": frame["l"].astype(float),
+            "close": frame["c"].astype(float),
+            "volume": frame["v"].astype(float),
+        },
+        index=frame.index,
+    )
+    output.index.name = None
+    return output
+
+
+def _download_json(url: str) -> dict:
+    request = urllib.request.Request(url, headers={"User-Agent": "research-lab/0.1 research-only"})
+    with urllib.request.urlopen(request, timeout=30) as response:
+        return json.loads(response.read().decode("utf-8"))

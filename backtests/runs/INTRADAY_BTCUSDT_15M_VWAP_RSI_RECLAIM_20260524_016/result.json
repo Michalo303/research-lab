@@ -1,0 +1,103 @@
+{
+  "strategy_id": "INTRADAY_BTCUSDT_15M_VWAP_RSI_RECLAIM_20260524_016",
+  "family": "INTRADAY",
+  "asset_class": "BTCUSDT",
+  "timeframe": "15M",
+  "short_name": "VWAP_RSI_RECLAIM",
+  "hypothesis": "A VWAP reclaim after weak RSI can capture short intraday continuation if fills survive realistic costs.",
+  "rules": "Enter when close reclaims session VWAP and RSI14 crosses above 50 after sub-45 weakness; exit on VWAP loss or session end.",
+  "parameters": {
+    "symbol": "BTCUSDT",
+    "rsi_reclaim": 50,
+    "rsi_washout": 45
+  },
+  "parameter_count": 3,
+  "variants_tried": 1,
+  "data_manifest": {
+    "name": "intraday_BTCUSDT",
+    "source": "synthetic",
+    "symbols": [
+      "BTCUSDT"
+    ],
+    "rows": 6760,
+    "start": "2024-01-02 09:30:00",
+    "end": "2024-12-30 15:45:00",
+    "years": 0.9938398357289527,
+    "created_at": "2026-05-24T08:27:07.329837+00:00",
+    "research_only": true
+  },
+  "cost_stress": {
+    "normal_cost_bps": 8.0,
+    "double_cost_bps": 16.0,
+    "normal_unseen_cagr": -0.2198135731843749,
+    "double_unseen_cagr": -0.3914301451724139,
+    "survives_double_cost": false
+  },
+  "metrics": {
+    "total_return": -0.2222114151898371,
+    "cagr": -0.21617399017927807,
+    "annual_return": -0.21617399017927807,
+    "annual_volatility": 0.013628253711544176,
+    "sharpe": -17.865147977435345,
+    "max_drawdown": -0.2222114151898371,
+    "mar": -0.9728302661436128,
+    "dominant_month_profit_share": 0.0,
+    "trade_count": 157,
+    "win_rate": 0.0,
+    "profit_factor": 0.0,
+    "expectancy_per_trade": -0.0015993600000000496,
+    "max_losing_streak": 157
+  },
+  "split_metrics": {
+    "train": {
+      "total_return": -0.10528004019092119,
+      "cagr": -0.21306021574537748,
+      "annual_return": -0.21306021574537748,
+      "annual_volatility": 0.013522239997917152,
+      "sharpe": -17.712131447495675,
+      "max_drawdown": -0.10528004019092119,
+      "mar": -2.0237474772901036,
+      "dominant_month_profit_share": 0.0,
+      "trade_count": 70,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "expectancy_per_trade": -0.0015879405714286207,
+      "max_losing_streak": 70
+    },
+    "validation": {
+      "total_return": -0.07321198326038503,
+      "cagr": -0.21779367406907746,
+      "annual_return": -0.21779367406907746,
+      "annual_volatility": 0.013683169612070185,
+      "sharpe": -17.944560251731982,
+      "max_drawdown": -0.07246995922776722,
+      "mar": -3.005295937652863,
+      "dominant_month_profit_share": 0.0,
+      "trade_count": 47,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "expectancy_per_trade": -0.0015993600000000496,
+      "max_losing_streak": 47
+    },
+    "unseen": {
+      "total_return": -0.06201902590415331,
+      "cagr": -0.2198135731843749,
+      "annual_return": -0.2198135731843749,
+      "annual_volatility": 0.013751439366877243,
+      "sharpe": -18.043425877346696,
+      "max_drawdown": -0.06201902590415331,
+      "mar": -3.5442925776371204,
+      "dominant_month_profit_share": 0.0,
+      "trade_count": 40,
+      "win_rate": 0.0,
+      "profit_factor": 0.0,
+      "expectancy_per_trade": -0.0015993600000000496,
+      "max_losing_streak": 40
+    }
+  },
+  "average_turnover": 0.046449704142011834,
+  "average_exposure": 0.12026627218934911,
+  "tier": "Rejected",
+  "tier_reason": "Negative unseen result.",
+  "research_only": true
+}

@@ -59,6 +59,18 @@ RESEARCH_LAB_USE_YFINANCE=1 python scripts/run_daily_research.py
 
 No broker/exchange execution libraries or live keys are required.
 
+Massive/Polygon Stocks Starter data:
+
+```bash
+RESEARCH_LAB_DATA_PROVIDER=massive
+MASSIVE_API_KEY=your_key_here
+MASSIVE_BASE_URL=https://api.massive.com
+MASSIVE_START_DATE=2021-05-24
+python scripts/run_daily_research.py
+```
+
+The API key belongs only in `.env`, never in git. Starter's 5-year history is useful for data pipeline validation and swing/rotation experiments, but long-term/rotation strategies remain capped below promotion until they have at least 10 years of EOD evidence.
+
 Optional source scanning:
 
 ```bash
