@@ -14,6 +14,7 @@ Purpose:
 Primary file:
 
 - `HERMES_RESEARCH_LAB_PROMPT.md`
+- `HERMES_ROLE_CONTRACT.md`
 - `IBKR_PAPER_RUNBOOK.md`
 
 Deterministic runner:
@@ -67,6 +68,14 @@ python scripts/check_ibkr_paper_config.py
 ```
 
 This validates local paper execution configuration only. It does not connect to IBKR or place orders.
+
+Hermes/LLM hypothesis prompt:
+
+```bash
+python scripts/write_hermes_hypothesis_prompt.py
+```
+
+Hermes is allowed to generate hypotheses and read research. It is not allowed to validate, tier, allocate, or execute.
 
 Massive/Polygon Stocks Starter data:
 

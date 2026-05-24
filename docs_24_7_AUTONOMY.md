@@ -49,6 +49,8 @@ It must not:
 - overwrite registries
 - hide rejected experiments
 
+The formal contract is stored in `HERMES_ROLE_CONTRACT.md`.
+
 ## Source Policy
 
 Good sources:
