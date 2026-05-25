@@ -36,6 +36,14 @@ if __name__ == "__main__":
     robustness = write_weekly_robustness_outputs(root, report_stem)
     parameter_sweep = run_parameter_sweep(root, report_stem)
     portfolio = run_portfolio_scoring(root, report_stem)
+    sentiment_status = "sentiment layer not available"
+    sentiment_rows = []
+    sentiment_path = root / "registry" / "sentiment_candidates.csv"
+    if sentiment_path.exists():
+        with sentiment_path.open(newline="", encoding="utf-8") as handle:
+            sentiment_rows = list(csv.DictReader(handle))
+        sentiment_status = f"available: {len(sentiment_rows)} candidates from {sentiment_path}"
+
     report = report_dir / f"{iso_year}-W{iso_week:02d}.md"
     lines = [
         f"# Weekly Deep Research Report - {iso_year}-W{iso_week:02d}",
@@ -63,6 +71,12 @@ if __name__ == "__main__":
         "## Portfolio Findings",
         "",
         *summarize_portfolio_scoring(portfolio["rows"]),
+        "",
+        "## Sentiment / Attention (Read-Only)",
+        "",
+        f"- status: {sentiment_status}",
+        "- mode: READ ONLY",
+        "- no write endpoints, no order signals, no deployment permission.",
         "",
         "## Research Findings",
         "",
