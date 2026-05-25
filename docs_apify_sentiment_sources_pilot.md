@@ -38,3 +38,27 @@ Goal: implement a **small, bounded, auditable** Apify sentiment-source pilot (re
 2. Missing token/actor fails gracefully.
 3. Weekly/reporting remains safe-to-fail.
 4. Unit tests cover normalization and guardrail enforcement.
+
+## Phase 1 Fixture Contract
+
+The first implementation uses stored raw payload fixtures only:
+
+- `tests/fixtures/apify_reddit_raw.json`
+- `tests/fixtures/apify_stocktwits_saswave_raw.json`
+- `tests/fixtures/apify_stocktwits_shahidirfan_raw.json`
+- `tests/fixtures/apify_google_news_raw.json`
+
+Normalized rows map into the existing file-adapter shape:
+
+- `ticker`
+- `provider=apify_fixture`
+- `source`
+- `timestamp`
+- `title`
+- `text`
+- `url`
+- `author`
+- `engagement_score`
+- `source_type`
+
+Live Apify remains disabled unless the CLI receives `--live-apify`. Missing token or source actor env returns controlled `coverage_status=missing`.

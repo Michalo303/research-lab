@@ -195,3 +195,28 @@ Safety remains unchanged:
 - no paper/live changes
 - no broker integrations
 - no deployment-gate changes
+
+## Apify Sentiment Sources Pilot
+
+The Apify sentiment pilot is fixture-first. The first implementation normalizes stored raw payload samples for:
+
+- Reddit: `logiover/reddit-search-scraper`
+- Stocktwits primary: `saswave/stocktwits-stock-ticker-news-scraper`
+- Stocktwits fallback: `shahidirfan/stocktwits-sentiment-scraper`
+- News: `vnx0/google-news-actor` with fallback status because the actor may be under maintenance
+
+Fixture mode never performs a live Apify call:
+
+```bash
+python scripts/run_sentiment_pilot.py --provider apify --source reddit --fixture tests/fixtures/apify_reddit_raw.json --tickers IREN,WULF --max-items 50 --write
+```
+
+Live Apify is opt-in only and remains bounded:
+
+```bash
+APIFY_TOKEN=your_token_here
+APIFY_REDDIT_ACTOR_ID=logiover/reddit-search-scraper
+python scripts/run_sentiment_pilot.py --provider apify --source reddit --tickers IREN,CRWV,NBIS,WULF,VRT,CEG,OKLO,SMR --max-items 25 --max-cost-usd 1 --live-apify --write
+```
+
+Without `--live-apify`, the CLI either uses a fixture or returns controlled missing coverage. Raw payload samples are saved under `registry/sentiment_raw_samples/`, normalized outputs are written to `registry/sentiment_snapshot.csv`, `registry/sentiment_candidates.csv`, and source coverage is written to `registry/sentiment_source_coverage.csv`.
