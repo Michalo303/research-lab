@@ -134,3 +134,64 @@ python scripts/run_weekly_deep_research.py
 ```
 
 The weekly job runs limited paid Apify Dataroma ingestion when configured, then writes robustness, stability, bounded parameter-neighborhood, and portfolio candidate CSVs. These are conservative research gates only; they cannot authorize deployment.
+
+## Sentiment / Attention Layer (Research-Only)
+
+The sentiment layer is an observability and ranking aid only. It is **not** a trading signal and never grants deployment permission.
+
+Design goals in phase 1:
+
+- provider-neutral sentiment snapshot schema
+- deterministic narrative/catalyst tagging (no LLM dependency)
+- attention acceleration metrics and coverage states (`available`/`partial`/`missing`/`stale`/`error`)
+- price-confirmed sentiment classification for research narratives only
+- safe-to-fail adapters and read-only reporting hooks
+
+Run file-based pilot:
+
+```bash
+python scripts/run_sentiment_pilot.py --provider file --input tests/fixtures/sentiment_sample.jsonl --write
+```
+
+Run Apify scaffold (no scraping unless env is explicitly configured):
+
+```bash
+APIFY_TOKEN=... APIFY_SENTIMENT_ACTOR_ID=... python scripts/run_sentiment_pilot.py --provider apify --write
+```
+
+Outputs:
+
+- `registry/sentiment_snapshot.csv`
+- `registry/sentiment_candidates.csv`
+- `reports/weekly/<stem>_sentiment_candidates.csv`
+
+Weekly report includes a read-only `Sentiment / Attention` section. If sentiment files are missing, it writes `sentiment layer not available` and continues without failing the weekly run.
+
+### Current implementation status
+
+Implemented now (phase-1 scaffold):
+
+- provider-neutral snapshot schema and CSV writers
+- file/mock input adapter
+- deterministic narrative/catalyst tagging
+- deterministic lexicon sentiment scoring
+- attention metrics scaffold
+- price-confirmed sentiment classifier
+- weekly read-only sentiment availability hook
+- controlled Apify scaffold (token/actor checks, safe-to-fail)
+
+Not implemented yet:
+
+- real Apify scraping and actor payload normalization
+- concrete Reddit/Stocktwits/News actor selection
+- production-grade cost accounting from real actor runs
+- real provider coverage report from fetched data
+- live sentiment feed for IREN/CRWV/NBIS pilot universe
+
+Safety remains unchanged:
+
+- research-only
+- no trading signal permission
+- no paper/live changes
+- no broker integrations
+- no deployment-gate changes
