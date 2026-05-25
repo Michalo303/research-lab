@@ -1,0 +1,11 @@
+symbol,provider,coverage_status,row_count,first_date,last_date,coverage_years,duplicate_dates,missing_weekdays,non_monotonic_index,zero_price_rows,negative_price_rows,nan_ohlcv_rows,extreme_return_rows,adjusted_status,research_only,not_trading_signal
+SPY.US,eodhd,available,8386,1993-01-29,2026-05-22,33.31,0,305,False,0,0,0,0,adjusted,True,True
+QQQ.US,eodhd,available,6844,1999-03-10,2026-05-22,27.2,0,254,False,0,0,0,0,adjusted,True,True
+IWM.US,eodhd,available,6536,2000-05-26,2026-05-22,25.99,0,245,False,0,0,0,0,adjusted,True,True
+TLT.US,eodhd,available,5995,2002-07-26,2026-05-22,23.82,0,221,False,0,0,0,0,adjusted,True,True
+GLD.US,eodhd,available,5411,2004-11-18,2026-05-22,21.51,0,201,False,0,0,0,0,adjusted,True,True
+XLK.US,eodhd,available,6896,1998-12-22,2026-05-22,27.41,0,258,False,0,0,0,0,adjusted,True,True
+XLF.US,eodhd,available,6896,1998-12-22,2026-05-22,27.41,0,258,False,0,0,0,0,adjusted,True,True
+XLE.US,eodhd,available,6896,1998-12-22,2026-05-22,27.41,0,258,False,0,0,0,0,adjusted,True,True
+SMH.US,eodhd,available,6551,2000-05-05,2026-05-22,26.05,0,245,False,0,0,0,0,adjusted,True,True
+SOXX.US,eodhd,available,6252,2001-07-13,2026-05-22,24.86,0,234,False,0,0,0,0,adjusted,True,True

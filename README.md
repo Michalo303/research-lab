@@ -112,6 +112,38 @@ python scripts/run_daily_research.py
 
 The API key belongs only in `.env`, never in git. Starter's 5-year history is useful for data pipeline validation and swing/rotation experiments, but long-term/rotation strategies remain capped below promotion until they have at least 10 years of EOD evidence.
 
+EODHD Historical Validation Layer:
+
+```bash
+EODHD_API_KEY=your_key_here python scripts/run_eodhd_historical_validation.py
+```
+
+This layer is research-only and answers one question: do the strongest rotation/momentum ideas survive on longer ETF history than the current Massive Starter window?
+
+It audits the default ETF universe (`SPY.US`, `QQQ.US`, `IWM.US`, `TLT.US`, `GLD.US`, `XLK.US`, `XLF.US`, `XLE.US`, `SMH.US`, `SOXX.US`) with adjusted EODHD daily data when `adjusted_close` is available. The API key belongs only in `.env` or the shell environment and is never written to reports.
+
+Outputs:
+
+- `registry/eodhd_history_manifest.csv`
+- `registry/eodhd_data_quality.csv`
+- `reports/vendor_reviews/eodhd_vs_massive.md`
+- `reports/vendor_reviews/eodhd_history_summary.md`
+- `reports/vendor_reviews/eodhd_strategy_validation.csv`
+
+Run without an API key to verify controlled missing status:
+
+```bash
+python scripts/run_eodhd_historical_validation.py
+```
+
+Use raw close instead of adjusted close only for audit comparison:
+
+```bash
+EODHD_API_KEY=your_key_here python scripts/run_eodhd_historical_validation.py --raw
+```
+
+This script does not create trading signals, does not touch broker code, does not change paper/live behavior, and does not change deployment gates.
+
 Optional source scanning:
 
 ```bash
