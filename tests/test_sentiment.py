@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
 from pathlib import Path
+import subprocess
+import sys
 
 from research_lab.sentiment import (
     SentimentThresholds,
@@ -65,3 +67,26 @@ def test_apify_scaffold_missing_token(monkeypatch):
     assert result["coverage_status"] == "missing"
     assert result["max_items"] == 500
     assert result["max_cost_usd"] == 0.1
+
+
+def test_sentiment_cli_apify_scaffold_runs_without_package_install(monkeypatch):
+    monkeypatch.delenv("APIFY_TOKEN", raising=False)
+    monkeypatch.delenv("APIFY_SENTIMENT_ACTOR_ID", raising=False)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/run_sentiment_pilot.py",
+            "--provider",
+            "apify",
+            "--max-items",
+            "9999",
+            "--max-cost-usd",
+            "0",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0
+    assert "APIFY_TOKEN missing" in result.stdout
+    assert "'max_items': 500" in result.stdout
