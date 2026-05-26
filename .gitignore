@@ -24,3 +24,7 @@ data/processed/*
 # Local runtime state
 tmp/
 registry/source_items.jsonl
+
+# EODHD runtime smoke-test artifacts
+registry/eodhd_coverage_report.csv
+registry/eodhd_vendor_report.json
