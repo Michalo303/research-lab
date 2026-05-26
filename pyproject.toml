@@ -12,6 +12,9 @@ dependencies = [
 data = [
   "yfinance>=0.2.40",
 ]
+ibkr = [
+  "ib_insync>=0.9.86",
+]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

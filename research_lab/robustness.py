@@ -14,11 +14,13 @@ ROBUSTNESS_COLUMNS = [
     "tier",
     "data_source",
     "data_years",
+    "walk_forward_status",
     "positive_windows",
     "window_count",
     "walk_forward_score",
     "walk_forward_method",
     "pass_rate",
+    "median_test_cagr",
     "median_test_mar",
     "regime_summary",
     "worst_window_cagr",
@@ -134,7 +136,7 @@ def summarize_weekly_robustness(robustness_rows: list[dict[str, Any]], stability
     best = robustness_rows[0]
     lines = [
         f"- result files reviewed: {len(robustness_rows)}",
-        f"- walk-forward proxy pass: {len(robust)}",
+        f"- rolling walk-forward pass: {len(robust)}",
         f"- borderline: {len(borderline)}",
         f"- stable strategy groups: {len(stable_groups)}",
         (
@@ -154,22 +156,15 @@ def summarize_weekly_robustness(robustness_rows: list[dict[str, Any]], stability
 
 
 def _robustness_row(item: dict[str, Any]) -> dict[str, Any]:
-    split_metrics = item.get("split_metrics", {})
-    walk_forward = item.get("walk_forward", {})
-    windows = [name for name in ("train", "validation", "unseen") if name in split_metrics]
-    positive_windows = 0
-    window_cagrs = []
-    window_dds = []
-    for name in windows:
-        cagr = _metric(item, name, "cagr")
-        max_dd = _metric(item, name, "max_drawdown")
-        window_cagrs.append(cagr)
-        window_dds.append(max_dd)
-        if cagr > 0 and max_dd >= -0.15:
-            positive_windows += 1
-    window_count = max(len(windows), 1)
+    walk_forward = item.get("walk_forward") or {}
+    window_rows = walk_forward.get("windows") if isinstance(walk_forward.get("windows"), list) else []
+    positive_windows = int(walk_forward.get("positive_windows", 0) or 0)
+    window_count = int(walk_forward.get("window_count", 0) or 0)
+    window_cagrs = [float(row.get("test_cagr", 0.0) or 0.0) for row in window_rows]
+    window_dds = [float(row.get("test_max_drawdown", 0.0) or 0.0) for row in window_rows]
     cost_survives = bool(item.get("cost_stress", {}).get("survives_double_cost"))
-    walk_forward_score = positive_windows / window_count
+    walk_forward_score = float(walk_forward.get("pass_rate", 0.0) or 0.0)
+    median_test_cagr = float(walk_forward.get("median_test_cagr", 0.0) or 0.0)
     unseen_cagr = _metric(item, "unseen", "cagr")
     unseen_dd = _metric(item, "unseen", "max_drawdown")
     return {
@@ -179,11 +174,13 @@ def _robustness_row(item: dict[str, Any]) -> dict[str, Any]:
         "tier": item.get("tier", ""),
         "data_source": item.get("data_manifest", {}).get("source", ""),
         "data_years": item.get("data_manifest", {}).get("years", 0.0),
+        "walk_forward_status": walk_forward.get("status", "missing"),
         "positive_windows": positive_windows,
         "window_count": window_count,
         "walk_forward_score": walk_forward_score,
         "walk_forward_method": walk_forward.get("method", "missing"),
         "pass_rate": float(walk_forward.get("pass_rate", 0.0) or 0.0),
+        "median_test_cagr": median_test_cagr,
         "median_test_mar": float(walk_forward.get("median_test_mar", 0.0) or 0.0),
         "regime_summary": walk_forward.get("regime_summary", ""),
         "worst_window_cagr": min(window_cagrs) if window_cagrs else 0.0,
@@ -191,20 +188,32 @@ def _robustness_row(item: dict[str, Any]) -> dict[str, Any]:
         "unseen_cagr": unseen_cagr,
         "unseen_max_drawdown": unseen_dd,
         "cost_survives": cost_survives,
-        "robustness_verdict": _robustness_verdict(walk_forward, walk_forward_score, unseen_cagr, unseen_dd, cost_survives),
+        "robustness_verdict": _robustness_verdict(walk_forward, walk_forward_score, median_test_cagr, unseen_cagr, unseen_dd, cost_survives),
     }
 
 
 def _robustness_verdict(
-    walk_forward: dict[str, Any], walk_forward_score: float, unseen_cagr: float, unseen_dd: float, cost_survives: bool
+    walk_forward: dict[str, Any],
+    walk_forward_score: float,
+    median_test_cagr: float,
+    unseen_cagr: float,
+    unseen_dd: float,
+    cost_survives: bool,
 ) -> str:
     if walk_forward.get("method") != "true_rolling_oos":
         return "fail"
+    if walk_forward.get("status") != "ok":
+        return "fail"
     if not cost_survives:
         return "fail"
-    if walk_forward_score >= 1.0 and unseen_cagr > 0 and unseen_dd >= -0.15 and cost_survives:
+    window_count = int(walk_forward.get("window_count", 0) or 0)
+    pass_rate = float(walk_forward.get("pass_rate", 0.0) or 0.0)
+    worst_dd = float(walk_forward.get("worst_test_drawdown", 0.0) or 0.0)
+    if window_count >= 3 and pass_rate >= 0.67 and median_test_cagr > 0 and worst_dd >= -0.20 and unseen_cagr > 0 and unseen_dd >= -0.15:
         return "pass"
-    if walk_forward_score >= 2 / 3 and unseen_cagr > 0 and unseen_dd >= -0.20:
+    if window_count >= 2 and pass_rate >= 0.50 and median_test_cagr > 0 and worst_dd >= -0.25 and unseen_cagr > 0 and unseen_dd >= -0.20:
+        return "borderline"
+    if walk_forward_score >= 0.67 and unseen_cagr > 0 and unseen_dd >= -0.20:
         return "borderline"
     return "fail"
 

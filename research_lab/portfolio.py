@@ -6,7 +6,10 @@ import math
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
+
 from research_lab.edge import classify_edge
+from research_lab.metrics import performance_metrics
 from research_lab.robustness import load_backtest_results
 
 
@@ -28,6 +31,25 @@ PORTFOLIO_COLUMNS = [
     "reason",
 ]
 
+PORTFOLIO_BACKTEST_COLUMNS = [
+    "strategy_count",
+    "start",
+    "end",
+    "total_weight_pct",
+    "cash_weight_pct",
+    "gross_exposure_pct",
+    "net_exposure_pct",
+    "cagr",
+    "sharpe",
+    "max_drawdown",
+    "mar",
+    "average_pairwise_correlation",
+    "rebalance_count",
+    "rebalance_frequency",
+    "portfolio_verdict",
+    "status",
+]
+
 EDGE_SCORE = {
     "plausible": 1.0,
     "plausible_filter": 0.8,
@@ -47,6 +69,69 @@ def run_portfolio_scoring(root: Path, report_stem: str, max_candidates: int = 12
     path = report_dir / f"{report_stem}_portfolio_candidates.csv"
     _write_csv(path, rows)
     return {"rows": rows, "path": path}
+
+
+def run_portfolio_combination_backtest(
+    root: Path,
+    report_stem: str,
+    candidate_rows: list[dict[str, Any]] | None = None,
+    rebalance_frequency: str = "ME",
+) -> dict[str, Any]:
+    results = load_backtest_results(root)
+    candidate_rows = candidate_rows if candidate_rows is not None else run_portfolio_scoring(root, report_stem)["rows"]
+    selected = [row for row in candidate_rows if float(row.get("suggested_weight_pct", 0.0) or 0.0) > 0]
+    returns_by_strategy = {item["strategy_id"]: _return_series(item) for item in results if item.get("strategy_id")}
+    selected = [row for row in selected if not returns_by_strategy.get(str(row.get("strategy_id", ""))).empty]
+
+    report_dir = root / "reports" / "weekly"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    summary_path = report_dir / f"{report_stem}_portfolio_backtest.csv"
+    equity_path = report_dir / f"{report_stem}_portfolio_equity.csv"
+
+    if not selected:
+        has_results = bool(results)
+        has_real_data = any(item.get("data_manifest", {}).get("source") in {"massive", "yfinance"} or item.get("data_source") in {"massive", "yfinance"} for item in results)
+        status = "blocked_no_real_data_candidates" if has_results and not has_real_data else "no_backtestable_return_series"
+        summary = _empty_portfolio_backtest_summary(status)
+        _write_csv(summary_path, [summary], PORTFOLIO_BACKTEST_COLUMNS)
+        _write_equity_csv(equity_path, pd.Series(dtype=float), pd.Series(dtype=float))
+        return {"summary": summary, "equity": pd.Series(dtype=float), "path": summary_path, "equity_path": equity_path}
+
+    return_frame = pd.DataFrame({row["strategy_id"]: returns_by_strategy[row["strategy_id"]] for row in selected}).sort_index().fillna(0.0)
+    target_weights = pd.Series(
+        {row["strategy_id"]: float(row.get("suggested_weight_pct", 0.0) or 0.0) / 100.0 for row in selected},
+        dtype=float,
+    )
+    total_weight = float(target_weights.sum())
+    if total_weight > 1.0:
+        target_weights = target_weights / total_weight
+        total_weight = 1.0
+    weight_frame = _rebalance_weights(return_frame.index, target_weights, rebalance_frequency)
+    portfolio_returns = (weight_frame.shift(1).fillna(0.0) * return_frame).sum(axis=1)
+    equity = (1.0 + portfolio_returns).cumprod()
+    metrics = performance_metrics(portfolio_returns, 252)
+    corr = return_frame.corr()
+    summary = {
+        "strategy_count": len(selected),
+        "start": _format_index_value(return_frame.index[0]),
+        "end": _format_index_value(return_frame.index[-1]),
+        "total_weight_pct": round(total_weight * 100.0, 4),
+        "cash_weight_pct": round(max(0.0, 1.0 - total_weight) * 100.0, 4),
+        "gross_exposure_pct": round(total_weight * 100.0, 4),
+        "net_exposure_pct": round(total_weight * 100.0, 4),
+        "cagr": metrics["cagr"],
+        "sharpe": metrics["sharpe"],
+        "max_drawdown": metrics["max_drawdown"],
+        "mar": metrics["mar"],
+        "average_pairwise_correlation": _average_pairwise_correlation(corr),
+        "rebalance_count": _rebalance_count(weight_frame),
+        "rebalance_frequency": rebalance_frequency,
+        "portfolio_verdict": _portfolio_verdict(metrics["max_drawdown"], total_weight, _average_pairwise_correlation(corr)),
+        "status": "ok",
+    }
+    _write_csv(summary_path, [summary], PORTFOLIO_BACKTEST_COLUMNS)
+    _write_equity_csv(equity_path, equity, portfolio_returns)
+    return {"summary": summary, "equity": equity, "path": summary_path, "equity_path": equity_path}
 
 
 def summarize_portfolio_scoring(rows: list[dict[str, Any]]) -> list[str]:
@@ -72,12 +157,27 @@ def summarize_portfolio_scoring(rows: list[dict[str, Any]]) -> list[str]:
     ]
 
 
+def summarize_portfolio_backtest(summary: dict[str, Any]) -> list[str]:
+    if not summary or summary.get("status") != "ok":
+        return [f"- portfolio combination backtest: {summary.get('status', 'not_run') if summary else 'not_run'}"]
+    return [
+        (
+            "- portfolio combination backtest: "
+            f"{summary['strategy_count']} strategies, cash={summary['cash_weight_pct']:.1f}%, "
+            f"cagr={summary['cagr']:.2%}, max_dd={summary['max_drawdown']:.2%}, "
+            f"avg_corr={summary['average_pairwise_correlation']:.2f}, "
+            f"rebalance_count={summary.get('rebalance_count', 0)}, "
+            f"verdict={summary.get('portfolio_verdict', 'not_run')}"
+        )
+    ]
+
+
 def _candidate_results(results: list[dict[str, Any]], max_candidates: int) -> list[dict[str, Any]]:
     candidates = []
     for item in results:
         if item.get("tier") == "Rejected":
             continue
-        if item.get("data_manifest", {}).get("source") not in {"massive", "yfinance"}:
+        if item.get("data_source", item.get("data_manifest", {}).get("source")) not in {"massive", "yfinance"}:
             continue
         if item.get("family") == "INTRADAY":
             continue
@@ -188,9 +288,99 @@ def _portfolio_role(family: str, edge_bucket: str) -> str:
     return "research sleeve"
 
 
-def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+def _write_csv(path: Path, rows: list[dict[str, Any]], columns: list[str] | None = None) -> None:
+    columns = columns or PORTFOLIO_COLUMNS
     with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=PORTFOLIO_COLUMNS)
+        writer = csv.DictWriter(handle, fieldnames=columns)
         writer.writeheader()
         for row in rows:
-            writer.writerow({column: row.get(column, "") for column in PORTFOLIO_COLUMNS})
+            writer.writerow({column: row.get(column, "") for column in columns})
+
+
+def _return_series(item: dict[str, Any]) -> pd.Series:
+    records = item.get("return_series") or []
+    values = {}
+    for record in records:
+        if not isinstance(record, dict) or "date" not in record:
+            continue
+        try:
+            values[pd.to_datetime(record["date"])] = float(record.get("value", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            continue
+    return pd.Series(values, dtype=float).sort_index()
+
+
+def _rebalance_weights(index: pd.Index, target_weights: pd.Series, rebalance_frequency: str) -> pd.DataFrame:
+    weights = pd.DataFrame(0.0, index=index, columns=target_weights.index)
+    if weights.empty:
+        return weights
+    marker = pd.Series(range(len(index)), index=index)
+    rebal_dates = set(index[int(position)] for position in marker.resample(rebalance_frequency).last().dropna().astype(int))
+    current = pd.Series(0.0, index=target_weights.index, dtype=float)
+    for ts in index:
+        if ts == index[0] or ts in rebal_dates:
+            current = target_weights.copy()
+        weights.loc[ts] = current
+    return weights
+
+
+def _average_pairwise_correlation(corr: pd.DataFrame) -> float:
+    if corr.empty or len(corr.columns) < 2:
+        return 0.0
+    values = []
+    for i, left in enumerate(corr.columns):
+        for right in corr.columns[i + 1 :]:
+            value = corr.loc[left, right]
+            if pd.notna(value):
+                values.append(float(value))
+    return float(sum(values) / len(values)) if values else 0.0
+
+
+def _empty_portfolio_backtest_summary(status: str) -> dict[str, Any]:
+    return {
+        "strategy_count": 0,
+        "start": "",
+        "end": "",
+        "total_weight_pct": 0.0,
+        "cash_weight_pct": 100.0,
+        "gross_exposure_pct": 0.0,
+        "net_exposure_pct": 0.0,
+        "cagr": 0.0,
+        "sharpe": 0.0,
+        "max_drawdown": 0.0,
+        "mar": 0.0,
+        "average_pairwise_correlation": 0.0,
+        "rebalance_count": 0,
+        "rebalance_frequency": "ME",
+        "portfolio_verdict": "blocked" if status.startswith("blocked") else "not_run",
+        "status": status,
+    }
+
+
+def _rebalance_count(weights: pd.DataFrame) -> int:
+    if weights.empty:
+        return 0
+    changed = weights.diff().abs().sum(axis=1) > 1e-12
+    return int(changed.sum() + 1)
+
+
+def _portfolio_verdict(max_drawdown: float, total_weight: float, average_correlation: float) -> str:
+    if total_weight <= 0:
+        return "blocked"
+    if max_drawdown < -0.15:
+        return "fail"
+    if average_correlation > 0.70:
+        return "fail"
+    return "pass"
+
+
+def _write_equity_csv(path: Path, equity: pd.Series, returns: pd.Series) -> None:
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["date", "equity", "return"])
+        writer.writeheader()
+        for ts, value in equity.items():
+            writer.writerow({"date": _format_index_value(ts), "equity": value, "return": float(returns.loc[ts])})
+
+
+def _format_index_value(value) -> str:
+    return value.isoformat() if hasattr(value, "isoformat") else str(value)

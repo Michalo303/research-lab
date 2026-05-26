@@ -18,22 +18,33 @@ def _result(strategy_id: str, cagr: float, cost: bool = True, tier: str = "C", s
         "data_manifest": {"source": "massive", "years": 5.0},
         "split_metrics": {"train": split, "validation": split, "unseen": split},
         "walk_forward": {
+            "window_count": 3,
+            "positive_windows": 3 if cagr > 0 else 0,
+            "passed_windows": 3 if cagr > 0 else 0,
             "method": "true_rolling_oos",
-            "pass_rate": 0.75,
+            "status": "ok",
+            "pass_rate": 1.0 if cagr > 0 else 0.0,
+            "median_test_cagr": cagr,
             "median_test_mar": 1.5,
+            "worst_test_drawdown": -0.05,
             "regime_summary": "bull:2/2;bear:1/1",
+            "windows": [
+                {"test_cagr": cagr, "test_max_drawdown": -0.05},
+                {"test_cagr": cagr, "test_max_drawdown": -0.05},
+                {"test_cagr": cagr, "test_max_drawdown": -0.05},
+            ],
         },
         "cost_stress": {"survives_double_cost": cost},
     }
 
 
-def test_build_robustness_rows_flags_full_split_pass():
+def test_build_robustness_rows_flags_rolling_walk_forward_pass():
     rows = build_robustness_rows([_result("A", 0.12)])
 
     assert rows[0]["positive_windows"] == 3
     assert rows[0]["walk_forward_score"] == 1.0
     assert rows[0]["walk_forward_method"] == "true_rolling_oos"
-    assert rows[0]["pass_rate"] == 0.75
+    assert rows[0]["pass_rate"] == 1.0
     assert rows[0]["median_test_mar"] == 1.5
     assert rows[0]["regime_summary"] == "bull:2/2;bear:1/1"
     assert rows[0]["robustness_verdict"] == "pass"

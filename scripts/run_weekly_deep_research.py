@@ -7,10 +7,26 @@ from statistics import median
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from research_lab.alerting import build_weekly_alerts, summarize_alerts, write_and_send_alerts
 from research_lab.apify_dataroma import DEFAULT_SUPERINVESTORS, run_dataroma_actor
+from research_lab.cost_monitor import run_research_cost_monitor, summarize_research_costs
+from research_lab.dashboard import validate_static_dashboard, write_static_dashboard
+from research_lab.data_quality import run_data_quality_audit
+from research_lab.deployment_gate import run_deployment_gate, summarize_deployment_gate
+from research_lab.event_study import run_event_window_study
+from research_lab.fundamentals import enrich_smartmoney_fundamentals
+from research_lab.hypothesis_dedupe import audit_hypothesis_queue
 from research_lab.parameter_sweep import run_parameter_sweep, summarize_parameter_sweep
-from research_lab.portfolio import run_portfolio_scoring, summarize_portfolio_scoring
+from research_lab.paper_ledger import run_paper_portfolio_ledger, summarize_paper_ledger
+from research_lab.portfolio import (
+    run_portfolio_combination_backtest,
+    run_portfolio_scoring,
+    summarize_portfolio_backtest,
+    summarize_portfolio_scoring,
+)
 from research_lab.robustness import summarize_weekly_robustness, write_weekly_robustness_outputs
+from research_lab.sentiment import summarize_sentiment_for_weekly
+from research_lab.signals import run_signal_generation, summarize_signals
 
 
 def _weekly_robustness_findings(robustness_rows, stability_rows):
@@ -58,10 +74,9 @@ def _true_walk_forward_regime_breakdown(rows):
     return "; ".join(f"{regime} {passed}/{total}" for regime, (passed, total) in sorted(totals.items()))
 
 
-if __name__ == "__main__":
+def main() -> None:
     root = Path.cwd()
     apify_status = "skipped: APIFY_TOKEN is not set"
-    apify_items = []
     if os.getenv("APIFY_TOKEN", "").strip():
         try:
             max_results = int(os.getenv("APIFY_DATAROMA_MAX_RESULTS", "200"))
@@ -89,7 +104,25 @@ if __name__ == "__main__":
         with sentiment_path.open(newline="", encoding="utf-8") as handle:
             sentiment_rows = list(csv.DictReader(handle))
         sentiment_status = f"available: {len(sentiment_rows)} candidates from {sentiment_path}"
-
+    portfolio_backtest = run_portfolio_combination_backtest(root, report_stem, portfolio["rows"])
+    deployment_gate = run_deployment_gate(root, report_stem, robustness["robustness_rows"], parameter_sweep["rows"], portfolio["rows"])
+    signals = run_signal_generation(root)
+    paper_ledger = run_paper_portfolio_ledger(root, report_stem, portfolio["rows"], portfolio_backtest["equity"])
+    costs = run_research_cost_monitor(root, report_stem)
+    data_quality = run_data_quality_audit(root, report_stem)
+    fundamentals = enrich_smartmoney_fundamentals(root, report_stem)
+    event_windows = run_event_window_study(root, report_stem)
+    congress = run_congress_pilot_if_available(root, report_stem)
+    try:
+        sentiment_summary = summarize_sentiment_for_weekly(root, report_stem)
+    except Exception as exc:
+        sentiment_summary = [f"- sentiment layer not available: {exc}"]
+    alert_events = build_weekly_alerts(deployment_gate["rows"], portfolio_backtest["summary"], apify_status, costs["total_estimated_cost_usd"])
+    alerts = write_and_send_alerts(root, report_stem, alert_events)
+    dedupe = audit_hypothesis_queue(root, apply=True)
+    dashboard = write_static_dashboard(root, report_stem)
+    dashboard_missing = validate_static_dashboard(dashboard["path"])
+    dashboard_smoke = "pass" if not dashboard_missing else f"fail missing={','.join(dashboard_missing)}"
     report = report_dir / f"{iso_year}-W{iso_week:02d}.md"
     lines = [
         f"# Weekly Deep Research Report - {iso_year}-W{iso_week:02d}",
@@ -105,6 +138,26 @@ if __name__ == "__main__":
         f"- stability CSV: {robustness['stability_path']}",
         f"- parameter sweep CSV: {parameter_sweep['path']}",
         f"- portfolio candidates CSV: {portfolio['path']}",
+        f"- portfolio backtest CSV: {portfolio_backtest['path']}",
+        f"- portfolio equity CSV: {portfolio_backtest['equity_path']}",
+        f"- deployment gate CSV: {deployment_gate['path']}",
+        f"- signals CSV: {signals['path']}",
+        f"- paper ledger CSV: {paper_ledger['path']}",
+        f"- paper positions CSV: {paper_ledger['positions_path']}",
+        f"- research cost CSV: {costs['path']}",
+        f"- data quality CSV: {data_quality['csv_path']}",
+        f"- fundamentals CSV: {fundamentals['csv_path']}",
+        f"- event windows CSV: {event_windows['csv_path']}",
+        f"- congress pilot: {congress['status']}",
+        f"- sentiment layer: {sentiment_summary[0].lstrip('- ')}",
+        f"- alerts CSV: {alerts['path']}",
+        f"- dashboard HTML: {dashboard['path']}",
+        f"- dashboard smoke: {dashboard_smoke}",
+        (
+            "- hypothesis dedupe: "
+            f"total={dedupe['total']} kept={dedupe['kept']} duplicates={dedupe['duplicates']} "
+            f"applied={dedupe['applied']} archive_path={dedupe['archive_path']}"
+        ),
         "",
         "## Robustness Findings",
         "",
@@ -117,6 +170,35 @@ if __name__ == "__main__":
         "## Portfolio Findings",
         "",
         *summarize_portfolio_scoring(portfolio["rows"]),
+        *summarize_portfolio_backtest(portfolio_backtest["summary"]),
+        "",
+        "## Deployment Gate",
+        "",
+        *summarize_deployment_gate(deployment_gate["rows"]),
+        "",
+        "## Paper Readiness",
+        "",
+        *summarize_signals(signals["rows"]),
+        *summarize_paper_ledger(paper_ledger["rows"], paper_ledger["positions"]),
+        "",
+        "## Research Costs",
+        "",
+        *summarize_research_costs(costs["rows"]),
+        "",
+        "## Data And Edge Audits",
+        "",
+        f"- data quality checks: {len(data_quality['rows'])} rows; report={data_quality['report_path']}",
+        f"- fundamentals coverage rows: {len(fundamentals['rows'])}; report={fundamentals['report_path']}",
+        f"- event windows measured: {len(event_windows['rows'])}; report={event_windows['report_path']}",
+        f"- congress pilot status: {congress['status']}; events={congress.get('events_path', '')}; quality={congress.get('quality_path', '')}",
+        "",
+        "## Sentiment / Attention",
+        "",
+        *sentiment_summary,
+        "",
+        "## Alerts",
+        "",
+        *summarize_alerts(alerts["rows"]),
         "",
         "## Sentiment / Attention (Read-Only)",
         "",
@@ -135,7 +217,22 @@ if __name__ == "__main__":
         "",
         "- Continue with parameter refit and portfolio layer work after the true rolling WF baseline is stable.",
         "- Expand parameter sweeps only after adding stronger data history; do not optimize on 5-year Massive data alone.",
-        "- Add portfolio combination tests once real data-backed candidates exist.",
+        "- Run real-data daily research so portfolio combination, signals, and ledger have backtestable return series.",
     ]
     report.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"weekly report written: {report}")
+
+
+def run_congress_pilot_if_available(root: Path, report_stem: str) -> dict:
+    from research_lab.congress import import_congress_disclosures
+
+    for rel in ("data/raw/congress_sample.json", "data/raw/congress_sample.csv"):
+        path = root / rel
+        if path.exists():
+            result = import_congress_disclosures(root, path, report_stem)
+            return {"status": "imported", **result}
+    return {"status": "skipped", "events_path": "", "quality_path": ""}
+
+
+if __name__ == "__main__":
+    main()

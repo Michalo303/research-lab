@@ -25,8 +25,14 @@ PARAMETER_SWEEP_COLUMNS = [
     "validation_cagr",
     "unseen_cagr",
     "unseen_max_drawdown",
+    "wf_window_count",
+    "wf_pass_rate",
+    "wf_median_test_cagr",
+    "wf_worst_test_drawdown",
+    "wf_status",
     "cost_survives",
     "verdict",
+    "final_verdict",
     "tier_reason",
 ]
 
@@ -63,8 +69,9 @@ def run_parameter_sweep(root: Path, report_stem: str, max_groups: int = 4, max_v
                 stress,
                 daily_bundle.manifest["source"],
                 float(daily_bundle.manifest.get("years", 0.0)),
+                backtest["walk_forward"],
             )
-            rows.append(_row(spec, variant_number, params, backtest["split_metrics"], stress, tier, tier_reason))
+            rows.append(_row(spec, variant_number, params, backtest["split_metrics"], stress, backtest["walk_forward"], tier, tier_reason))
 
     report_dir = root / "reports" / "weekly"
     report_dir.mkdir(parents=True, exist_ok=True)
@@ -88,7 +95,8 @@ def summarize_parameter_sweep(rows: list[dict[str, Any]]) -> list[str]:
         (
             "- best parameter group: "
             f"{best_group[0]}/{best_group[1]} pass_rate={_group_pass_rate(best_rows):.0%} "
-            f"median_unseen={_median([row['unseen_cagr'] for row in best_rows]):.2%}"
+            f"median_unseen={_median([row['unseen_cagr'] for row in best_rows]):.2%} "
+            f"median_wf_pass={_median([row.get('wf_pass_rate', 0.0) for row in best_rows]):.0%}"
         ),
     ]
     return lines
@@ -285,6 +293,7 @@ def _row(
     params: dict[str, Any],
     split_metrics: dict[str, Any],
     stress: dict[str, Any],
+    walk_forward: dict[str, Any],
     tier: str,
     tier_reason: str,
 ) -> dict[str, Any]:
@@ -292,6 +301,8 @@ def _row(
     train = split_metrics["train"]
     validation = split_metrics["validation"]
     cost_survives = bool(stress.get("survives_double_cost"))
+    wf_pass_rate = float(walk_forward.get("pass_rate", 0.0) or 0.0)
+    verdict = _variant_verdict(train["cagr"], validation["cagr"], unseen["cagr"], unseen["max_drawdown"], cost_survives, wf_pass_rate)
     return {
         "family": spec.family,
         "short_name": spec.short_name,
@@ -302,16 +313,31 @@ def _row(
         "validation_cagr": validation["cagr"],
         "unseen_cagr": unseen["cagr"],
         "unseen_max_drawdown": unseen["max_drawdown"],
+        "wf_window_count": int(walk_forward.get("window_count", 0) or 0),
+        "wf_pass_rate": wf_pass_rate,
+        "wf_median_test_cagr": float(walk_forward.get("median_test_cagr", 0.0) or 0.0),
+        "wf_worst_test_drawdown": float(walk_forward.get("worst_test_drawdown", 0.0) or 0.0),
+        "wf_status": str(walk_forward.get("status", "")),
         "cost_survives": cost_survives,
-        "verdict": _variant_verdict(train["cagr"], validation["cagr"], unseen["cagr"], unseen["max_drawdown"], cost_survives),
+        "verdict": verdict,
+        "final_verdict": verdict,
         "tier_reason": tier_reason,
     }
 
 
-def _variant_verdict(train_cagr: float, validation_cagr: float, unseen_cagr: float, unseen_dd: float, cost_survives: bool) -> str:
+def _variant_verdict(
+    train_cagr: float,
+    validation_cagr: float,
+    unseen_cagr: float,
+    unseen_dd: float,
+    cost_survives: bool,
+    wf_pass_rate: float = 0.0,
+) -> str:
     if not cost_survives:
         return "fail"
-    if train_cagr > 0 and validation_cagr > 0 and unseen_cagr > 0 and unseen_dd >= -0.15:
+    if wf_pass_rate < 0.50:
+        return "fail"
+    if train_cagr > 0 and validation_cagr > 0 and unseen_cagr > 0 and unseen_dd >= -0.15 and wf_pass_rate >= 0.67:
         return "pass"
     if validation_cagr > 0 and unseen_cagr > 0 and unseen_dd >= -0.20:
         return "borderline"

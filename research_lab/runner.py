@@ -98,12 +98,27 @@ def run_daily_research(root: Path | None = None) -> list[dict]:
             "parameter_count": len(spec.parameters),
             "variants_tried": 1,
             "data_manifest": data_bundle.manifest,
+            "data_source": data_bundle.manifest["source"],
+            "data_start": data_bundle.manifest["start"],
+            "data_end": data_bundle.manifest["end"],
+            "history_length": float(data_bundle.manifest.get("years", 0.0)),
+            "cost_model": {
+                "type": "turnover_bps",
+                "cost_bps": cost_bps,
+                "double_cost_bps": cost_bps * 2.0,
+                "turnover_source": "target_weight_diff_abs_sum",
+            },
+            "universe": list(data_bundle.manifest.get("symbols", [])),
             "cost_stress": stress,
             "metrics": backtest["metrics"],
             "split_metrics": backtest["split_metrics"],
             "walk_forward": walk_forward,
             "average_turnover": backtest["average_turnover"],
             "average_exposure": backtest["average_exposure"],
+            "return_series": _series_records(backtest["returns"]),
+            "equity_curve": _series_records(backtest["equity"]),
+            "target_weight_series": _weight_records(weights),
+            "latest_signal": _latest_signal(weights),
             "tier": tier,
             "tier_reason": tier_reason,
             "research_only": True,
@@ -201,6 +216,50 @@ def _json_safe(value):
     if isinstance(value, float) and (value != value or value in {float("inf"), float("-inf")}):
         return None
     return value
+
+
+def _series_records(series) -> list[dict]:
+    return [{"date": _format_ts(ts), "value": float(value)} for ts, value in series.dropna().items()]
+
+
+def _weight_records(weights) -> list[dict]:
+    records = []
+    for ts, row in weights.fillna(0.0).iterrows():
+        item = {"date": _format_ts(ts)}
+        for symbol, value in row.items():
+            item[str(symbol)] = float(value)
+        records.append(item)
+    return records
+
+
+def _latest_signal(weights) -> dict:
+    if weights.empty:
+        return {"as_of": "", "target_weights": {}, "previous_weights": {}, "actions": []}
+    clean = weights.fillna(0.0)
+    latest = clean.iloc[-1]
+    previous = clean.iloc[-2] if len(clean) > 1 else latest * 0.0
+    actions = []
+    for symbol in clean.columns:
+        before = float(previous.get(symbol, 0.0))
+        after = float(latest.get(symbol, 0.0))
+        delta = after - before
+        if abs(delta) < 1e-9:
+            action = "hold" if after > 0 else "flat"
+        elif delta > 0:
+            action = "buy"
+        else:
+            action = "sell"
+        actions.append({"symbol": str(symbol), "action": action, "from_weight": before, "to_weight": after, "delta": delta})
+    return {
+        "as_of": _format_ts(clean.index[-1]),
+        "target_weights": {str(symbol): float(value) for symbol, value in latest.items()},
+        "previous_weights": {str(symbol): float(value) for symbol, value in previous.items()},
+        "actions": actions,
+    }
+
+
+def _format_ts(value) -> str:
+    return value.isoformat() if hasattr(value, "isoformat") else str(value)
 
 
 def _leaderboard_row(result: dict) -> dict:
