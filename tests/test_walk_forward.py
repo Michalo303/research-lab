@@ -76,3 +76,52 @@ def test_true_walk_forward_returns_window_and_aggregate_metrics():
     assert first["test_trade_count"] >= 1
     assert 0.0 <= first["test_average_exposure"] <= 1.0
     assert first["passed"] is True
+
+
+def test_true_walk_forward_does_not_build_weights_from_full_history(monkeypatch):
+    import research_lab.walk_forward as wf
+
+    panel = _daily_panel(("SPY",), start="2016-01-01", end="2023-12-31")
+    close = panel.xs("close", level=1, axis=1)
+    full_history_end = close.index[-1]
+    expected_windows = _rolling_calendar_windows(close.index, 5, 1, 1)
+    seen_slices = []
+    spec = _buy_and_hold_spec("SPY")
+
+    def leaking_detector(spec_arg, daily_arg, intraday_arg):
+        expected = expected_windows[len(seen_slices)]
+        seen_slices.append((daily_arg.index[0], daily_arg.index[-1]))
+        assert daily_arg.index[0] == expected["train_start"]
+        assert daily_arg.index[-1] == expected["test_end"]
+        assert daily_arg.index[-1] < full_history_end
+        assert intraday_arg is None
+        return pd.DataFrame({"SPY": 1.0}, index=daily_arg.index)
+
+    monkeypatch.setattr(wf, "build_weights", leaking_detector)
+
+    result = wf.run_true_walk_forward(spec, panel, None, close, cost_bps=0.0, periods_per_year=252)
+
+    assert result["status"] == "ok"
+    assert seen_slices == [(window["train_start"], window["test_end"]) for window in expected_windows]
+
+
+def test_regime_tag_uses_unknown_when_spy_is_missing():
+    panel = _daily_panel(("QQQ",), start="2016-01-01", end="2023-12-31")
+    close = panel.xs("close", level=1, axis=1)
+    spec = _buy_and_hold_spec("QQQ")
+
+    result = run_true_walk_forward(spec, panel, None, close, cost_bps=0.0, periods_per_year=252)
+
+    assert {row["regime"] for row in result["windows"]} == {"unknown"}
+    assert "unknown:" in result["regime_summary"]
+
+
+def test_regime_precedence_marks_crisis_before_bull():
+    panel = _daily_panel(("SPY",), start="2016-01-01", end="2023-12-31")
+    close = panel.xs("close", level=1, axis=1)
+    test_index = close.loc["2021-01-01":"2021-12-31"].index
+    close.loc[test_index, "SPY"] = [100.0, 70.0] + [120.0] * (len(test_index) - 2)
+
+    from research_lab.walk_forward import _regime_for_window
+
+    assert _regime_for_window(close, test_index) == "crisis"
