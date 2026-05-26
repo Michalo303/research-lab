@@ -78,14 +78,20 @@ def fetch_eodhd_eod(symbol: str, api_key: str, start: str = "1990-01-01") -> pd.
     return out
 
 
-def coverage_row(symbol: str, frame: pd.DataFrame, min_years_ok: float = 30.0) -> EODHDCoverageRow:
+def coverage_row(
+    symbol: str,
+    frame: pd.DataFrame,
+    min_years_ok: float = 30.0,
+    min_row_coverage_ok: float = 0.90,
+) -> EODHDCoverageRow:
     start = frame.index.min()
     end = frame.index.max()
     years = max((end - start).days / 365.25, 0.0) if len(frame) else 0.0
     expected_days = len(pd.bdate_range(start=start, end=end)) if len(frame) else 0
     missing = max(expected_days - len(frame), 0)
     gaps = int((frame.index.to_series().diff().dt.days.fillna(1) > 3).sum()) if len(frame) else 0
-    status = "OK" if years >= min_years_ok else "WARNING"
+    row_coverage = (len(frame) / expected_days) if expected_days else 0.0
+    status = "OK" if years >= min_years_ok and row_coverage >= min_row_coverage_ok else "WARNING"
     return EODHDCoverageRow(
         ticker=symbol,
         start_date=str(start.date()) if len(frame) else "",

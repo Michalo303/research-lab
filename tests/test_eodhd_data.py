@@ -22,11 +22,20 @@ def test_fetch_eodhd_parses_payload(monkeypatch):
 
 
 def test_coverage_years_computed():
-    idx = pd.to_datetime(["1990-01-02", "2021-01-04"])
-    df = pd.DataFrame({"open": [1, 2], "high": [1, 2], "low": [1, 2], "close": [1, 2], "volume": [1, 2]}, index=idx)
+    idx = pd.bdate_range("1990-01-02", "2021-01-04")
+    df = pd.DataFrame({"open": 1, "high": 1, "low": 1, "close": 1, "volume": 1}, index=idx)
     row = coverage_row("SPY.US", df, min_years_ok=30)
     assert row.coverage_years >= 30
     assert row.status == "OK"
+
+
+def test_sparse_long_history_is_warning():
+    idx = pd.to_datetime(["1990-01-02", "2021-01-04"])
+    df = pd.DataFrame({"open": [1, 2], "high": [1, 2], "low": [1, 2], "close": [1, 2], "volume": [1, 2]}, index=idx)
+    row = coverage_row("SPARSE.US", df, min_years_ok=30)
+    assert row.coverage_years >= 30
+    assert row.missing_rows > 0
+    assert row.status == "WARNING"
 
 
 def test_short_history_is_warning():

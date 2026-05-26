@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import time
 import urllib.parse
 import urllib.request
@@ -81,6 +82,7 @@ def load_daily_universe(root: Path, symbols: list[str], use_yfinance: bool) -> D
     frames = {}
     source = "synthetic"
     if use_yfinance:
+        provider_error: Exception | None = None
         try:
             import yfinance as yf  # type: ignore
 
@@ -95,15 +97,27 @@ def load_daily_universe(root: Path, symbols: list[str], use_yfinance: bool) -> D
                         raw = downloaded.copy()
                         raw.columns = raw.columns.str.lower()
                     frames[symbol] = raw[["open", "high", "low", "close", "volume"]].dropna()
-        except Exception:
+            else:
+                provider_error = RuntimeError("yfinance returned no rows")
+        except Exception as exc:
+            provider_error = exc
             frames = {}
             source = "synthetic"
+        if not frames and not _allow_synthetic_fallback():
+            raise RuntimeError(
+                "yfinance daily data failed and synthetic fallback is disabled; "
+                "set RESEARCH_LAB_ALLOW_SYNTHETIC_FALLBACK=1 for smoke tests."
+            ) from provider_error
     if not frames:
         frames = {symbol: synthetic_daily_ohlcv(symbol) for symbol in symbols}
 
     panel = pd.concat(frames, axis=1).sort_index()
     manifest = _write_manifest(root, "daily_universe", source, list(frames), panel)
     return DataBundle("daily_universe", "1D", panel, manifest)
+
+
+def _allow_synthetic_fallback() -> bool:
+    return os.getenv("RESEARCH_LAB_ALLOW_SYNTHETIC_FALLBACK", "0") == "1"
 
 
 def load_massive_daily_universe(
