@@ -119,7 +119,7 @@ if __name__ == "__main__":
         "",
         "## Next Actions",
         "",
-        "- Add true rolling walk-forward windows using regenerated weights per window.",
+        "- Continue with parameter refit and portfolio layer work after the true rolling WF baseline is stable.",
         "- Expand parameter sweeps only after adding stronger data history; do not optimize on 5-year Massive data alone.",
         "- Add portfolio combination tests once real data-backed candidates exist.",
     ]
