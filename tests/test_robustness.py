@@ -17,6 +17,12 @@ def _result(strategy_id: str, cagr: float, cost: bool = True, tier: str = "C", s
         "tier": tier,
         "data_manifest": {"source": "massive", "years": 5.0},
         "split_metrics": {"train": split, "validation": split, "unseen": split},
+        "walk_forward": {
+            "method": "true_rolling_oos",
+            "pass_rate": 0.75,
+            "median_test_mar": 1.5,
+            "regime_summary": "bull:2/2;bear:1/1",
+        },
         "cost_stress": {"survives_double_cost": cost},
     }
 
@@ -26,7 +32,21 @@ def test_build_robustness_rows_flags_full_split_pass():
 
     assert rows[0]["positive_windows"] == 3
     assert rows[0]["walk_forward_score"] == 1.0
+    assert rows[0]["walk_forward_method"] == "true_rolling_oos"
+    assert rows[0]["pass_rate"] == 0.75
+    assert rows[0]["median_test_mar"] == 1.5
+    assert rows[0]["regime_summary"] == "bull:2/2;bear:1/1"
     assert rows[0]["robustness_verdict"] == "pass"
+
+
+def test_build_robustness_rows_fails_legacy_walk_forward_method():
+    item = _result("A", 0.12)
+    item["walk_forward"]["method"] = "rolling_train_then_test"
+
+    rows = build_robustness_rows([item])
+
+    assert rows[0]["walk_forward_method"] == "rolling_train_then_test"
+    assert rows[0]["robustness_verdict"] == "fail"
 
 
 def test_build_robustness_rows_fails_when_cost_stress_fails():

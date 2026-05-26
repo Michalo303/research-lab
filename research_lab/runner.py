@@ -12,6 +12,7 @@ from research_lab.registry import append_jsonl, write_allocation_model, write_le
 from research_lab.reports import write_daily_report, write_strategy_card
 from research_lab.strategies.baselines import build_weights, baseline_strategies, queued_daily_symbols, queued_hypothesis_strategies
 from research_lab.tiering import classify_strategy
+from research_lab.walk_forward import run_true_walk_forward
 
 
 def run_daily_research(root: Path | None = None) -> list[dict]:
@@ -67,13 +68,24 @@ def run_daily_research(root: Path | None = None) -> list[dict]:
             cost_bps = config.eod_cost_bps
         backtest = weighted_backtest(close, weights, cost_bps, periods_per_year)
         stress = cost_stress(close, weights, cost_bps, periods_per_year)
-        tier, tier_reason = classify_strategy(
+        walk_forward = run_true_walk_forward(
+            spec,
+            daily_bundle.data,
+            intraday_bundle.data if spec.family == "INTRADAY" else None,
+            close,
+            cost_bps,
+            periods_per_year,
+        )
+        tier_args = [
             spec.family,
             backtest["split_metrics"],
             stress,
             data_bundle.manifest["source"],
             float(data_bundle.manifest.get("years", 0.0)),
-        )
+        ]
+        if "walk_forward" in classify_strategy.__code__.co_varnames[: classify_strategy.__code__.co_argcount]:
+            tier_args.append(walk_forward)
+        tier, tier_reason = classify_strategy(*tier_args)
         result = {
             "strategy_id": strategy_id,
             "family": spec.family,
@@ -89,6 +101,7 @@ def run_daily_research(root: Path | None = None) -> list[dict]:
             "cost_stress": stress,
             "metrics": backtest["metrics"],
             "split_metrics": backtest["split_metrics"],
+            "walk_forward": walk_forward,
             "average_turnover": backtest["average_turnover"],
             "average_exposure": backtest["average_exposure"],
             "tier": tier,
