@@ -74,10 +74,10 @@ Optional free EOD data support:
 
 ```bash
 pip install -e ".[data]"
-RESEARCH_LAB_USE_YFINANCE=1 python scripts/run_daily_research.py
+RESEARCH_LAB_DATA_PROVIDER=yfinance python scripts/run_daily_research.py
 ```
 
-Without optional data support, the runner uses deterministic synthetic OHLCV data as a smoke test only. Synthetic results must not be promoted to deployment candidates.
+Without optional data support, the runner uses deterministic synthetic OHLCV data as a smoke test only. Synthetic results must not be promoted to deployment candidates. Real-provider failures are fail-fast by default; set `RESEARCH_LAB_ALLOW_SYNTHETIC_FALLBACK=1` only for intentional local smoke tests.
 
 ## Massive Stocks Starter Setup
 
@@ -110,9 +110,17 @@ After=network-online.target
 
 [Service]
 Type=oneshot
+User=trading
+Group=trading
 WorkingDirectory=/opt/trading/research-lab
 EnvironmentFile=-/opt/trading/research-lab/.env
-ExecStart=/opt/trading/research-lab/.venv/bin/python /opt/trading/research-lab/scripts/run_daily_research.py
+ExecStart=/usr/bin/flock -n /opt/trading/research-lab/tmp/research.lock /opt/trading/research-lab/.venv/bin/python /opt/trading/research-lab/scripts/run_daily_research.py
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/trading/research-lab
+TimeoutStartSec=1200
 ```
 
 ## 24/7 Autonomous Research Timers

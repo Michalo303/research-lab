@@ -9,6 +9,8 @@ venv/
 
 # Local configuration
 .env
+APPROVED_FOR_PAPER_IBKR_ORDERS.md
+APPROVED_FOR_LIVE_IBKR.md
 
 # Large or replaceable market data
 data/raw/*
@@ -24,7 +26,35 @@ data/processed/*
 # Local runtime state
 tmp/
 registry/source_items.jsonl
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+registry/*.lock
+=======
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
 
 # EODHD runtime smoke-test artifacts
 registry/eodhd_coverage_report.csv
 registry/eodhd_vendor_report.json
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
+=======
+>>>>>>> theirs
