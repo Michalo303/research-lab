@@ -17,6 +17,10 @@ ROBUSTNESS_COLUMNS = [
     "positive_windows",
     "window_count",
     "walk_forward_score",
+    "walk_forward_method",
+    "pass_rate",
+    "median_test_mar",
+    "regime_summary",
     "worst_window_cagr",
     "worst_window_drawdown",
     "unseen_cagr",
@@ -151,6 +155,7 @@ def summarize_weekly_robustness(robustness_rows: list[dict[str, Any]], stability
 
 def _robustness_row(item: dict[str, Any]) -> dict[str, Any]:
     split_metrics = item.get("split_metrics", {})
+    walk_forward = item.get("walk_forward", {})
     windows = [name for name in ("train", "validation", "unseen") if name in split_metrics]
     positive_windows = 0
     window_cagrs = []
@@ -177,16 +182,24 @@ def _robustness_row(item: dict[str, Any]) -> dict[str, Any]:
         "positive_windows": positive_windows,
         "window_count": window_count,
         "walk_forward_score": walk_forward_score,
+        "walk_forward_method": walk_forward.get("method", "missing"),
+        "pass_rate": float(walk_forward.get("pass_rate", 0.0) or 0.0),
+        "median_test_mar": float(walk_forward.get("median_test_mar", 0.0) or 0.0),
+        "regime_summary": walk_forward.get("regime_summary", ""),
         "worst_window_cagr": min(window_cagrs) if window_cagrs else 0.0,
         "worst_window_drawdown": min(window_dds) if window_dds else 0.0,
         "unseen_cagr": unseen_cagr,
         "unseen_max_drawdown": unseen_dd,
         "cost_survives": cost_survives,
-        "robustness_verdict": _robustness_verdict(walk_forward_score, unseen_cagr, unseen_dd, cost_survives),
+        "robustness_verdict": _robustness_verdict(walk_forward, walk_forward_score, unseen_cagr, unseen_dd, cost_survives),
     }
 
 
-def _robustness_verdict(walk_forward_score: float, unseen_cagr: float, unseen_dd: float, cost_survives: bool) -> str:
+def _robustness_verdict(
+    walk_forward: dict[str, Any], walk_forward_score: float, unseen_cagr: float, unseen_dd: float, cost_survives: bool
+) -> str:
+    if walk_forward.get("method") != "true_rolling_oos":
+        return "fail"
     if not cost_survives:
         return "fail"
     if walk_forward_score >= 1.0 and unseen_cagr > 0 and unseen_dd >= -0.15 and cost_survives:
