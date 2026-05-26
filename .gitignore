@@ -25,36 +25,17 @@ data/processed/*
 
 # Local runtime state
 tmp/
+backtests/runs/
+reports/
 registry/source_items.jsonl
-<<<<<<< ours
-<<<<<<< ours
-<<<<<<< ours
-<<<<<<< ours
-<<<<<<< ours
 registry/*.lock
-=======
-=======
->>>>>>> theirs
-=======
->>>>>>> theirs
-=======
->>>>>>> theirs
-=======
->>>>>>> theirs
+registry/*.jsonl
+registry/*.csv
 
 # EODHD runtime smoke-test artifacts
 registry/eodhd_coverage_report.csv
 registry/eodhd_vendor_report.json
-<<<<<<< ours
-<<<<<<< ours
-<<<<<<< ours
-<<<<<<< ours
->>>>>>> theirs
-=======
->>>>>>> theirs
-=======
->>>>>>> theirs
-=======
->>>>>>> theirs
-=======
->>>>>>> theirs
+
+# Local inventory/deployment artifacts
+INVENTORY_*
+deploy*.zip
