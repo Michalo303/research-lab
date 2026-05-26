@@ -1,7 +1,14 @@
 from __future__ import annotations
 
 
-def classify_strategy(family: str, metrics: dict, cost_stress: dict, data_source: str, data_years: float = 0.0) -> tuple[str, str]:
+def classify_strategy(
+    family: str,
+    metrics: dict,
+    cost_stress: dict,
+    data_source: str,
+    data_years: float = 0.0,
+    walk_forward: dict | None = None,
+) -> tuple[str, str]:
     unseen = metrics["unseen"]
     trade_based = family in {"SWING", "INTRADAY"}
     if unseen["cagr"] <= 0:
@@ -18,6 +25,8 @@ def classify_strategy(family: str, metrics: dict, cost_stress: dict, data_source
         return "C", "EOD history is shorter than the 10-year promotion requirement; keep as paper research."
     if family == "SWING" and data_years < 3.0:
         return "C", "Swing history is too short for promotion; keep as paper research."
+    if walk_forward is not None and not _walk_forward_passes(walk_forward):
+        return "C", "Walk-forward validation did not pass true rolling OOS promotion requirements."
     if unseen["max_drawdown"] >= -0.08 and (unseen["sharpe"] >= 1.0 or unseen["mar"] >= 1.0):
         if not trade_based or unseen["profit_factor"] >= 1.25:
             return "A", "Passes Tier A return, drawdown, cost, and trade-quality gates."
@@ -25,3 +34,14 @@ def classify_strategy(family: str, metrics: dict, cost_stress: dict, data_source
         if not trade_based or unseen["profit_factor"] >= 1.15:
             return "B", "Passes Tier B validation gates with realistic costs."
     return "C", "Promising or incomplete; requires more robustness work before promotion."
+
+
+def _walk_forward_passes(walk_forward: dict) -> bool:
+    return (
+        walk_forward.get("method") == "true_rolling_oos"
+        and walk_forward.get("status") == "ok"
+        and walk_forward.get("window_count", 0) >= 3
+        and walk_forward.get("pass_rate", 0.0) >= 0.67
+        and walk_forward.get("median_test_cagr", 0.0) > 0
+        and walk_forward.get("worst_test_drawdown", -1.0) >= -0.20
+    )
