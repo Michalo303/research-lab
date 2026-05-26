@@ -17,6 +17,7 @@ if [[ ! -f ".env" ]]; then
   cp .env.example .env
 fi
 
+mkdir -p tmp
 sudo cp deploy/systemd/trading-research-*.service "$SYSTEMD_DIR/"
 sudo cp deploy/systemd/trading-research-*.timer "$SYSTEMD_DIR/"
 sudo systemctl daemon-reload
@@ -26,4 +27,3 @@ sudo systemctl enable --now trading-research-weekly.timer
 sudo systemctl enable --now trading-research-self-improvement.timer
 
 systemctl list-timers 'trading-research-*'
-

@@ -1,0 +1,16 @@
+[Unit]
+Description=Research Lab read-only observability dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/trading/research-lab
+ExecStart=/opt/trading/research-lab/.venv/bin/python -m research_lab.dashboard_server --host 127.0.0.1 --port 8787 --root /opt/trading/research-lab
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
+
