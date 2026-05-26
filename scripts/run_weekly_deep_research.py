@@ -3,6 +3,7 @@ from datetime import date
 import csv
 import os
 import sys
+from statistics import median
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -10,6 +11,51 @@ from research_lab.apify_dataroma import DEFAULT_SUPERINVESTORS, run_dataroma_act
 from research_lab.parameter_sweep import run_parameter_sweep, summarize_parameter_sweep
 from research_lab.portfolio import run_portfolio_scoring, summarize_portfolio_scoring
 from research_lab.robustness import summarize_weekly_robustness, write_weekly_robustness_outputs
+
+
+def _weekly_robustness_findings(robustness_rows, stability_rows):
+    lines = summarize_weekly_robustness(robustness_rows, stability_rows)
+    true_rows = [row for row in robustness_rows if row.get("walk_forward_method") == "true_rolling_oos"]
+    if not true_rows:
+        return lines
+
+    true_passes = [row for row in true_rows if row.get("robustness_verdict") == "pass"]
+    pass_rates = [float(row.get("pass_rate", 0.0) or 0.0) for row in true_rows]
+    median_mars = [float(row.get("median_test_mar", 0.0) or 0.0) for row in true_rows]
+    true_summary = (
+        f"- true walk-forward pass: {len(true_passes)}/{len(true_rows)} "
+        f"(median pass_rate={median(pass_rates):.2f}, median MAR={median(median_mars):.2f})"
+    )
+
+    findings = [line for line in lines if "proxy" not in line.lower()]
+    insert_at = 1 if findings else 0
+    findings.insert(insert_at, true_summary)
+
+    regime_breakdown = _true_walk_forward_regime_breakdown(true_rows)
+    if regime_breakdown:
+        findings.insert(insert_at + 1, f"- true walk-forward regime breakdown: {regime_breakdown}")
+    return findings
+
+
+def _true_walk_forward_regime_breakdown(rows):
+    totals = {}
+    for row in rows:
+        for item in str(row.get("regime_summary", "")).split(";"):
+            if ":" not in item or "/" not in item:
+                continue
+            regime, counts = item.split(":", 1)
+            passed, total = counts.split("/", 1)
+            regime = regime.strip()
+            if not regime:
+                continue
+            try:
+                passed_count = int(passed.strip())
+                total_count = int(total.strip())
+            except ValueError:
+                continue
+            current_passed, current_total = totals.get(regime, (0, 0))
+            totals[regime] = (current_passed + passed_count, current_total + total_count)
+    return "; ".join(f"{regime} {passed}/{total}" for regime, (passed, total) in sorted(totals.items()))
 
 
 if __name__ == "__main__":
@@ -54,7 +100,7 @@ if __name__ == "__main__":
         "",
         "## Robustness Findings",
         "",
-        *summarize_weekly_robustness(robustness["robustness_rows"], robustness["stability_rows"]),
+        *_weekly_robustness_findings(robustness["robustness_rows"], robustness["stability_rows"]),
         "",
         "## Parameter Findings",
         "",
@@ -66,7 +112,7 @@ if __name__ == "__main__":
         "",
         "## Research Findings",
         "",
-        "- Walk-forward scoring uses train/validation/unseen split consistency as a conservative weekly gate.",
+        "- Walk-forward scoring uses true rolling out-of-sample windows as a conservative weekly gate.",
         "- Parameter stability is tested with bounded neighborhood sweeps around eligible real-data EOD groups.",
         "- Portfolio scoring is model-only and penalizes clustered families/strategy groups; it does not authorize allocation.",
         "- No deployment recommendation is allowed from this report.",
