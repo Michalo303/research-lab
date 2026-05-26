@@ -1,6 +1,8 @@
+import csv
 import math
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -109,3 +111,72 @@ def _gate_row(item, robustness, parameter_by_group, portfolio, config):
         "portfolio_score": portfolio.get("portfolio_score"),
         "suggested_weight_pct": portfolio.get("suggested_weight_pct"),
     }
+
+
+def run_deployment_gate(root: Path, report_stem: str, robustness_rows, parameter_rows, portfolio_rows):
+    root = Path(root)
+    report_dir = root / "reports" / "weekly"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    out_path = report_dir / f"{report_stem}_deployment_gate.csv"
+
+    robustness_by_key = {
+        (str(row.get("family", "")), str(row.get("short_name", ""))): row
+        for row in robustness_rows
+        if isinstance(row, dict)
+    }
+    parameter_by_group = {
+        (str(row.get("family", "")), str(row.get("short_name", ""))): row.get("verdict")
+        for row in parameter_rows
+        if isinstance(row, dict)
+    }
+    portfolio_by_key = {
+        (str(row.get("family", "")), str(row.get("short_name", ""))): row
+        for row in portfolio_rows
+        if isinstance(row, dict)
+    }
+
+    config = PaperGateConfig.from_env()
+    rows = []
+    for key, robustness in robustness_by_key.items():
+        portfolio = portfolio_by_key.get(key, {})
+        item = dict(robustness)
+        item.setdefault("family", key[0])
+        item.setdefault("short_name", key[1])
+        item.setdefault("strategy_id", robustness.get("strategy_id") or portfolio.get("strategy_id"))
+        row = _gate_row(item, robustness, parameter_by_group, portfolio, config)
+        rows.append(row)
+
+    with out_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()) if rows else [
+            "strategy_id",
+            "family",
+            "short_name",
+            "tier",
+            "paper_eligible",
+            "gate_verdict",
+            "walk_forward_verdict",
+            "drawdown_verdict",
+            "minimum_walk_forward_windows",
+            "reasons",
+            "portfolio_score",
+            "suggested_weight_pct",
+        ])
+        writer.writeheader()
+        writer.writerows(rows)
+
+    return {
+        "path": str(out_path),
+        "rows": rows,
+    }
+
+
+def summarize_deployment_gate(rows) -> list[str]:
+    rows = list(rows or [])
+    if not rows:
+        return ["- deployment gate: no rows"]
+    eligible = sum(1 for row in rows if row.get("paper_eligible") is True)
+    return [
+        f"- deployment gate rows: {len(rows)}",
+        f"- paper eligible: {eligible}",
+        f"- paper blocked: {len(rows) - eligible}",
+    ]

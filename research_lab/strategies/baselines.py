@@ -76,18 +76,18 @@ def queued_hypothesis_strategies(root: Path, limit: int = 4) -> list[StrategySpe
         return []
     items = [json.loads(line) for line in queue_path.read_text(encoding="utf-8").splitlines() if line.strip()]
     specs = []
-    seen_titles: set[str] = set()
-    for item in reversed(items):
-        title = item.get("title", "")
-        if title in seen_titles:
+    seen_keys: set[str] = set()
+    for item in items:
+        key = str(item.get("source_key") or item.get("hypothesis_id") or f"{item.get('family', '')}:{item.get('ticker', '')}:{item.get('title', '')}")
+        if key in seen_keys:
             continue
-        seen_titles.add(title)
+        seen_keys.add(key)
         spec = _spec_from_hypothesis(item)
         if spec:
             specs.append(spec)
         if len(specs) >= limit:
             break
-    return list(reversed(specs))
+    return specs
 
 
 def queued_daily_symbols(root: Path, limit: int = 8) -> list[str]:

@@ -192,10 +192,14 @@ class AttentionMetrics:
 
 @dataclass(frozen=True)
 class PriceSentimentThresholds:
-    sentiment_up_threshold: float = 0.25
-    attention_up_threshold: float = 2.0
-    price_up_threshold: float = 0.05
+    sentiment_up_threshold: float = 0.2
+    attention_up_threshold: float = 0.2
+    price_up_threshold: float = 0.02
     volume_up_threshold: float = 1.0
+
+
+# Backward-compatible name used by tests and earlier callers.
+SentimentThresholds = PriceSentimentThresholds
 
 
 @dataclass(frozen=True)
@@ -423,6 +427,94 @@ def classify_price_confirmed_sentiment(
     if sent_flat and price_up:
         return "stealth_momentum"
     return "unconfirmed"
+
+
+def score_texts(texts: list[str]) -> dict[str, Any]:
+    score = score_sentiment_texts(texts)
+    return {
+        "score": score.score,
+        "positive_ratio": score.positive_ratio,
+        "negative_ratio": score.negative_ratio,
+        "neutral_ratio": score.neutral_ratio,
+        "coverage": score.coverage_status,
+    }
+
+
+def classify_tags(text: str) -> tuple[list[str], list[str]]:
+    return classify_narratives(text)
+
+
+def classify_price_confirmed(
+    combined_sentiment_score: float | None,
+    attention_delta_7d: float | None,
+    price_return_5d: float | None,
+    volume_zscore: float | None,
+    thresholds: PriceSentimentThresholds | None = None,
+) -> str:
+    return classify_price_confirmed_sentiment(
+        combined_sentiment_score,
+        attention_delta_7d,
+        attention_delta_7d,
+        price_return_5d,
+        volume_zscore,
+        thresholds,
+    )
+
+
+def load_file_items(path: Path) -> list[dict[str, Any]]:
+    return _read_input_rows(Path(path))
+
+
+def build_snapshots(items: list[dict[str, Any]], as_of: datetime | None = None) -> list[dict[str, Any]]:
+    as_of = _ensure_aware(as_of or datetime.now(timezone.utc))
+    raw_items = [parsed for row in items if (parsed := _row_to_item(row)) is not None]
+    tickers = []
+    seen = set()
+    for item in raw_items:
+        if item.ticker not in seen:
+            seen.add(item.ticker)
+            tickers.append(item.ticker)
+    rows = []
+    for ticker in tickers:
+        row = snapshot_to_row(
+            build_sentiment_snapshot(
+                ticker,
+                raw_items,
+                as_of=as_of,
+                provider="file",
+                source_name="file",
+            )
+        )
+        row["research_only"] = True
+        row["not_trading_signal"] = True
+        rows.append(row)
+    return rows
+
+
+def run_apify_scaffold(max_items: int = 100, max_cost_usd: float = 2.0) -> dict[str, Any]:
+    max_items = max(1, min(int(max_items), 500))
+    max_cost_usd = max(0.1, float(max_cost_usd))
+    token = os.getenv("APIFY_TOKEN", "").strip()
+    actor_id = os.getenv("APIFY_SENTIMENT_ACTOR_ID", "").strip()
+    if not token:
+        return {"coverage_status": "missing", "reason": "APIFY_TOKEN missing", "items": [], "max_items": max_items, "max_cost_usd": max_cost_usd}
+    if not actor_id:
+        return {"coverage_status": "missing", "reason": "APIFY_SENTIMENT_ACTOR_ID missing", "items": [], "max_items": max_items, "max_cost_usd": max_cost_usd}
+    return {
+        "coverage_status": "partial",
+        "reason": "scaffold only: actor wiring and payload normalization not implemented yet",
+        "items": [],
+        "max_items": max_items,
+        "max_cost_usd": max_cost_usd,
+        "actor_id": actor_id,
+    }
+
+
+def write_outputs(root: Path, snapshots: list[dict[str, Any]], report_stem: str | None = None) -> dict[str, Path]:
+    allowed = set(SentimentSnapshot.__dataclass_fields__)
+    typed_snapshots = [SentimentSnapshot(**{k: v for k, v in row.items() if k in allowed}) for row in snapshots]
+    candidates = build_sentiment_candidates(typed_snapshots)
+    return write_sentiment_outputs(Path(root), typed_snapshots, candidates, report_stem=report_stem)
 
 
 def build_sentiment_snapshot(

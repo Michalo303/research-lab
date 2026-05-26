@@ -21,13 +21,15 @@ class LabConfig:
     @classmethod
     def from_env(cls, root: Path | None = None) -> "LabConfig":
         resolved_root = root or Path(os.getenv("RESEARCH_LAB_ROOT", ".")).resolve()
+        data_provider = os.getenv("RESEARCH_LAB_DATA_PROVIDER", "synthetic").lower()
+        use_yfinance = os.getenv("RESEARCH_LAB_USE_YFINANCE", "0") == "1" or data_provider == "yfinance"
         return cls(
             root=resolved_root,
             mode=os.getenv("RESEARCH_LAB_MODE", "research_only"),
-            data_provider=os.getenv("RESEARCH_LAB_DATA_PROVIDER", "synthetic").lower(),
+            data_provider=data_provider,
             eod_cost_bps=float(os.getenv("RESEARCH_LAB_EOD_COST_BPS", "5")),
             intraday_cost_bps=float(os.getenv("RESEARCH_LAB_INTRADAY_COST_BPS", "8")),
-            use_yfinance=os.getenv("RESEARCH_LAB_USE_YFINANCE", "0") == "1",
+            use_yfinance=use_yfinance,
             massive_api_key=os.getenv("MASSIVE_API_KEY", ""),
             massive_base_url=os.getenv("MASSIVE_BASE_URL", "https://api.massive.com"),
             massive_start_date=os.getenv("MASSIVE_START_DATE", "2021-05-24"),

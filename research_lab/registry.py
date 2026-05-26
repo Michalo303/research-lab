@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 import math
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -42,8 +43,32 @@ ALLOCATION_FIELDS = [
 def append_jsonl(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {**payload, "logged_at": datetime.now(timezone.utc).isoformat()}
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(_json_safe(payload), sort_keys=True) + "\n")
+    lock_path = path.with_name(f"{path.name}.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+b") as lock_handle:
+        if os.name == "nt":
+            import msvcrt
+
+            lock_handle.seek(0)
+            lock_handle.write(b"0")
+            lock_handle.flush()
+            lock_handle.seek(0)
+            msvcrt.locking(lock_handle.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                with path.open("a", encoding="utf-8") as handle:
+                    handle.write(json.dumps(_json_safe(payload), sort_keys=True) + "\n")
+            finally:
+                lock_handle.seek(0)
+                msvcrt.locking(lock_handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+            try:
+                with path.open("a", encoding="utf-8") as handle:
+                    handle.write(json.dumps(_json_safe(payload), sort_keys=True) + "\n")
+            finally:
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
 
 
 def write_leaderboard(path: Path, rows: list[dict]) -> None:

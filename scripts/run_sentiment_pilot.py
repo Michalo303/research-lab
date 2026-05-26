@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from research_lab.sentiment import run_sentiment_pilot
+from research_lab.sentiment import run_apify_scaffold, run_sentiment_pilot
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -15,6 +15,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--input", dest="input_path", default=None)
     parser.add_argument("--tickers", default="")
     parser.add_argument("--max-items", type=int, default=100)
+    parser.add_argument("--max-cost-usd", type=float, default=2.0)
     parser.add_argument("--dry-run", action="store_true", default=True)
     parser.add_argument("--write", action="store_true")
     parser.add_argument("--root", default=".")
@@ -22,6 +23,8 @@ def main(argv: list[str] | None = None) -> int:
 
     tickers = [ticker.strip().upper() for ticker in args.tickers.split(",") if ticker.strip()] or None
     dry_run = not args.write or args.dry_run and not args.write
+    if args.provider == "apify":
+        print(run_apify_scaffold(max_items=args.max_items, max_cost_usd=args.max_cost_usd))
     result = run_sentiment_pilot(
         root=Path(args.root),
         provider=args.provider,
