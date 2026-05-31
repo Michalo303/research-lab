@@ -67,6 +67,60 @@ def baseline_strategies() -> list[StrategySpec]:
             rules="Enter when close reclaims session VWAP and RSI14 crosses above 50 after sub-45 weakness; exit on VWAP loss or session end.",
             builder="intraday_vwap_rsi_reclaim",
         ),
+        StrategySpec(
+            family="LONGTERM",
+            asset_class="ETF",
+            timeframe="1D",
+            short_name="TREND_STRICT_CASH",
+            hypothesis="A stricter equity trend filter may reduce long-history ETF drawdowns by requiring both price and intermediate trend confirmation.",
+            parameters={"symbol": "SPY", "sma": 200, "confirmation_sma": 50},
+            rules="Hold SPY only when close is above SMA200 and SMA50 is above SMA200; otherwise hold cash.",
+            builder="long_term_strict_cash_filter",
+        ),
+        StrategySpec(
+            family="LONGTERM",
+            asset_class="ETF",
+            timeframe="1D",
+            short_name="TREND_VOL_CAP",
+            hypothesis="A capped volatility-targeted SPY trend sleeve may reduce drawdown without changing existing promotion gates.",
+            parameters={"symbol": "SPY", "sma": 200, "vol_window": 63, "target_vol": 0.10, "max_weight": 0.75},
+            rules="Hold SPY above SMA200 with realized-volatility targeting capped at 75% exposure; otherwise hold cash.",
+            builder="long_term_vol_target_cap",
+        ),
+        StrategySpec(
+            family="ROTATION",
+            asset_class="ETF",
+            timeframe="1D",
+            short_name="DUAL_MOMENTUM_DD_CB",
+            hypothesis="A drawdown circuit breaker on dual momentum may reduce crisis-period losses by forcing cash after deep SPY drawdowns.",
+            parameters={
+                "symbols": ["SPY", "QQQ", "TLT", "GLD"],
+                "lookback": 126,
+                "top_n": 2,
+                "risk_symbol": "SPY",
+                "drawdown_threshold": -0.12,
+                "recovery_sma": 200,
+            },
+            rules="Run monthly top-2 dual momentum, but move fully to cash once SPY is down 12% from its peak until SPY recovers above SMA200.",
+            builder="rotation_momentum_circuit_breaker",
+        ),
+        StrategySpec(
+            family="ROTATION",
+            asset_class="ETF",
+            timeframe="1D",
+            short_name="DEFENSIVE_ROTATION",
+            hypothesis="A simple defensive rotation into TLT, GLD, or cash during equity risk-off periods may reduce ETF drawdowns.",
+            parameters={
+                "risk_assets": ["SPY", "QQQ"],
+                "defensive_assets": ["TLT", "GLD"],
+                "lookback": 126,
+                "top_n": 1,
+                "risk_symbol": "SPY",
+                "risk_sma": 200,
+            },
+            rules="When SPY is above SMA200, hold the top risk asset by 126-day momentum; otherwise hold the stronger of TLT or GLD if its momentum is positive, else cash.",
+            builder="defensive_asset_rotation",
+        ),
     ]
 
 
@@ -111,8 +165,12 @@ def build_weights(spec: StrategySpec, daily_panel: pd.DataFrame, intraday: pd.Da
     builders = {
         "long_term_trend_filter": long_term_trend_filter,
         "long_term_vol_target": long_term_vol_target,
+        "long_term_strict_cash_filter": long_term_strict_cash_filter,
+        "long_term_vol_target_cap": long_term_vol_target_cap,
         "active_momentum_rotation": active_momentum_rotation,
         "rotation_momentum_drawdown_filter": rotation_momentum_drawdown_filter,
+        "rotation_momentum_circuit_breaker": rotation_momentum_circuit_breaker,
+        "defensive_asset_rotation": defensive_asset_rotation,
         "swing_rsi_pullback": swing_rsi_pullback,
         "swing_trend_filtered_pullback": swing_trend_filtered_pullback,
         "intraday_vwap_rsi_reclaim": intraday_vwap_rsi_reclaim,
@@ -136,6 +194,28 @@ def long_term_vol_target(spec: StrategySpec, daily_panel: pd.DataFrame, intraday
     realized_vol = returns.rolling(spec.parameters.get("vol_window", 63)).std() * np.sqrt(252)
     target_vol = spec.parameters.get("target_vol", 0.12)
     raw_weight = (target_vol / realized_vol).clip(lower=0.0, upper=1.0)
+    weight = raw_weight.where(close > sma, 0.0).fillna(0.0)
+    return pd.DataFrame({symbol: weight}, index=close.index)
+
+
+def long_term_strict_cash_filter(spec: StrategySpec, daily_panel: pd.DataFrame, intraday: pd.DataFrame | None = None) -> pd.DataFrame:
+    symbol = spec.parameters.get("symbol", "SPY")
+    close = daily_panel[(symbol, "close")]
+    slow = close.rolling(spec.parameters.get("sma", 200)).mean()
+    confirmation = close.rolling(spec.parameters.get("confirmation_sma", 50)).mean()
+    risk_on = (close > slow) & (confirmation > slow)
+    return pd.DataFrame({symbol: risk_on.astype(float).fillna(0.0)}, index=close.index)
+
+
+def long_term_vol_target_cap(spec: StrategySpec, daily_panel: pd.DataFrame, intraday: pd.DataFrame | None = None) -> pd.DataFrame:
+    symbol = spec.parameters.get("symbol", "SPY")
+    close = daily_panel[(symbol, "close")]
+    returns = close.pct_change()
+    sma = close.rolling(spec.parameters.get("sma", 200)).mean()
+    realized_vol = returns.rolling(spec.parameters.get("vol_window", 63)).std() * np.sqrt(252)
+    target_vol = spec.parameters.get("target_vol", 0.10)
+    max_weight = spec.parameters.get("max_weight", 0.75)
+    raw_weight = (target_vol / realized_vol).clip(lower=0.0, upper=max_weight)
     weight = raw_weight.where(close > sma, 0.0).fillna(0.0)
     return pd.DataFrame({symbol: weight}, index=close.index)
 
@@ -165,6 +245,54 @@ def rotation_momentum_drawdown_filter(spec: StrategySpec, daily_panel: pd.DataFr
     risk_sma = close[risk_symbol].rolling(spec.parameters.get("risk_sma", 200)).mean()
     risk_on = (close[risk_symbol] > risk_sma).astype(float)
     weights = weights.mul(risk_on, axis=0)
+    return weights
+
+
+def rotation_momentum_circuit_breaker(spec: StrategySpec, daily_panel: pd.DataFrame, intraday: pd.DataFrame | None = None) -> pd.DataFrame:
+    symbols = spec.parameters.get("symbols", ["SPY", "QQQ", "TLT", "GLD"])
+    close = daily_panel.loc[:, pd.IndexSlice[symbols, "close"]]
+    close.columns = close.columns.get_level_values(0)
+    momentum = close.pct_change(spec.parameters.get("lookback", 126))
+    weights = _monthly_top_n_weights(momentum, close.index, spec.parameters.get("top_n", 2))
+    risk_symbol = spec.parameters.get("risk_symbol", "SPY")
+    risk_close = close[risk_symbol]
+    drawdown = risk_close / risk_close.cummax() - 1.0
+    recovery = risk_close.rolling(spec.parameters.get("recovery_sma", 200)).mean()
+    threshold = spec.parameters.get("drawdown_threshold", -0.12)
+    risk_on = []
+    circuit_open = False
+    for ts in risk_close.index:
+        if circuit_open:
+            if risk_close.loc[ts] > recovery.loc[ts]:
+                circuit_open = False
+        elif drawdown.loc[ts] <= threshold:
+            circuit_open = True
+        risk_on.append(0.0 if circuit_open else 1.0)
+    return weights.mul(pd.Series(risk_on, index=close.index), axis=0)
+
+
+def defensive_asset_rotation(spec: StrategySpec, daily_panel: pd.DataFrame, intraday: pd.DataFrame | None = None) -> pd.DataFrame:
+    risk_assets = spec.parameters.get("risk_assets", ["SPY", "QQQ"])
+    defensive_assets = spec.parameters.get("defensive_assets", ["TLT", "GLD"])
+    symbols = list(dict.fromkeys([*risk_assets, *defensive_assets]))
+    close = daily_panel.loc[:, pd.IndexSlice[symbols, "close"]]
+    close.columns = close.columns.get_level_values(0)
+    lookback = spec.parameters.get("lookback", 126)
+    momentum = close.pct_change(lookback)
+    risk_symbol = spec.parameters.get("risk_symbol", "SPY")
+    risk_sma = close[risk_symbol].rolling(spec.parameters.get("risk_sma", 200)).mean()
+    risk_on = close[risk_symbol] > risk_sma
+    weights = pd.DataFrame(0.0, index=close.index, columns=symbols)
+    top_n = int(spec.parameters.get("top_n", 1))
+    for ts in close.index:
+        if risk_on.loc[ts]:
+            selected = _select_positive_momentum(momentum.loc[ts, risk_assets], top_n, require_positive=False)
+        else:
+            selected = _select_positive_momentum(momentum.loc[ts, defensive_assets], 1, require_positive=True)
+        if selected:
+            allocation = 1.0 / len(selected)
+            for symbol in selected:
+                weights.loc[ts, symbol] = allocation
     return weights
 
 
@@ -242,6 +370,24 @@ def _rsi(close: pd.Series, window: int = 14) -> pd.Series:
     loss = -delta.clip(upper=0.0).rolling(window).mean()
     rs = gain / loss.replace(0, np.nan)
     return 100.0 - (100.0 / (1.0 + rs))
+
+
+def _monthly_top_n_weights(momentum: pd.DataFrame, index: pd.Index, top_n: int) -> pd.DataFrame:
+    month_end_signal = momentum.resample("ME").last()
+    ranks = month_end_signal.rank(axis=1, ascending=False, method="first")
+    selected = (ranks <= top_n).astype(float) / float(top_n)
+    weights = selected.reindex(index, method="ffill").fillna(0.0)
+    if weights.sum(axis=1).eq(0.0).all() and len(momentum) > 0:
+        ranks = momentum.rank(axis=1, ascending=False, method="first")
+        weights = ((ranks <= top_n).astype(float) / float(top_n)).fillna(0.0)
+    return weights
+
+
+def _select_positive_momentum(row: pd.Series, top_n: int, require_positive: bool) -> list[str]:
+    clean = row.dropna().sort_values(ascending=False)
+    if require_positive:
+        clean = clean[clean > 0]
+    return [str(symbol) for symbol in clean.head(top_n).index]
 
 
 def _spec_from_hypothesis(item: dict) -> StrategySpec | None:
