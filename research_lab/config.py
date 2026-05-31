@@ -17,6 +17,8 @@ class LabConfig:
     massive_base_url: str = "https://api.massive.com"
     massive_start_date: str = "2021-05-24"
     massive_adjusted: bool = True
+    eodhd_api_key: str = ""
+    eodhd_start_date: str = "1990-01-01"
 
     @classmethod
     def from_env(cls, root: Path | None = None) -> "LabConfig":
@@ -34,6 +36,8 @@ class LabConfig:
             massive_base_url=os.getenv("MASSIVE_BASE_URL", "https://api.massive.com"),
             massive_start_date=os.getenv("MASSIVE_START_DATE", "2021-05-24"),
             massive_adjusted=os.getenv("MASSIVE_ADJUSTED", "true").lower() in {"1", "true", "yes"},
+            eodhd_api_key=os.getenv("EODHD_API_KEY", ""),
+            eodhd_start_date=os.getenv("EODHD_START_DATE", "1990-01-01"),
         )
 
 

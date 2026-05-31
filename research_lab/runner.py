@@ -7,7 +7,7 @@ import re
 
 from research_lab.backtest import close_frame, cost_stress, weighted_backtest
 from research_lab.config import LabConfig, ensure_project_structure
-from research_lab.data import load_daily_universe, load_intraday_symbol, load_massive_daily_universe
+from research_lab.data import DataBundle, load_daily_universe, load_eodhd_daily_universe, load_intraday_symbol, load_massive_daily_universe
 from research_lab.registry import append_jsonl, write_allocation_model, write_leaderboard
 from research_lab.reports import write_daily_report, write_strategy_card
 from research_lab.strategies.baselines import build_weights, baseline_strategies, queued_daily_symbols, queued_hypothesis_strategies
@@ -21,19 +21,8 @@ def run_daily_research(root: Path | None = None) -> list[dict]:
         raise RuntimeError("Refusing to run unless RESEARCH_LAB_MODE=research_only.")
     ensure_project_structure(config.root)
 
-    if config.data_provider == "massive":
-        daily_symbols = _unique(["SPY", "QQQ", "TLT", "GLD"] + queued_daily_symbols(config.root, limit=8))
-        daily_bundle = load_massive_daily_universe(
-            config.root,
-            daily_symbols,
-            config.massive_api_key,
-            config.massive_base_url,
-            config.massive_start_date,
-            config.massive_adjusted,
-        )
-    else:
-        daily_symbols = ["SPY", "QQQ", "TLT", "GLD", "BTC-USD"]
-        daily_bundle = load_daily_universe(config.root, daily_symbols, config.use_yfinance)
+    daily_bundle = _load_daily_data_bundle(config)
+    _print_daily_data_diagnostics(daily_bundle)
     intraday_bundle = load_intraday_symbol(config.root, "BTCUSDT")
 
     results = []
@@ -171,6 +160,8 @@ def _persist_result(root: Path, result: dict) -> None:
             "tier": result["tier"],
             "hypothesis": result["hypothesis"],
             "tier_reason": result["tier_reason"],
+            "data_source": result["data_manifest"]["source"],
+            "data_years": result["data_manifest"].get("years", 0.0),
         },
     )
     write_strategy_card(root / "reports" / "strategy_cards" / f"{result['strategy_id']}.md", result)
@@ -282,3 +273,87 @@ def _leaderboard_row(result: dict) -> dict:
         "average_exposure": result["average_exposure"],
         "average_turnover": result["average_turnover"],
     }
+
+
+def _load_daily_data_bundle(config: LabConfig) -> DataBundle:
+    eod_symbols = _unique(["SPY", "QQQ", "TLT", "GLD"] + queued_daily_symbols(config.root, limit=8))
+    fallback_reason = ""
+    if config.eodhd_api_key:
+        try:
+            bundle = load_eodhd_daily_universe(config.root, eod_symbols, config.eodhd_api_key, config.eodhd_start_date)
+            _print_daily_selection_trace(config, bundle, "")
+            return bundle
+        except Exception as exc:
+            fallback_reason = f"EODHD failed: {exc}"
+            if config.data_provider == "eodhd":
+                raise RuntimeError("EODHD daily data failed and no fallback provider was configured") from exc
+
+    if config.data_provider == "eodhd":
+        raise ValueError("EODHD_API_KEY is required when RESEARCH_LAB_DATA_PROVIDER=eodhd")
+
+    if config.data_provider == "massive":
+        bundle = load_massive_daily_universe(
+            config.root,
+            eod_symbols,
+            config.massive_api_key,
+            config.massive_base_url,
+            config.massive_start_date,
+            config.massive_adjusted,
+        )
+        if fallback_reason:
+            _mark_fallback(bundle, fallback_reason)
+        _warn_if_eodhd_not_selected(config, bundle, fallback_reason)
+        _print_daily_selection_trace(config, bundle, fallback_reason)
+        return bundle
+
+    synthetic_symbols = ["SPY", "QQQ", "TLT", "GLD", "BTC-USD"]
+    bundle = load_daily_universe(config.root, synthetic_symbols, config.use_yfinance)
+    if fallback_reason:
+        _mark_fallback(bundle, fallback_reason)
+    _warn_if_eodhd_not_selected(config, bundle, fallback_reason)
+    _print_daily_selection_trace(config, bundle, fallback_reason)
+    return bundle
+
+
+def _mark_fallback(bundle: DataBundle, reason: str) -> None:
+    bundle.manifest["fallback_used"] = True
+    bundle.manifest["fallback_reason"] = reason
+    for row in bundle.manifest.get("symbol_diagnostics", []):
+        row["fallback_used"] = True
+        row["fallback_reason"] = reason
+
+
+def _warn_if_eodhd_not_selected(config: LabConfig, bundle: DataBundle, reason: str) -> None:
+    if config.eodhd_api_key and bundle.manifest.get("source") != "eodhd":
+        suffix = f"; reason={reason}" if reason else ""
+        print(
+            "WARNING: EODHD credentials exist but EODHD was not selected; "
+            f"selected_provider={bundle.manifest.get('source')}{suffix}"
+        )
+
+
+def _print_daily_selection_trace(config: LabConfig, bundle: DataBundle, reason: str) -> None:
+    parts = [
+        "daily_data_selection",
+        f"requested_provider={config.data_provider}",
+        f"selected_provider={bundle.manifest.get('source')}",
+        f"eodhd_credentials_present={bool(config.eodhd_api_key)}",
+        f"massive_credentials_present={bool(config.massive_api_key)}",
+    ]
+    if reason:
+        parts.append(f"fallback_reason={reason}")
+    print(" | ".join(parts))
+
+
+def _print_daily_data_diagnostics(bundle: DataBundle) -> None:
+    for row in bundle.manifest.get("symbol_diagnostics", []):
+        print(
+            "daily_data_symbol"
+            f" | requested_symbol={row.get('requested_symbol', '')}"
+            f" | selected_provider={row.get('selected_provider', bundle.manifest.get('source', ''))}"
+            f" | fallback_used={row.get('fallback_used', False)}"
+            f" | first_date={row.get('first_date', '')}"
+            f" | last_date={row.get('last_date', '')}"
+            f" | daily_bars={row.get('daily_bars', 0)}"
+            f" | history_years={float(row.get('history_years', 0.0)):.2f}"
+        )

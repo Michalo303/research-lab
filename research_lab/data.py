@@ -113,6 +113,9 @@ def load_daily_universe(root: Path, symbols: list[str], use_yfinance: bool) -> D
 
     panel = pd.concat(frames, axis=1).sort_index()
     manifest = _write_manifest(root, "daily_universe", source, list(frames), panel)
+    manifest["requested_symbols"] = symbols
+    manifest["symbol_diagnostics"] = _symbol_diagnostics(symbols, source, frames, fallback_used=False)
+    (root / "data" / "manifests" / "daily_universe.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return DataBundle("daily_universe", "1D", panel, manifest)
 
 
@@ -150,11 +153,56 @@ def load_massive_daily_universe(
     manifest.update(
         {
             "provider": "massive",
+            "requested_symbols": symbols,
             "base_url": base_url,
             "adjusted": adjusted,
             "api_key_present": True,
             "stored_csv": str(raw_path),
             "failed_symbols": failed_symbols,
+            "symbol_diagnostics": _symbol_diagnostics(symbols, "massive", frames, fallback_used=False),
+        }
+    )
+    (root / "data" / "manifests" / "daily_universe.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    return DataBundle("daily_universe", "1D", panel, manifest)
+
+
+def load_eodhd_daily_universe(
+    root: Path,
+    symbols: list[str],
+    api_key: str,
+    start_date: str = "1990-01-01",
+) -> DataBundle:
+    if not api_key:
+        raise ValueError("EODHD_API_KEY is required for the eodhd data provider")
+    from research_lab.data_eodhd import fetch_eodhd_eod
+
+    frames = {}
+    provider_symbols = {}
+    for symbol in symbols:
+        provider_symbol = _eodhd_symbol(symbol)
+        provider_symbols[symbol] = provider_symbol
+        frame = fetch_eodhd_eod(provider_symbol, api_key=api_key, start=start_date)
+        frames[symbol] = frame
+        time.sleep(0.15)
+    panel = pd.concat(frames, axis=1).sort_index()
+    raw_path = root / "data" / "processed" / "eodhd_daily_universe.csv"
+    raw_path.parent.mkdir(parents=True, exist_ok=True)
+    panel.to_csv(raw_path)
+    manifest = _write_manifest(root, "daily_universe", "eodhd", list(frames), panel)
+    manifest.update(
+        {
+            "provider": "eodhd",
+            "requested_symbols": symbols,
+            "provider_symbols": provider_symbols,
+            "api_key_present": True,
+            "stored_csv": str(raw_path),
+            "symbol_diagnostics": _symbol_diagnostics(
+                symbols,
+                "eodhd",
+                frames,
+                fallback_used=False,
+                provider_symbols=provider_symbols,
+            ),
         }
     )
     (root / "data" / "manifests" / "daily_universe.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
@@ -188,6 +236,55 @@ def _write_manifest(root: Path, name: str, source: str, symbols: list[str], data
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return payload
+
+
+def _symbol_diagnostics(
+    requested_symbols: list[str],
+    provider: str,
+    frames: dict[str, pd.DataFrame],
+    fallback_used: bool,
+    provider_symbols: dict[str, str] | None = None,
+) -> list[dict]:
+    rows = []
+    provider_symbols = provider_symbols or {}
+    for symbol in requested_symbols:
+        frame = frames.get(symbol)
+        if frame is None or frame.empty:
+            rows.append(
+                {
+                    "requested_symbol": symbol,
+                    "provider_symbol": provider_symbols.get(symbol, symbol),
+                    "selected_provider": provider,
+                    "fallback_used": fallback_used,
+                    "first_date": "",
+                    "last_date": "",
+                    "daily_bars": 0,
+                    "history_years": 0.0,
+                }
+            )
+            continue
+        start = frame.index.min()
+        end = frame.index.max()
+        years = max((end - start).days / 365.25, 0.0) if isinstance(start, pd.Timestamp) and isinstance(end, pd.Timestamp) else 0.0
+        rows.append(
+            {
+                "requested_symbol": symbol,
+                "provider_symbol": provider_symbols.get(symbol, symbol),
+                "selected_provider": provider,
+                "fallback_used": fallback_used,
+                "first_date": str(start.date()) if hasattr(start, "date") else str(start),
+                "last_date": str(end.date()) if hasattr(end, "date") else str(end),
+                "daily_bars": int(len(frame)),
+                "history_years": round(years, 2),
+            }
+        )
+    return rows
+
+
+def _eodhd_symbol(symbol: str) -> str:
+    if "." in symbol:
+        return symbol
+    return f"{symbol}.US"
 
 
 def _fetch_massive_daily(symbol: str, api_key: str, base_url: str, start_date: str, adjusted: bool) -> pd.DataFrame:

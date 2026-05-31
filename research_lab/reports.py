@@ -59,16 +59,17 @@ def write_daily_report(path: Path, results: list[dict]) -> None:
     source_note = _source_note(results)
     next_actions = _next_actions(results)
     rows = [
-        "| strategy_id | family | asset | timeframe | train | validation | unseen | max_dd | tier |",
-        "|---|---|---|---|---:|---:|---:|---:|---|",
+        "| strategy_id | family | asset | timeframe | data_source | train | validation | unseen | max_dd | tier |",
+        "|---|---|---|---|---|---:|---:|---:|---:|---|",
     ]
     for r in results:
         rows.append(
-            "| {strategy_id} | {family} | {asset_class} | {timeframe} | {train:.2%} | {validation:.2%} | {unseen:.2%} | {max_dd:.2%} | {tier} |".format(
+            "| {strategy_id} | {family} | {asset_class} | {timeframe} | {data_source} | {train:.2%} | {validation:.2%} | {unseen:.2%} | {max_dd:.2%} | {tier} |".format(
                 strategy_id=r["strategy_id"],
                 family=r["family"],
                 asset_class=r["asset_class"],
                 timeframe=r["timeframe"],
+                data_source=r["data_manifest"]["source"],
                 train=r["split_metrics"]["train"]["cagr"],
                 validation=r["split_metrics"]["validation"]["cagr"],
                 unseen=r["split_metrics"]["unseen"]["cagr"],
@@ -118,6 +119,9 @@ def _source_note(results: list[dict]) -> str:
     if "massive" in sources:
         years = max(float(r["data_manifest"].get("years", 0.0)) for r in results if r["data_manifest"]["source"] == "massive")
         return f"Massive real EOD data is enabled, but available history is only {years:.1f} years; long-term promotion still needs 10+ years plus walk-forward validation."
+    if "eodhd" in sources:
+        years = max(float(r["data_manifest"].get("years", 0.0)) for r in results if r["data_manifest"]["source"] == "eodhd")
+        return f"EODHD real EOD data is enabled with {years:.1f} years of available history; strategy promotion still depends on existing validation gates."
     if "yfinance" in sources:
         return "Free EOD data is enabled; data integrity, adjusted prices, and survivorship assumptions still need validation."
     return "Synthetic data cannot validate capital allocation; real data ingestion and walk-forward stability remain required."
@@ -130,6 +134,12 @@ def _next_actions(results: list[dict]) -> list[str]:
             "- Run daily Massive-backed research for 7-14 days before judging the subscription.",
             "- Add walk-forward and parameter-neighborhood stability for the weekly deep run.",
             "- Add a longer-history EOD source before promoting long-term or rotation systems above Tier C.",
+        ]
+    if "eodhd" in sources:
+        return [
+            "- Monitor EODHD-backed daily research for provider stability and symbol coverage gaps.",
+            "- Add walk-forward and parameter-neighborhood stability for the weekly deep run.",
+            "- Keep deployment blocked until paper validation and existing gates pass.",
         ]
     return [
         "- Enable real EOD data ingestion on Hetzner if network/dependencies allow it.",
