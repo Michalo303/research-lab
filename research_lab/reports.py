@@ -58,6 +58,7 @@ def write_daily_report(path: Path, results: list[dict]) -> None:
     sources = sorted({r["data_manifest"]["source"] for r in results})
     source_note = _source_note(results)
     next_actions = _next_actions(results)
+    rejection_diagnostics = _rejection_diagnostics_rows(rejected)
     rows = [
         "| strategy_id | family | asset | timeframe | data_source | train | validation | unseen | max_dd | tier |",
         "|---|---|---|---|---|---:|---:|---:|---:|---|",
@@ -103,6 +104,10 @@ def write_daily_report(path: Path, results: list[dict]) -> None:
         "",
         *(f"- {r['strategy_id']}: {r['tier_reason']}" for r in rejected),
         "",
+        "## Rejection Diagnostics",
+        "",
+        *rejection_diagnostics,
+        "",
         "## Leaderboard Changes",
         "",
         "- Leaderboard and allocation model were regenerated from the current run.",
@@ -112,6 +117,101 @@ def write_daily_report(path: Path, results: list[dict]) -> None:
         *next_actions,
     ]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _rejection_diagnostics_rows(rejected: list[dict]) -> list[str]:
+    if not rejected:
+        return ["- none"]
+    rows = [
+        "| strategy_id | primary rejection reason | secondary rejection reasons | failed metric | actual value | required threshold |",
+        "|---|---|---|---|---:|---:|",
+    ]
+    for result in rejected:
+        diagnostic = _rejection_diagnostic(result)
+        rows.append(
+            "| {strategy_id} | {primary_reason} | {secondary_reasons} | {metric} | {actual} | {threshold} |".format(
+                strategy_id=result["strategy_id"],
+                primary_reason=diagnostic["primary_reason"],
+                secondary_reasons=diagnostic["secondary_reasons"],
+                metric=diagnostic["metric"],
+                actual=diagnostic["actual"],
+                threshold=diagnostic["threshold"],
+            )
+        )
+    return rows
+
+
+def _rejection_diagnostic(result: dict) -> dict:
+    failures = _hard_rejection_failures(result)
+    primary_reason = result.get("tier_reason", "")
+    primary = next((failure for failure in failures if failure["reason"] == primary_reason), None)
+    if primary is None:
+        primary = failures[0] if failures else _fallback_rejection_failure(result)
+    secondary = [failure["reason"] for failure in failures if failure["reason"] != primary["reason"]]
+    return {
+        "primary_reason": primary_reason or primary["reason"],
+        "secondary_reasons": "; ".join(secondary) if secondary else "none",
+        "metric": primary["metric"],
+        "actual": primary["actual"],
+        "threshold": primary["threshold"],
+    }
+
+
+def _hard_rejection_failures(result: dict) -> list[dict]:
+    unseen = result.get("split_metrics", {}).get("unseen", {})
+    cost_stress = result.get("cost_stress", {})
+    family = result.get("family", "")
+    failures = []
+    cagr = float(unseen.get("cagr", 0.0))
+    max_drawdown = float(unseen.get("max_drawdown", 0.0))
+    trade_count = int(unseen.get("trade_count", 0))
+    if cagr <= 0:
+        failures.append(_failure("Negative unseen result.", "unseen_cagr", _format_percent(cagr), "> 0.00%"))
+    if max_drawdown < -0.15:
+        failures.append(
+            _failure(
+                "Unseen max drawdown exceeds 15%.",
+                "unseen_max_drawdown",
+                _format_percent(max_drawdown),
+                ">= -15.00%",
+            )
+        )
+    if family in {"SWING", "INTRADAY"} and trade_count < 100:
+        failures.append(
+            _failure(
+                "Too few unseen trades for a trade-based strategy.",
+                "unseen_trades",
+                str(trade_count),
+                ">= 100",
+            )
+        )
+    if not bool(cost_stress.get("survives_double_cost", True)):
+        failures.append(
+            _failure(
+                "Double transaction-cost stress destroys unseen profitability.",
+                "double_cost_unseen_cagr",
+                _format_percent(float(cost_stress.get("double_unseen_cagr", 0.0))),
+                "> 0.00%",
+            )
+        )
+    return failures
+
+
+def _fallback_rejection_failure(result: dict) -> dict:
+    return _failure(
+        result.get("tier_reason", "Rejected by tiering logic."),
+        "tier_reason",
+        result.get("tier_reason", ""),
+        "non-rejected tier",
+    )
+
+
+def _failure(reason: str, metric: str, actual: str, threshold: str) -> dict:
+    return {"reason": reason, "metric": metric, "actual": actual, "threshold": threshold}
+
+
+def _format_percent(value: float) -> str:
+    return f"{value:.2%}"
 
 
 def _source_note(results: list[dict]) -> str:
