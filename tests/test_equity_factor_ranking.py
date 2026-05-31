@@ -118,6 +118,19 @@ def test_composite_score_uses_only_active_available_factor_groups():
     pd.testing.assert_frame_equal(composite, expected)
 
 
+def test_composite_score_renormalizes_weights_per_available_row():
+    dates = pd.bdate_range("2026-01-02", periods=2)
+    group_scores = {
+        "momentum": pd.DataFrame({"A": [1.0, 1.0]}, index=dates),
+        "trend": pd.DataFrame({"A": [np.nan, 0.0]}, index=dates),
+    }
+
+    composite = combine_factor_groups(group_scores, {"momentum": 0.30, "trend": 0.70})
+
+    assert composite.loc[dates[0], "A"] == pytest.approx(1.0)
+    assert composite.loc[dates[1], "A"] == pytest.approx(0.30)
+
+
 def test_top_n_selection_returns_expected_symbols_in_toy_dataset():
     scores = pd.DataFrame(
         {"AAA": [0.8], "BBB": [0.7], "CCC": [0.9]},
@@ -127,6 +140,17 @@ def test_top_n_selection_returns_expected_symbols_in_toy_dataset():
     selected = select_top_n(scores, "2026-01-02", top_n=2)
 
     assert selected.index.tolist() == ["CCC", "AAA"]
+
+
+def test_top_n_selection_orders_equal_scores_by_symbol():
+    scores = pd.DataFrame(
+        {"BBB": [0.8], "CCC": [0.7], "AAA": [0.8]},
+        index=pd.to_datetime(["2026-01-02"]),
+    )
+
+    selected = select_top_n(scores, "2026-01-02", top_n=2)
+
+    assert selected.index.tolist() == ["AAA", "BBB"]
 
 
 def test_equal_weights_sum_to_target_exposure():

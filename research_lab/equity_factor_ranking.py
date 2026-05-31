@@ -153,13 +153,19 @@ def combine_factor_groups(group_scores: dict[str, pd.DataFrame], profile: dict[s
     if not active:
         return pd.DataFrame()
 
-    total_weight = sum(active.values())
-    normalized = {group: weight / total_weight for group, weight in active.items()}
-    composite: pd.DataFrame | None = None
-    for group, weight in normalized.items():
-        contribution = group_scores[group] * weight
-        composite = contribution if composite is None else composite.add(contribution, fill_value=0.0)
-    return composite if composite is not None else pd.DataFrame()
+    weighted_sum: pd.DataFrame | None = None
+    available_weight: pd.DataFrame | None = None
+    for group, weight in active.items():
+        frame = group_scores[group].astype(float)
+        available = frame.notna()
+        contribution = frame.where(available, 0.0) * weight
+        weight_frame = available.astype(float) * weight
+        weighted_sum = contribution if weighted_sum is None else weighted_sum.add(contribution, fill_value=0.0)
+        available_weight = weight_frame if available_weight is None else available_weight.add(weight_frame, fill_value=0.0)
+
+    if weighted_sum is None or available_weight is None:
+        return pd.DataFrame()
+    return weighted_sum.divide(available_weight.where(available_weight > 0.0))
 
 
 def missing_fundamentals_diagnostics(fundamental_data_available: bool = False) -> dict[str, Any]:
