@@ -127,6 +127,14 @@ def build_fundamental_factor_snapshot(
     diagnostics["insufficient_history_for_yoy_growth"] = sorted(diagnostics["insufficient_history_for_yoy_growth"])
     diagnostics["unavailable_dilution_fields"] = sorted(diagnostics["unavailable_dilution_fields"])
     diagnostics["denominator_zero_warnings"] = sorted(diagnostics["denominator_zero_warnings"])
+    diagnostics["same_period_missing_component"] = sorted(diagnostics["same_period_missing_component"])
+    diagnostics["same_period_alignment_failed"] = sorted(diagnostics["same_period_alignment_failed"])
+    diagnostics["missing_current_period_component"] = sorted(diagnostics["missing_current_period_component"])
+    diagnostics["missing_prior_comparable_period_for_yoy"] = sorted(
+        diagnostics["missing_prior_comparable_period_for_yoy"]
+    )
+    diagnostics["cross_statement_period_mismatch"] = sorted(diagnostics["cross_statement_period_mismatch"])
+    diagnostics["no_older_field_fallback_used"] = sorted(diagnostics["no_older_field_fallback_used"])
     return FundamentalFactorSnapshotResult(
         asof_date=_date_label(asof_date),
         period_type=period_type,
@@ -142,18 +150,116 @@ def _build_symbol_factors(
 ) -> dict[str, float]:
     factors: dict[str, float] = {}
     symbol_records = [record for record in records if _normalize_symbol(record.symbol) == symbol]
+    current_period = _latest_period_end_date(symbol_records)
 
-    revenue = _latest(symbol_records, "income_statement", FIELD_ALIASES["revenue"])
-    gross_profit = _latest(symbol_records, "income_statement", FIELD_ALIASES["gross_profit"])
-    operating_income = _latest(symbol_records, "income_statement", FIELD_ALIASES["operating_income"])
-    net_income = _latest(symbol_records, "income_statement", FIELD_ALIASES["net_income"])
-    total_assets = _latest(symbol_records, "balance_sheet", FIELD_ALIASES["total_assets"])
-    total_equity = _latest(symbol_records, "balance_sheet", FIELD_ALIASES["total_equity"])
-    total_debt = _latest_debt(symbol_records)
-    cash = _latest(symbol_records, "balance_sheet", FIELD_ALIASES["cash"])
-    interest_expense = _latest(symbol_records, "income_statement", FIELD_ALIASES["interest_expense"])
-    free_cash_flow = _latest_free_cash_flow(symbol_records)
-    shares = _latest(symbol_records, "income_statement", FIELD_ALIASES["shares"])
+    revenue = _component_at_period(
+        symbol, "revenue_growth_yoy", "revenue", symbol_records, "income_statement", FIELD_ALIASES["revenue"], current_period, diagnostics
+    )
+    gross_profit = _component_at_period(
+        symbol, "gross_margin", "gross_profit", symbol_records, "income_statement", FIELD_ALIASES["gross_profit"], current_period, diagnostics
+    )
+    operating_income = _component_at_period(
+        symbol,
+        "operating_income_growth_yoy",
+        "operating_income",
+        symbol_records,
+        "income_statement",
+        FIELD_ALIASES["operating_income"],
+        current_period,
+        diagnostics,
+    )
+    net_income = _component_at_period(
+        symbol,
+        "net_income_growth_yoy",
+        "net_income",
+        symbol_records,
+        "income_statement",
+        FIELD_ALIASES["net_income"],
+        current_period,
+        diagnostics,
+    )
+    total_assets = _component_at_period(
+        symbol,
+        "return_on_assets",
+        "total_assets",
+        symbol_records,
+        "balance_sheet",
+        FIELD_ALIASES["total_assets"],
+        current_period,
+        diagnostics,
+        cross_statement=True,
+    )
+    total_equity = _component_at_period(
+        symbol,
+        "return_on_equity",
+        "total_equity",
+        symbol_records,
+        "balance_sheet",
+        FIELD_ALIASES["total_equity"],
+        current_period,
+        diagnostics,
+        cross_statement=True,
+    )
+    total_debt = _debt_at_period(symbol, "debt_to_assets", symbol_records, current_period, diagnostics)
+    cash = _component_at_period(
+        symbol, "net_debt", "cash", symbol_records, "balance_sheet", FIELD_ALIASES["cash"], current_period, diagnostics
+    )
+    interest_expense = _component_at_period(
+        symbol,
+        "interest_coverage",
+        "interest_expense",
+        symbol_records,
+        "income_statement",
+        FIELD_ALIASES["interest_expense"],
+        current_period,
+        diagnostics,
+    )
+    operating_income_for_interest = _component_at_period(
+        symbol,
+        "interest_coverage",
+        "operating_income",
+        symbol_records,
+        "income_statement",
+        FIELD_ALIASES["operating_income"],
+        current_period,
+        diagnostics,
+    )
+    free_cash_flow = _free_cash_flow_at_period(symbol, "free_cash_flow", symbol_records, current_period, diagnostics)
+    shares = _component_at_period(
+        symbol,
+        "share_count_growth_yoy",
+        "shares",
+        symbol_records,
+        "income_statement",
+        FIELD_ALIASES["shares"],
+        current_period,
+        diagnostics,
+    )
+
+    operating_income_for_margin = _component_at_period(
+        symbol,
+        "operating_margin",
+        "operating_income",
+        symbol_records,
+        "income_statement",
+        FIELD_ALIASES["operating_income"],
+        current_period,
+        diagnostics,
+    )
+    net_income_for_margin = _component_at_period(
+        symbol,
+        "net_margin",
+        "net_income",
+        symbol_records,
+        "income_statement",
+        FIELD_ALIASES["net_income"],
+        current_period,
+        diagnostics,
+    )
+    total_debt_for_equity = _debt_at_period(symbol, "debt_to_equity", symbol_records, current_period, diagnostics)
+    free_cash_flow_for_margin = _free_cash_flow_at_period(
+        symbol, "fcf_margin", symbol_records, current_period, diagnostics, component_label="free_cash_flow"
+    )
 
     factors["revenue_growth_yoy"] = _growth_yoy(symbol, "revenue_growth_yoy", revenue, symbol_records, "income_statement", FIELD_ALIASES["revenue"], diagnostics)
     factors["net_income_growth_yoy"] = _growth_yoy(symbol, "net_income_growth_yoy", net_income, symbol_records, "income_statement", FIELD_ALIASES["net_income"], diagnostics)
@@ -161,23 +267,23 @@ def _build_symbol_factors(
     factors["fcf_growth_yoy"] = _fcf_growth_yoy(symbol, free_cash_flow, symbol_records, diagnostics)
 
     factors["gross_margin"] = _ratio(symbol, "gross_margin", gross_profit, revenue, "revenue", diagnostics)
-    factors["operating_margin"] = _ratio(symbol, "operating_margin", operating_income, revenue, "revenue", diagnostics)
-    factors["net_margin"] = _ratio(symbol, "net_margin", net_income, revenue, "revenue", diagnostics)
+    factors["operating_margin"] = _ratio(symbol, "operating_margin", operating_income_for_margin, revenue, "revenue", diagnostics)
+    factors["net_margin"] = _ratio(symbol, "net_margin", net_income_for_margin, revenue, "revenue", diagnostics)
     factors["return_on_assets"] = _ratio(symbol, "return_on_assets", net_income, total_assets, "total_assets", diagnostics)
     factors["return_on_equity"] = _ratio(symbol, "return_on_equity", net_income, total_equity, "total_equity", diagnostics)
     factors["debt_to_assets"] = _ratio(symbol, "debt_to_assets", total_debt, total_assets, "total_assets", diagnostics)
-    factors["debt_to_equity"] = _ratio(symbol, "debt_to_equity", total_debt, total_equity, "total_equity", diagnostics)
+    factors["debt_to_equity"] = _ratio(symbol, "debt_to_equity", total_debt_for_equity, total_equity, "total_equity", diagnostics)
     factors["net_debt"] = _difference(symbol, "net_debt", total_debt, cash, diagnostics)
     factors["interest_coverage"] = _ratio(
         symbol,
         "interest_coverage",
-        operating_income,
+        operating_income_for_interest,
         _absolute_field_value(interest_expense),
         "interest_expense",
         diagnostics,
     )
     factors["free_cash_flow"] = _direct(symbol, "free_cash_flow", free_cash_flow, diagnostics)
-    factors["fcf_margin"] = _ratio(symbol, "fcf_margin", free_cash_flow, revenue, "revenue", diagnostics)
+    factors["fcf_margin"] = _ratio(symbol, "fcf_margin", free_cash_flow_for_margin, revenue, "revenue", diagnostics)
     factors["share_count_growth_yoy"] = _share_count_growth_yoy(symbol, shares, symbol_records, diagnostics)
     return factors
 
@@ -213,6 +319,12 @@ def _initial_diagnostics(
         "insufficient_history_for_yoy_growth": set(),
         "unavailable_dilution_fields": set(),
         "denominator_zero_warnings": set(),
+        "same_period_missing_component": set(),
+        "same_period_alignment_failed": set(),
+        "missing_current_period_component": set(),
+        "missing_prior_comparable_period_for_yoy": set(),
+        "cross_statement_period_mismatch": set(),
+        "no_older_field_fallback_used": set(),
         "timestamp_unsafe_records_excluded": sum(1 for record in record_list if not record.timestamp_safe),
         "unsupported_external_records_excluded": sum(
             1 for record in safe_asof if record.statement_type not in CORE_STATEMENT_TYPES
@@ -238,6 +350,217 @@ def _latest(
     if not candidates:
         return None
     return max(candidates, key=lambda item: (item.period_end_date, item.available_date or date.min, item.field_name))
+
+
+def _latest_period_end_date(records: list[FmpFundamentalRecord]) -> date | None:
+    period_dates = [_parse_date(record.period_end_date) for record in records]
+    valid_dates = [period_date for period_date in period_dates if period_date is not None]
+    return max(valid_dates) if valid_dates else None
+
+
+def _component_at_period(
+    symbol: str,
+    factor_name: str,
+    component_label: str,
+    records: list[FmpFundamentalRecord],
+    statement_type: str,
+    aliases: tuple[str, ...],
+    period_end_date: date | None,
+    diagnostics: dict[str, Any],
+    *,
+    cross_statement: bool = False,
+) -> _FieldValue | None:
+    if period_end_date is None:
+        _record_missing_component(symbol, factor_name, component_label, None, diagnostics)
+        return None
+    alias_keys = {_field_key(alias) for alias in aliases}
+    candidates = [
+        _field_value(record)
+        for record in records
+        if record.statement_type == statement_type
+        and _parse_date(record.period_end_date) == period_end_date
+        and _field_key(record.field_name) in alias_keys
+    ]
+    candidates = [candidate for candidate in candidates if candidate is not None]
+    if candidates:
+        return max(candidates, key=lambda item: (item.available_date or date.min, item.field_name))
+
+    _record_missing_component(symbol, factor_name, component_label, period_end_date, diagnostics)
+    if _has_component_in_other_period(records, statement_type, aliases, period_end_date):
+        diagnostics["no_older_field_fallback_used"].add(_component_key(symbol, factor_name, component_label, period_end_date))
+        if cross_statement:
+            diagnostics["cross_statement_period_mismatch"].add(
+                _component_key(symbol, factor_name, component_label, period_end_date)
+            )
+    return None
+
+
+def _field_at_period(
+    records: list[FmpFundamentalRecord],
+    statement_type: str,
+    aliases: tuple[str, ...],
+    period_end_date: date | None,
+) -> _FieldValue | None:
+    if period_end_date is None:
+        return None
+    alias_keys = {_field_key(alias) for alias in aliases}
+    candidates = [
+        _field_value(record)
+        for record in records
+        if record.statement_type == statement_type
+        and _parse_date(record.period_end_date) == period_end_date
+        and _field_key(record.field_name) in alias_keys
+    ]
+    candidates = [candidate for candidate in candidates if candidate is not None]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: (item.available_date or date.min, item.field_name))
+
+
+def _record_missing_component(
+    symbol: str,
+    factor_name: str,
+    component_label: str,
+    period_end_date: date | None,
+    diagnostics: dict[str, Any],
+) -> None:
+    key = _component_key(symbol, factor_name, component_label, period_end_date)
+    diagnostics["same_period_missing_component"].add(key)
+    diagnostics["same_period_alignment_failed"].add(f"{symbol}:{factor_name}:{_period_label(period_end_date)}")
+    diagnostics["missing_current_period_component"].add(key)
+
+
+def _component_key(
+    symbol: str,
+    factor_name: str,
+    component_label: str,
+    period_end_date: date | None,
+) -> str:
+    return f"{symbol}:{factor_name}:{component_label}:{_period_label(period_end_date)}"
+
+
+def _period_label(period_end_date: date | None) -> str:
+    return period_end_date.isoformat() if period_end_date is not None else "missing_period_end_date"
+
+
+def _has_component_in_other_period(
+    records: list[FmpFundamentalRecord],
+    statement_type: str,
+    aliases: tuple[str, ...],
+    period_end_date: date,
+) -> bool:
+    alias_keys = {_field_key(alias) for alias in aliases}
+    return any(
+        record.statement_type == statement_type
+        and _field_key(record.field_name) in alias_keys
+        and (record_period := _parse_date(record.period_end_date)) is not None
+        and record_period != period_end_date
+        for record in records
+    )
+
+
+def _debt_at_period(
+    symbol: str,
+    factor_name: str,
+    records: list[FmpFundamentalRecord],
+    period_end_date: date | None,
+    diagnostics: dict[str, Any],
+) -> _FieldValue | None:
+    total_debt = _field_at_period(records, "balance_sheet", FIELD_ALIASES["total_debt"], period_end_date)
+    if total_debt is not None:
+        return total_debt
+
+    short_term = _component_at_period(
+        symbol,
+        factor_name,
+        "short_term_debt",
+        records,
+        "balance_sheet",
+        FIELD_ALIASES["short_term_debt"],
+        period_end_date,
+        diagnostics,
+    )
+    long_term = _component_at_period(
+        symbol,
+        factor_name,
+        "long_term_debt",
+        records,
+        "balance_sheet",
+        FIELD_ALIASES["long_term_debt"],
+        period_end_date,
+        diagnostics,
+    )
+    if short_term is None or long_term is None or period_end_date is None:
+        _record_missing_component(symbol, factor_name, "total_debt", period_end_date, diagnostics)
+        if period_end_date is not None and _has_component_in_other_period(
+            records, "balance_sheet", FIELD_ALIASES["total_debt"], period_end_date
+        ):
+            diagnostics["no_older_field_fallback_used"].add(
+                _component_key(symbol, factor_name, "total_debt", period_end_date)
+            )
+        return None
+    return _FieldValue(
+        value=short_term.value + long_term.value,
+        period_end_date=period_end_date,
+        available_date=max(short_term.available_date or date.min, long_term.available_date or date.min),
+        field_name="shortTermDebt+longTermDebt",
+        statement_type="balance_sheet",
+    )
+
+
+def _free_cash_flow_at_period(
+    symbol: str,
+    factor_name: str,
+    records: list[FmpFundamentalRecord],
+    period_end_date: date | None,
+    diagnostics: dict[str, Any],
+    *,
+    component_label: str = "free_cash_flow",
+) -> _FieldValue | None:
+    direct = _field_at_period(records, "cash_flow", FIELD_ALIASES["free_cash_flow"], period_end_date)
+    if direct is not None:
+        return direct
+
+    operating_cash_flow = _component_at_period(
+        symbol,
+        factor_name,
+        "operating_cash_flow",
+        records,
+        "cash_flow",
+        FIELD_ALIASES["operating_cash_flow"],
+        period_end_date,
+        diagnostics,
+        cross_statement=factor_name == "fcf_margin",
+    )
+    capex = _component_at_period(
+        symbol,
+        factor_name,
+        "capital_expenditure",
+        records,
+        "cash_flow",
+        FIELD_ALIASES["capital_expenditure"],
+        period_end_date,
+        diagnostics,
+        cross_statement=factor_name == "fcf_margin",
+    )
+    if operating_cash_flow is None or capex is None or period_end_date is None:
+        _record_missing_component(symbol, factor_name, component_label, period_end_date, diagnostics)
+        if period_end_date is not None and _has_component_in_other_period(
+            records, "cash_flow", FIELD_ALIASES["free_cash_flow"], period_end_date
+        ):
+            key = _component_key(symbol, factor_name, component_label, period_end_date)
+            diagnostics["no_older_field_fallback_used"].add(key)
+            if factor_name == "fcf_margin":
+                diagnostics["cross_statement_period_mismatch"].add(key)
+        return None
+    capex_outflow = capex.value if capex.value < 0 else -capex.value
+    return _FieldValue(
+        value=operating_cash_flow.value + capex_outflow,
+        period_end_date=period_end_date,
+        available_date=max(operating_cash_flow.available_date or date.min, capex.available_date or date.min),
+        field_name="netCashProvidedByOperatingActivities+capitalExpenditure",
+        statement_type="cash_flow",
+    )
 
 
 def _latest_debt(records: list[FmpFundamentalRecord]) -> _FieldValue | None:
@@ -338,6 +661,9 @@ def _growth_yoy(
     prior = _prior_year_value(current, records, statement_type, aliases)
     if prior is None:
         diagnostics["insufficient_history_for_yoy_growth"].add(f"{symbol}:{factor_name}")
+        diagnostics["missing_prior_comparable_period_for_yoy"].add(
+            f"{symbol}:{factor_name}:{_period_label(_prior_year_period_end(current))}"
+        )
         return _missing(symbol, factor_name, diagnostics)
     return _ratio_delta(symbol, factor_name, current.value, prior.value, "prior_year_value", diagnostics)
 
@@ -353,6 +679,9 @@ def _fcf_growth_yoy(
     prior = _prior_year_free_cash_flow(current, records)
     if prior is None:
         diagnostics["insufficient_history_for_yoy_growth"].add(f"{symbol}:fcf_growth_yoy")
+        diagnostics["missing_prior_comparable_period_for_yoy"].add(
+            f"{symbol}:fcf_growth_yoy:{_period_label(_prior_year_period_end(current))}"
+        )
         return _missing(symbol, "fcf_growth_yoy", diagnostics)
     return _ratio_delta(symbol, "fcf_growth_yoy", current.value, prior.value, "prior_year_fcf", diagnostics)
 
@@ -369,8 +698,18 @@ def _share_count_growth_yoy(
     prior = _prior_year_value(current, records, "income_statement", FIELD_ALIASES["shares"])
     if prior is None:
         diagnostics["insufficient_history_for_yoy_growth"].add(f"{symbol}:share_count_growth_yoy")
+        diagnostics["missing_prior_comparable_period_for_yoy"].add(
+            f"{symbol}:share_count_growth_yoy:{_period_label(_prior_year_period_end(current))}"
+        )
         return _missing(symbol, "share_count_growth_yoy", diagnostics)
     return _ratio_delta(symbol, "share_count_growth_yoy", current.value, prior.value, "prior_year_shares", diagnostics)
+
+
+def _prior_year_period_end(current: _FieldValue) -> date | None:
+    try:
+        return current.period_end_date.replace(year=current.period_end_date.year - 1)
+    except ValueError:
+        return None
 
 
 def _ratio(
