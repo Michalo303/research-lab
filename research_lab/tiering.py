@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from research_lab.config import REAL_EOD_DATA_SOURCES
+
 
 def classify_strategy(
     family: str,
@@ -21,7 +23,7 @@ def classify_strategy(
         return "Rejected", "Double transaction-cost stress destroys unseen profitability."
     if walk_forward is not None and not _walk_forward_passes(walk_forward):
         return "C", "Positive unseen result, but rolling walk-forward is not strong enough for promotion."
-    if data_source not in {"yfinance", "massive"}:
+    if data_source not in REAL_EOD_DATA_SOURCES:
         return "C", "Synthetic or non-production data source; usable for runner validation only, not capital research."
     if family in {"LONGTERM", "ROTATION"} and data_years < 10.0:
         return "C", "EOD history is shorter than the 10-year promotion requirement; keep as paper research."

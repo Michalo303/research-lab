@@ -1,4 +1,4 @@
-from research_lab.dashboard import validate_static_dashboard, write_static_dashboard
+from research_lab.dashboard import _provider_summary, validate_static_dashboard, write_static_dashboard
 
 
 def test_static_dashboard_writes_html_from_weekly_csvs(tmp_path):
@@ -53,3 +53,45 @@ def test_static_dashboard_shows_empty_equity_chart_state(tmp_path):
     assert 'id="equity-chart"' in html
     assert "No portfolio equity curve available." in html
     assert "equity chart" not in validate_static_dashboard(result["path"])
+
+
+def test_provider_summary_reports_eodhd_as_real_eod():
+    summary = _provider_summary([{"source": "eodhd"}])
+
+    assert "EODHD" in summary["text"]
+    assert "real EOD" in summary["text"]
+    assert "no capital relevance" not in summary["warning"]
+
+
+def test_provider_summary_reports_eodhd_with_synthetic_auxiliary_data():
+    summary = _provider_summary([{"source": "eodhd"}, {"source": "synthetic"}])
+
+    assert "EODHD" in summary["text"]
+    assert "real EOD" in summary["text"]
+    assert "synthetic" in summary["warning"]
+    assert "no capital relevance" not in summary["warning"]
+
+
+def test_provider_summary_reports_synthetic_only_as_non_capital_relevant():
+    summary = _provider_summary([{"source": "synthetic"}])
+
+    assert "synthetic" in summary["text"]
+    assert "no capital relevance" in summary["warning"]
+
+
+def test_provider_summary_reports_massive_with_synthetic_auxiliary_data():
+    summary = _provider_summary([{"source": "massive"}, {"source": "synthetic"}])
+
+    assert "Massive" in summary["text"]
+    assert "real EOD" in summary["text"]
+    assert "synthetic" in summary["warning"]
+    assert "no capital relevance" not in summary["warning"]
+
+
+def test_provider_summary_reports_real_eod_with_unknown_sources():
+    summary = _provider_summary([{"source": "unknown"}, {"source": "eodhd"}])
+
+    assert "EODHD" in summary["text"]
+    assert "real EOD" in summary["text"]
+    assert "unknown" in summary["warning"]
+    assert "no capital relevance" not in summary["warning"]

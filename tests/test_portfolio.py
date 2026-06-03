@@ -45,6 +45,35 @@ def test_portfolio_scoring_writes_candidates(tmp_path):
     assert result["rows"][0]["suggested_weight_pct"] > 0
 
 
+def test_portfolio_scoring_accepts_eodhd_candidates(tmp_path):
+    run_dir = tmp_path / "backtests" / "runs" / "EODHD1"
+    run_dir.mkdir(parents=True)
+    (run_dir / "result.json").write_text(
+        """
+        {
+          "strategy_id": "EODHD1",
+          "family": "ROTATION",
+          "asset_class": "ETF",
+          "short_name": "DUAL_MOMENTUM",
+          "tier": "C",
+          "hypothesis": "Momentum rotation edge",
+          "rules": "Rank by momentum",
+          "data_manifest": {"source": "eodhd"},
+          "cost_stress": {"survives_double_cost": true},
+          "split_metrics": {
+            "unseen": {"cagr": 0.2, "max_drawdown": -0.1}
+          }
+        }
+        """,
+        encoding="utf-8",
+    )
+
+    result = run_portfolio_scoring(tmp_path, "2026-W21")
+
+    assert result["rows"][0]["strategy_id"] == "EODHD1"
+    assert result["rows"][0]["suggested_weight_pct"] > 0
+
+
 def test_portfolio_combination_backtest_writes_equity_curve(tmp_path):
     run_dir = tmp_path / "backtests" / "runs" / "S1"
     run_dir.mkdir(parents=True)

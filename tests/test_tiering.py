@@ -62,6 +62,19 @@ def test_tiering_preserves_promotion_when_walk_forward_is_omitted():
     assert "Tier A" in reason
 
 
+def test_tiering_treats_eodhd_as_real_eod_data_source():
+    tier, reason = classify_strategy(
+        "ROTATION",
+        _metrics(),
+        {"survives_double_cost": True},
+        "eodhd",
+        30.0,
+    )
+
+    assert tier == "A"
+    assert "Tier A" in reason
+
+
 def test_tiering_allows_promotion_with_true_walk_forward_pass():
     tier, reason = classify_strategy(
         "ROTATION",

@@ -45,6 +45,7 @@ def test_yfinance_provider_enables_yfinance_loader(monkeypatch, tmp_path):
 def test_massive_provider_missing_key_fails_without_synthetic_fallback(monkeypatch, tmp_path):
     monkeypatch.setenv("RESEARCH_LAB_DATA_PROVIDER", "massive")
     monkeypatch.delenv("MASSIVE_API_KEY", raising=False)
+    monkeypatch.delenv("EODHD_API_KEY", raising=False)
     monkeypatch.setenv("RESEARCH_LAB_ALLOW_SYNTHETIC_FALLBACK", "1")
 
     try:

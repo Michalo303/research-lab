@@ -79,9 +79,39 @@ RESEARCH_LAB_DATA_PROVIDER=yfinance python scripts/run_daily_research.py
 
 Without optional data support, the runner uses deterministic synthetic OHLCV data as a smoke test only. Synthetic results must not be promoted to deployment candidates. Real-provider failures are fail-fast by default; set `RESEARCH_LAB_ALLOW_SYNTHETIC_FALLBACK=1` only for intentional local smoke tests.
 
-## Massive Stocks Starter Setup
+## EODHD Long-History EOD Setup
 
 Add only the server-side `.env` values:
+
+```bash
+RESEARCH_LAB_DATA_PROVIDER=eodhd
+EODHD_API_KEY=your_key_here
+EODHD_START_DATE=1990-01-01
+```
+
+Run one access diagnostic before the daily runner:
+
+```bash
+cd /opt/trading/research-lab
+. .venv/bin/activate
+python scripts/check_eodhd_access.py --symbol SPY.US --daily-start 1990-01-01
+python scripts/run_eodhd_historical_validation.py
+```
+
+Run one manual validation:
+
+```bash
+cd /opt/trading/research-lab
+. .venv/bin/activate
+python scripts/run_daily_research.py
+cat data/manifests/daily_universe.json
+```
+
+The manifest must show `"source": "eodhd"` and a history length matching the available EODHD coverage. If the daily report shows `massive`, systemd did not receive `EODHD_API_KEY` or the server is on an older checkout.
+
+## Massive Stocks Starter Fallback
+
+Use Massive only as an explicit fallback when EODHD is not configured or an EODHD outage is being investigated:
 
 ```bash
 RESEARCH_LAB_DATA_PROVIDER=massive

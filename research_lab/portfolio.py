@@ -8,6 +8,7 @@ from typing import Any
 
 import pandas as pd
 
+from research_lab.config import REAL_EOD_DATA_SOURCES
 from research_lab.edge import classify_edge
 from research_lab.metrics import performance_metrics
 from research_lab.robustness import load_backtest_results
@@ -90,7 +91,11 @@ def run_portfolio_combination_backtest(
 
     if not selected:
         has_results = bool(results)
-        has_real_data = any(item.get("data_manifest", {}).get("source") in {"massive", "yfinance"} or item.get("data_source") in {"massive", "yfinance"} for item in results)
+        has_real_data = any(
+            item.get("data_manifest", {}).get("source") in REAL_EOD_DATA_SOURCES
+            or item.get("data_source") in REAL_EOD_DATA_SOURCES
+            for item in results
+        )
         status = "blocked_no_real_data_candidates" if has_results and not has_real_data else "no_backtestable_return_series"
         summary = _empty_portfolio_backtest_summary(status)
         _write_csv(summary_path, [summary], PORTFOLIO_BACKTEST_COLUMNS)
@@ -177,7 +182,7 @@ def _candidate_results(results: list[dict[str, Any]], max_candidates: int) -> li
     for item in results:
         if item.get("tier") == "Rejected":
             continue
-        if item.get("data_source", item.get("data_manifest", {}).get("source")) not in {"massive", "yfinance"}:
+        if item.get("data_source", item.get("data_manifest", {}).get("source")) not in REAL_EOD_DATA_SOURCES:
             continue
         if item.get("family") == "INTRADAY":
             continue

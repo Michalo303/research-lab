@@ -5,6 +5,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+REAL_EOD_DATA_SOURCES = {"eodhd", "massive", "yfinance"}
+
+
 @dataclass(frozen=True)
 class LabConfig:
     root: Path
