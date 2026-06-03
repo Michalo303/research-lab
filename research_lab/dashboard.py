@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from research_lab.config import REAL_EOD_DATA_SOURCES
 
 READ_ONLY_LABEL = "READ ONLY MODE"
 
@@ -984,25 +985,30 @@ def _provider_summary(manifests: list[dict[str, Any]]) -> dict[str, str]:
     for source in sources:
         if source not in unique:
             unique.append(source)
+    real_sources = [source for source in unique if source in REAL_EOD_DATA_SOURCES]
+    unknown_sources = [source for source in unique if source not in REAL_EOD_DATA_SOURCES and source != "synthetic"]
+    labels = {"eodhd": "EODHD", "massive": "Massive", "yfinance": "yfinance"}
+    if real_sources:
+        preferred = next((source for source in ("eodhd", "massive", "yfinance") if source in real_sources), real_sources[0])
+        warnings = []
+        if preferred == "eodhd":
+            warnings.append("EODHD data available; verify coverage and adjusted-price assumptions before promotion.")
+        elif preferred == "massive":
+            warnings.append("Massive data available; verify history length before promotion.")
+        else:
+            warnings.append("yfinance data available; verify data integrity before promotion.")
+        if "synthetic" in unique:
+            warnings.append("synthetic auxiliary or intraday smoke-test data is also present.")
+        if unknown_sources:
+            warnings.append(f"Unknown provider sources also present: {', '.join(unknown_sources)}.")
+        return {
+            "text": f"Provider status: {labels.get(preferred, preferred)} real EOD ({', '.join(unique)}).",
+            "warning": " ".join(warnings),
+        }
     if "synthetic" in unique:
         return {
             "text": f"Provider status: synthetic ({', '.join(unique)}).",
             "warning": "synthetic data in use; no capital relevance until real providers are validated.",
-        }
-    if "massive" in unique:
-        return {
-            "text": f"Provider status: Massive ({', '.join(unique)}).",
-            "warning": "Massive data available; verify history length before promotion.",
-        }
-    if "eodhd" in unique:
-        return {
-            "text": f"Provider status: EODHD ({', '.join(unique)}).",
-            "warning": "EODHD data available; verify coverage and adjusted-price assumptions before promotion.",
-        }
-    if "yfinance" in unique:
-        return {
-            "text": f"Provider status: yfinance ({', '.join(unique)}).",
-            "warning": "yfinance data available; verify data integrity before promotion.",
         }
     return {"text": f"Provider status: {', '.join(unique)}.", "warning": "provider status requires manual review."}
 
