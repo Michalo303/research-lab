@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import Any
 
 from research_lab.backtest import close_frame, cost_stress, weighted_backtest
-from research_lab.config import LabConfig
-from research_lab.data import load_daily_universe, load_massive_daily_universe
+from research_lab.config import LabConfig, REAL_EOD_DATA_SOURCES
+from research_lab.data import load_daily_universe, load_eodhd_daily_universe, load_massive_daily_universe
 from research_lab.robustness import build_stability_rows, load_backtest_results
 from research_lab.strategies.baselines import StrategySpec, build_weights, queued_daily_symbols
 from research_lab.tiering import classify_strategy
@@ -108,7 +108,7 @@ def _select_representatives(results: list[dict[str, Any]], max_groups: int) -> l
     seen = set()
     for group in stability_rows:
         key = (group["family"], group["short_name"], group["data_source"])
-        if group["data_source"] not in {"massive", "yfinance"}:
+        if group["data_source"] not in REAL_EOD_DATA_SOURCES:
             continue
         if group["family"] == "INTRADAY":
             continue
@@ -144,6 +144,8 @@ def _daily_symbols(root: Path, representatives: list[dict[str, Any]]) -> list[st
 
 
 def _load_daily_bundle(config: LabConfig, symbols: list[str]):
+    if config.eodhd_api_key or config.data_provider == "eodhd":
+        return load_eodhd_daily_universe(config.root, symbols, config.eodhd_api_key, config.eodhd_start_date)
     if config.data_provider == "massive":
         return load_massive_daily_universe(
             config.root,

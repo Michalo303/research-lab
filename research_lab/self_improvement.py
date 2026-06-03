@@ -5,6 +5,7 @@ import json
 from datetime import date
 from pathlib import Path
 
+from research_lab.config import REAL_EOD_DATA_SOURCES
 from research_lab.edge import run_edge_audit, summarize_edge_audit
 
 
@@ -75,9 +76,10 @@ def _weak_points(leaderboard: list[dict], hypotheses: list[dict], hypothesis_res
     points = []
     if not leaderboard:
         points.append("No leaderboard exists yet; daily research must run first.")
-    real_data_sources = {"yfinance", "massive"}
-    if leaderboard and all(row.get("data_source") not in real_data_sources for row in leaderboard):
+    if leaderboard and all(row.get("data_source") not in REAL_EOD_DATA_SOURCES for row in leaderboard):
         points.append("Current leaderboard is synthetic-only; capital relevance is zero until real data ingestion runs.")
+    if leaderboard and any(row.get("data_source") == "eodhd" for row in leaderboard):
+        points.append("EODHD real EOD data is running; verify symbol coverage, adjusted prices, and provider stability.")
     if leaderboard and any(row.get("data_source") == "massive" for row in leaderboard):
         points.append("Massive real EOD data is running, but current history is still too short for long-term promotion.")
     if leaderboard and all(row.get("tier") == "Rejected" for row in leaderboard):

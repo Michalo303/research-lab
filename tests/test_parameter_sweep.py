@@ -1,4 +1,4 @@
-from research_lab.parameter_sweep import PARAMETER_SWEEP_COLUMNS, _parameter_variants, _row, _variant_verdict, summarize_parameter_sweep
+from research_lab.parameter_sweep import PARAMETER_SWEEP_COLUMNS, _parameter_variants, _row, _select_representatives, _variant_verdict, summarize_parameter_sweep
 
 
 def test_parameter_variants_keep_base_first_and_bound_count():
@@ -40,6 +40,24 @@ def test_parameter_sweep_columns_include_walk_forward_metrics():
         "final_verdict",
     ]:
         assert column in PARAMETER_SWEEP_COLUMNS
+
+
+def test_parameter_sweep_selects_eodhd_representatives():
+    results = [
+        {
+            "strategy_id": "EODHD1",
+            "family": "ROTATION",
+            "short_name": "DUAL_MOMENTUM",
+            "data_manifest": {"source": "eodhd"},
+            "tier": "C",
+            "cost_stress": {"survives_double_cost": True},
+            "split_metrics": {"unseen": {"cagr": 0.12, "max_drawdown": -0.08}},
+        }
+    ]
+
+    selected = _select_representatives(results, max_groups=4)
+
+    assert [item["strategy_id"] for item in selected] == ["EODHD1"]
 
 
 def test_parameter_row_exposes_walk_forward_metrics():

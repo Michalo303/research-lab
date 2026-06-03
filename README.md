@@ -100,7 +100,18 @@ python scripts/run_apify_dataroma_import.py --superinvestors BRK,HC,BAUPOST --ma
 This is intentionally limited by default. It imports holdings as hypotheses only; it does not validate or trade.
 If `APIFY_TOKEN` is present in `/opt/trading/research-lab/.env`, the weekly deep research timer also runs a limited Apify Dataroma import. Override the weekly limit with `APIFY_DATAROMA_MAX_RESULTS=200`.
 
-Massive/Polygon Stocks Starter data:
+EODHD long-history EOD data:
+
+```bash
+RESEARCH_LAB_DATA_PROVIDER=eodhd
+EODHD_API_KEY=your_key_here
+EODHD_START_DATE=1990-01-01
+python scripts/run_daily_research.py
+```
+
+The API key belongs only in `.env`, never in git. EODHD is the preferred provider for long-term and rotation research because it can provide 10+ years of EOD evidence when the account and symbols support it.
+
+Massive/Polygon Stocks Starter fallback:
 
 ```bash
 RESEARCH_LAB_DATA_PROVIDER=massive
@@ -110,7 +121,7 @@ MASSIVE_START_DATE=2021-05-24
 python scripts/run_daily_research.py
 ```
 
-The API key belongs only in `.env`, never in git. Starter's 5-year history is useful for data pipeline validation and swing/rotation experiments, but long-term/rotation strategies remain capped below promotion until they have at least 10 years of EOD evidence.
+Starter's 5-year history is useful for data pipeline validation and swing/rotation experiments, but long-term/rotation strategies remain capped below promotion until they have at least 10 years of EOD evidence.
 
 Optional source scanning:
 

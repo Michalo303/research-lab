@@ -994,6 +994,11 @@ def _provider_summary(manifests: list[dict[str, Any]]) -> dict[str, str]:
             "text": f"Provider status: Massive ({', '.join(unique)}).",
             "warning": "Massive data available; verify history length before promotion.",
         }
+    if "eodhd" in unique:
+        return {
+            "text": f"Provider status: EODHD ({', '.join(unique)}).",
+            "warning": "EODHD data available; verify coverage and adjusted-price assumptions before promotion.",
+        }
     if "yfinance" in unique:
         return {
             "text": f"Provider status: yfinance ({', '.join(unique)}).",

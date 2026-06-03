@@ -84,6 +84,7 @@ def _market_data_row(root: Path) -> dict[str, Any]:
         except (OSError, json.JSONDecodeError):
             continue
     massive_units = 0
+    eodhd_units = 0
     yfinance_units = 0
     synthetic_units = 0
     for manifest in manifests:
@@ -92,19 +93,21 @@ def _market_data_row(root: Path) -> dict[str, Any]:
         source = manifest.get("source")
         if source == "massive":
             massive_units += units
+        elif source == "eodhd":
+            eodhd_units += units
         elif source == "yfinance":
             yfinance_units += units
         elif source == "synthetic":
             synthetic_units += units
     price_per_unit = float(os.getenv("RESEARCH_COST_MARKET_DATA_DOLLARS_PER_SYMBOL_REFRESH", "0"))
-    paid_units = massive_units
+    paid_units = massive_units + eodhd_units
     return {
         "category": "market_data",
         "unit": "symbol_refreshes",
         "quantity": paid_units,
         "estimated_cost_usd": round(paid_units * price_per_unit, 6),
         "pricing_source": "RESEARCH_COST_MARKET_DATA_DOLLARS_PER_SYMBOL_REFRESH",
-        "notes": f"latest manifests by source: massive={massive_units}, yfinance={yfinance_units}, synthetic={synthetic_units}",
+        "notes": f"latest manifests by source: massive={massive_units}, eodhd={eodhd_units}, yfinance={yfinance_units}, synthetic={synthetic_units}",
     }
 
 
