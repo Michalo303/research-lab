@@ -221,6 +221,175 @@ def test_missing_fields_produce_nan_and_diagnostics_not_zero():
     assert "AAPL:gross_margin" in diagnostics["factor_fields_missing"]
 
 
+def test_gross_margin_does_not_use_older_gross_profit_with_newer_revenue():
+    records = (
+        _income("2024-12-31", "2025-02-15", revenue=100, grossProfit=50)
+        + _income("2025-12-31", "2026-02-15", revenue=200)
+    )
+
+    snapshot, diagnostics = _snapshot(records, asof_date="2026-03-01")
+
+    assert math.isnan(snapshot.factors["gross_margin"])
+    assert "AAPL:gross_margin:gross_profit:2025-12-31" in diagnostics["same_period_missing_component"]
+    assert "AAPL:gross_margin:gross_profit:2025-12-31" in diagnostics["no_older_field_fallback_used"]
+
+
+def test_roa_requires_net_income_and_total_assets_from_same_period():
+    records = _income("2025-12-31", "2026-02-15", netIncome=30) + _balance(
+        "2024-12-31",
+        "2025-02-15",
+        totalAssets=300,
+    )
+
+    snapshot, diagnostics = _snapshot(records, asof_date="2026-03-01")
+
+    assert math.isnan(snapshot.factors["return_on_assets"])
+    assert "AAPL:return_on_assets:total_assets:2025-12-31" in diagnostics["same_period_missing_component"]
+    assert "AAPL:return_on_assets:total_assets:2025-12-31" in diagnostics["cross_statement_period_mismatch"]
+
+
+def test_roe_requires_net_income_and_total_equity_from_same_period():
+    records = _income("2025-12-31", "2026-02-15", netIncome=30) + _balance(
+        "2024-12-31",
+        "2025-02-15",
+        totalStockholdersEquity=150,
+    )
+
+    snapshot, diagnostics = _snapshot(records, asof_date="2026-03-01")
+
+    assert math.isnan(snapshot.factors["return_on_equity"])
+    assert "AAPL:return_on_equity:total_equity:2025-12-31" in diagnostics["same_period_missing_component"]
+    assert "AAPL:return_on_equity:total_equity:2025-12-31" in diagnostics["cross_statement_period_mismatch"]
+
+
+def test_debt_to_assets_does_not_mix_old_debt_with_newer_assets():
+    records = (
+        _balance("2024-12-31", "2025-02-15", totalDebt=60)
+        + _balance("2025-12-31", "2026-02-15", totalAssets=300)
+    )
+
+    snapshot, diagnostics = _snapshot(records, asof_date="2026-03-01")
+
+    assert math.isnan(snapshot.factors["debt_to_assets"])
+    assert "AAPL:debt_to_assets:total_debt:2025-12-31" in diagnostics["same_period_missing_component"]
+    assert "AAPL:debt_to_assets:total_debt:2025-12-31" in diagnostics["no_older_field_fallback_used"]
+
+
+def test_debt_to_equity_does_not_mix_old_debt_with_newer_equity():
+    records = (
+        _balance("2024-12-31", "2025-02-15", totalDebt=60)
+        + _balance("2025-12-31", "2026-02-15", totalStockholdersEquity=150)
+    )
+
+    snapshot, diagnostics = _snapshot(records, asof_date="2026-03-01")
+
+    assert math.isnan(snapshot.factors["debt_to_equity"])
+    assert "AAPL:debt_to_equity:total_debt:2025-12-31" in diagnostics["same_period_missing_component"]
+    assert "AAPL:debt_to_equity:total_debt:2025-12-31" in diagnostics["no_older_field_fallback_used"]
+
+
+def test_interest_coverage_reports_missing_same_period_operating_income():
+    records = (
+        _income("2024-12-31", "2025-02-15", operatingIncome=40)
+        + _income("2025-12-31", "2026-02-15", interestExpense=-10)
+    )
+
+    snapshot, diagnostics = _snapshot(records, asof_date="2026-03-01")
+
+    assert math.isnan(snapshot.factors["interest_coverage"])
+    assert "AAPL:interest_coverage:operating_income:2025-12-31" in diagnostics["same_period_missing_component"]
+    assert "AAPL:interest_coverage:operating_income:2025-12-31" in diagnostics["no_older_field_fallback_used"]
+
+
+def test_free_cash_flow_requires_operating_cash_flow_and_capex_from_same_period():
+    records = (
+        _cash_flow("2025-12-31", "2026-02-15", netCashProvidedByOperatingActivities=70)
+        + _cash_flow("2024-12-31", "2025-02-15", capitalExpenditure=-20)
+    )
+
+    snapshot, diagnostics = _snapshot(records, asof_date="2026-03-01")
+
+    assert math.isnan(snapshot.factors["free_cash_flow"])
+    assert "AAPL:free_cash_flow:capital_expenditure:2025-12-31" in diagnostics["same_period_missing_component"]
+    assert "AAPL:free_cash_flow:capital_expenditure:2025-12-31" in diagnostics["no_older_field_fallback_used"]
+
+
+def test_fcf_margin_requires_fcf_components_and_revenue_from_same_period():
+    records = (
+        _income("2025-12-31", "2026-02-15", revenue=200)
+        + _cash_flow("2025-12-31", "2026-02-15", netCashProvidedByOperatingActivities=70)
+        + _cash_flow("2024-12-31", "2025-02-15", capitalExpenditure=-20)
+    )
+
+    snapshot, diagnostics = _snapshot(records, asof_date="2026-03-01")
+
+    assert math.isnan(snapshot.factors["fcf_margin"])
+    assert "AAPL:fcf_margin:free_cash_flow:2025-12-31" in diagnostics["same_period_missing_component"]
+    assert "AAPL:free_cash_flow:capital_expenditure:2025-12-31" in diagnostics["no_older_field_fallback_used"]
+
+
+def test_fcf_margin_reports_cross_statement_mismatch_for_older_direct_fcf():
+    records = (
+        _income("2025-12-31", "2026-02-15", revenue=200)
+        + _cash_flow("2024-12-31", "2025-02-15", freeCashFlow=50)
+    )
+
+    snapshot, diagnostics = _snapshot(records, asof_date="2026-03-01")
+
+    assert math.isnan(snapshot.factors["fcf_margin"])
+    assert "AAPL:fcf_margin:free_cash_flow:2025-12-31" in diagnostics["same_period_missing_component"]
+    assert "AAPL:fcf_margin:free_cash_flow:2025-12-31" in diagnostics["no_older_field_fallback_used"]
+    assert "AAPL:fcf_margin:free_cash_flow:2025-12-31" in diagnostics["cross_statement_period_mismatch"]
+
+
+def test_yoy_growth_requires_prior_comparable_period_available_as_of_date():
+    records = (
+        _income("2024-12-31", "2026-04-01", revenue=100)
+        + _income("2025-12-31", "2026-02-15", revenue=120)
+    )
+
+    snapshot, diagnostics = _snapshot(records, asof_date="2026-03-01")
+
+    assert math.isnan(snapshot.factors["revenue_growth_yoy"])
+    assert "AAPL:revenue_growth_yoy:2024-12-31" in diagnostics["missing_prior_comparable_period_for_yoy"]
+
+
+def test_future_available_component_is_excluded_before_same_period_matching():
+    records = (
+        _income("2024-12-31", "2025-02-15", grossProfit=50)
+        + _income("2025-12-31", "2026-02-15", revenue=200)
+        + _income("2025-12-31", "2026-04-01", grossProfit=90)
+    )
+
+    snapshot, diagnostics = _snapshot(records, asof_date="2026-03-01")
+
+    assert math.isnan(snapshot.factors["gross_margin"])
+    assert "AAPL:gross_margin:gross_profit:2025-12-31" in diagnostics["same_period_missing_component"]
+    assert "AAPL:gross_margin:gross_profit:2025-12-31" in diagnostics["no_older_field_fallback_used"]
+
+
+def test_timestamp_unsafe_component_is_excluded_before_same_period_matching():
+    safe = _income("2025-12-31", "2026-02-15", revenue=200)
+    old_safe = _income("2024-12-31", "2025-02-15", grossProfit=50)
+    unsafe = [
+        _record(
+            statement_type="income_statement",
+            period_end_date="2025-12-31",
+            available_date="2026-02-15",
+            field_name="grossProfit",
+            value=90,
+            timestamp_safe=False,
+        )
+    ]
+
+    snapshot, diagnostics = _snapshot(safe + old_safe + unsafe, asof_date="2026-03-01")
+
+    assert math.isnan(snapshot.factors["gross_margin"])
+    assert "AAPL:gross_margin:gross_profit:2025-12-31" in diagnostics["same_period_missing_component"]
+    assert "AAPL:gross_margin:gross_profit:2025-12-31" in diagnostics["no_older_field_fallback_used"]
+    assert diagnostics["timestamp_unsafe_records_excluded"] == 1
+
+
 def test_zero_denominators_produce_nan_and_diagnostics():
     records = _income("2025-12-31", "2026-02-15", revenue=0, grossProfit=80)
 
