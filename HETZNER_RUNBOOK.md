@@ -131,6 +131,90 @@ python scripts/run_daily_research.py
 
 Massive's Stocks Starter history is currently suitable for validating the data adapter and medium-term experiments. Long-term and rotation strategies still require 10+ years of EOD evidence before promotion above paper research.
 
+## Git-Based Deployment Hygiene
+
+Hetzner research deployment must be reproducible from git `main`. Do not keep manual patches on the server checkout. The server may hold runtime artifacts under `data/manifests/`, `registry/`, `reports/`, and `backtests/runs/`; deployment hygiene checks must not delete or rewrite those paths.
+
+Run the local hygiene check from an updated local `main` before changing the server:
+
+```bash
+python scripts/check_hetzner_deployment.py --host trading@hetzner --repo-path /opt/trading/research-lab
+```
+
+The check reports:
+
+- local branch and commit,
+- expected local `main` commit,
+- server branch and commit,
+- server `git status --short`,
+- whether the server commit differs from local `main`,
+- server `.env` presence for `RESEARCH_LAB_DATA_PROVIDER`, `EODHD_START_DATE`, and presence-only checks for `EODHD_API_KEY` and `MASSIVE_API_KEY`.
+
+The script redacts key-like, token-like, password-like, and known secret values before printing. It reports `EODHD_API_KEY` and `MASSIVE_API_KEY` as booleans only.
+
+To print deployment recommendations, ask for them explicitly:
+
+```bash
+python scripts/check_hetzner_deployment.py --host trading@hetzner --repo-path /opt/trading/research-lab --recommend-deploy --dry-run
+```
+
+This prints the intended `git checkout main`, `git pull --ff-only origin main`, and systemd restart steps without running them. If the server checkout is dirty, treat that as a deployment blocker unless you have intentionally reviewed the server changes and use the check's `--force-dirty` override.
+
+Manual server deployment, after the hygiene check is clean:
+
+```bash
+cd /opt/trading/research-lab
+git status --short
+git checkout main
+git pull --ff-only origin main
+. .venv/bin/activate
+pip install -e ".[data]"
+sudo systemctl daemon-reload
+sudo systemctl restart trading-research-daily.timer
+```
+
+Do not run `scripts/run_daily_research.py` as part of the hygiene check. Daily research is owned by systemd timers unless you are intentionally performing a separate manual validation.
+
+Optional tiny smoke checks:
+
+```bash
+python scripts/check_hetzner_deployment.py --host trading@hetzner --repo-path /opt/trading/research-lab --smoke
+```
+
+The optional smoke list is intentionally small:
+
+- import smoke: `python -c "import research_lab"`,
+- EODHD tiny access diagnostic: `python scripts/check_eodhd_access.py --symbol SPY.US --daily-start 2026-01-01`,
+- systemd timer/service status: `systemctl status trading-research-daily.timer trading-research-daily.service --no-pager`.
+
+## Rollback
+
+Before deployment, record the previous server commit:
+
+```bash
+cd /opt/trading/research-lab
+git rev-parse HEAD
+```
+
+If a rollback is needed:
+
+```bash
+cd /opt/trading/research-lab
+git status --short
+git checkout <previous_commit>
+sudo systemctl daemon-reload
+sudo systemctl restart trading-research-daily.timer
+sudo systemctl status trading-research-daily.timer --no-pager
+```
+
+If you take a manual backup, store it outside runtime artifact paths, for example:
+
+```bash
+cp -a /opt/trading/research-lab /opt/trading/backups/research-lab-YYYYMMDD-HHMMSS
+```
+
+Do not back up secrets into shared logs. Do not print `.env` values during rollback or deployment.
+
 ## Suggested systemd Unit For Python Runner
 
 ```ini
