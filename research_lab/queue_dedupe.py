@@ -36,6 +36,8 @@ DEFINITION_FIELDS = {
     "rules",
 }
 
+UNORDERED_LIST_KEYS = {"assets", "symbols", "tickers", "universe"}
+
 
 @dataclass
 class QueueDedupeResult:
@@ -224,7 +226,7 @@ def _semantic_payload(item: dict[str, Any]) -> dict[str, Any] | None:
     for canonical_key, aliases in SEMANTIC_FIELD_ALIASES.items():
         for alias in aliases:
             if alias in item and item[alias] not in (None, "", [], {}):
-                payload[canonical_key] = _normalize(item[alias])
+                payload[canonical_key] = _normalize(item[alias], key_path=(canonical_key,))
                 break
 
     if not any(key in payload for key in DEFINITION_FIELDS):
@@ -232,16 +234,20 @@ def _semantic_payload(item: dict[str, Any]) -> dict[str, Any] | None:
     return payload
 
 
-def _normalize(value: Any) -> Any:
+def _normalize(value: Any, key_path: tuple[str, ...] = ()) -> Any:
     if isinstance(value, dict):
-        return {str(key).strip().lower(): _normalize(item) for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))}
+        return {
+            normalized_key: _normalize(item, key_path=(*key_path, normalized_key))
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+            if (normalized_key := str(key).strip().lower())
+        }
     if isinstance(value, list):
-        items = [_normalize(item) for item in value]
-        if all(_sortable_scalar(item) for item in items):
+        items = [_normalize(item, key_path=key_path) for item in value]
+        if key_path and key_path[-1] in UNORDERED_LIST_KEYS and all(_sortable_scalar(item) for item in items):
             return sorted(items, key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":")))
         return items
     if isinstance(value, tuple):
-        return _normalize(list(value))
+        return _normalize(list(value), key_path=key_path)
     if isinstance(value, bool) or value is None:
         return value
     if isinstance(value, int):

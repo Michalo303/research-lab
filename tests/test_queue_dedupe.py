@@ -62,6 +62,20 @@ def test_parameter_order_and_numeric_format_do_not_affect_fingerprint():
     assert candidate_fingerprint(first) == candidate_fingerprint(second)
 
 
+def test_ordered_scalar_parameter_lists_affect_fingerprint():
+    first = _record(parameters={"weights": [0.6, 0.4], "symbols": ["SPY", "QQQ"]})
+    second = _record(parameters={"weights": [0.4, 0.6], "symbols": ["SPY", "QQQ"]})
+
+    assert candidate_fingerprint(first) != candidate_fingerprint(second)
+
+
+def test_known_unordered_symbol_lists_remain_order_insensitive():
+    first = _record(parameters={"symbols": ["SPY", "QQQ"], "weights": [0.6, 0.4]})
+    second = _record(parameters={"symbols": ["QQQ", "SPY"], "weights": [0.6, 0.4]})
+
+    assert candidate_fingerprint(first) == candidate_fingerprint(second)
+
+
 def test_non_semantic_timestamps_run_id_and_notes_do_not_affect_fingerprint():
     first = _record(created_at="2026-06-04T01:00:00Z", run_id="run-a", notes="audit note")
     second = _record(created_at="2026-06-04T02:00:00Z", run_id="run-b", notes="different audit note")
