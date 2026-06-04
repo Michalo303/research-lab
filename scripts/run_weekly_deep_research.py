@@ -27,6 +27,11 @@ from research_lab.portfolio import (
 from research_lab.robustness import summarize_weekly_robustness, write_weekly_robustness_outputs
 from research_lab.sentiment import summarize_sentiment_for_weekly
 from research_lab.signals import run_signal_generation, summarize_signals
+from research_lab.weekly_validation_gate import (
+    build_weekly_validation_metrics,
+    evaluate_weekly_validation_gate,
+    render_weekly_validation_gate_markdown,
+)
 
 
 def _weekly_robustness_findings(robustness_rows, stability_rows):
@@ -106,6 +111,9 @@ def main() -> None:
         sentiment_status = f"available: {len(sentiment_rows)} candidates from {sentiment_path}"
     portfolio_backtest = run_portfolio_combination_backtest(root, report_stem, portfolio["rows"])
     deployment_gate = run_deployment_gate(root, report_stem, robustness["robustness_rows"], parameter_sweep["rows"], portfolio["rows"])
+    weekly_gate = evaluate_weekly_validation_gate(
+        build_weekly_validation_metrics(robustness["robustness_rows"], deployment_gate["rows"])
+    )
     signals = run_signal_generation(root)
     paper_ledger = run_paper_portfolio_ledger(root, report_stem, portfolio["rows"], portfolio_backtest["equity"])
     costs = run_research_cost_monitor(root, report_stem)
@@ -141,6 +149,7 @@ def main() -> None:
         f"- portfolio backtest CSV: {portfolio_backtest['path']}",
         f"- portfolio equity CSV: {portfolio_backtest['equity_path']}",
         f"- deployment gate CSV: {deployment_gate['path']}",
+        f"- weekly validation gate: {weekly_gate.status} / {weekly_gate.tier}",
         f"- signals CSV: {signals['path']}",
         f"- paper ledger CSV: {paper_ledger['path']}",
         f"- paper positions CSV: {paper_ledger['positions_path']}",
@@ -171,6 +180,8 @@ def main() -> None:
         "",
         *summarize_portfolio_scoring(portfolio["rows"]),
         *summarize_portfolio_backtest(portfolio_backtest["summary"]),
+        "",
+        *render_weekly_validation_gate_markdown(weekly_gate).splitlines(),
         "",
         "## Deployment Gate",
         "",
