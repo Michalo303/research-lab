@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+import re
+import subprocess
+import sys
+from datetime import date, datetime, timezone
 from pathlib import Path
+from typing import Any
 
 
 def write_strategy_card(path: Path, result: dict) -> None:
@@ -49,9 +53,9 @@ def write_strategy_card(path: Path, result: dict) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def write_daily_report(path: Path, results: list[dict]) -> None:
+def write_daily_report(path: Path, results: list[dict], report_date: date | None = None, run_metadata: dict | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    today = date.today().isoformat()
+    today = (report_date or date.today()).isoformat()
     accepted = [r for r in results if r["tier"] in {"A", "B"}]
     rejected = [r for r in results if r["tier"] == "Rejected"]
     best = max(results, key=lambda r: r["split_metrics"]["unseen"]["mar"]) if results else None
@@ -116,7 +120,77 @@ def write_daily_report(path: Path, results: list[dict]) -> None:
         "",
         *next_actions,
     ]
+    if run_metadata:
+        lines.extend(_run_metadata_lines(run_metadata))
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def write_daily_report_artifacts(
+    root: Path,
+    results: list[dict],
+    *,
+    timestamp: datetime | None = None,
+    git_info: dict[str, Any] | None = None,
+    command: list[str] | str | None = None,
+    runner_name: str = "run_daily_research",
+    run_id: str | None = None,
+    allow_existing_run_id: bool = False,
+) -> dict[str, Any]:
+    timestamp_utc = _utc_timestamp(timestamp)
+    report_day = timestamp_utc.date()
+    git = git_info if git_info is not None else collect_git_info(root)
+    actual_run_id = run_id or generate_run_id(timestamp_utc, git.get("commit"))
+    latest_report_path = root / "reports" / "daily" / f"{report_day.isoformat()}.md"
+    run_dir = root / "reports" / "runs" / report_day.isoformat() / actual_run_id
+    run_report_path = run_dir / "daily_report.md"
+    metadata_path = run_dir / "run_metadata.json"
+    if run_dir.exists() and not allow_existing_run_id:
+        raise FileExistsError(f"run artifact already exists for run_id={actual_run_id}: {run_dir}")
+
+    metadata = _sanitize_metadata(
+        {
+            "run_id": actual_run_id,
+            "timestamp_utc": timestamp_utc.isoformat(),
+            "git": {
+                "commit": git.get("commit"),
+                "branch": git.get("branch"),
+                "dirty": git.get("dirty"),
+            },
+            "runner": runner_name,
+            "command": _sanitize_command(command if command is not None else sys.argv),
+            "latest_report_path": _relative_posix(root, latest_report_path),
+            "run_report_path": _relative_posix(root, run_report_path),
+            "data_sources": _data_sources(results),
+            "provider_history_summary": _provider_history_summary(results),
+        }
+    )
+    write_daily_report(latest_report_path, results, report_date=report_day, run_metadata=metadata)
+    write_daily_report(run_report_path, results, report_date=report_day, run_metadata=metadata)
+    metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return {
+        "run_id": actual_run_id,
+        "latest_report_path": latest_report_path,
+        "run_report_path": run_report_path,
+        "metadata_path": metadata_path,
+        "metadata": metadata,
+    }
+
+
+def generate_run_id(timestamp: datetime | None = None, commit: str | None = None) -> str:
+    timestamp_utc = _utc_timestamp(timestamp)
+    commit_part = _short_commit(commit)
+    return f"{timestamp_utc:%Y%m%dT%H%M%S%fZ}-{commit_part}"
+
+
+def collect_git_info(root: Path) -> dict[str, Any]:
+    commit = _git_output(root, "rev-parse", "HEAD")
+    branch = _git_output(root, "rev-parse", "--abbrev-ref", "HEAD")
+    tracked_status = _git_output(root, "status", "--short", "--untracked-files=no")
+    return {
+        "commit": commit,
+        "branch": branch if branch != "HEAD" else None,
+        "dirty": bool(tracked_status) if tracked_status is not None else None,
+    }
 
 
 def _rejection_diagnostics_rows(rejected: list[dict]) -> list[str]:
@@ -246,3 +320,174 @@ def _next_actions(results: list[dict]) -> list[str]:
         "- Add walk-forward and parameter-neighborhood stability for the weekly deep run.",
         "- Add data integrity checks before any strategy can rise above paper-only research.",
     ]
+
+
+def _run_metadata_lines(metadata: dict[str, Any]) -> list[str]:
+    git = metadata.get("git", {})
+    return [
+        "",
+        "## Run Metadata",
+        "",
+        f"- run_id: {metadata.get('run_id', '')}",
+        f"- timestamp_utc: {metadata.get('timestamp_utc', '')}",
+        f"- git_commit: {git.get('commit') or 'unknown'}",
+        f"- git_branch: {git.get('branch') or 'unknown'}",
+        f"- git_dirty: {git.get('dirty')}",
+        f"- immutable_report_path: {metadata.get('run_report_path', '')}",
+    ]
+
+
+def _utc_timestamp(value: datetime | None) -> datetime:
+    if value is None:
+        return datetime.now(timezone.utc)
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _short_commit(commit: str | None) -> str:
+    if not commit:
+        return "nogit"
+    return re.sub(r"[^0-9A-Za-z]", "", commit)[:7] or "nogit"
+
+
+def _git_output(root: Path, *args: str) -> str | None:
+    try:
+        completed = subprocess.run(
+            ["git", *args],
+            cwd=root,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if completed.returncode != 0:
+        return None
+    return completed.stdout.strip()
+
+
+def _relative_posix(root: Path, path: Path) -> str:
+    try:
+        return path.relative_to(root).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
+def _data_sources(results: list[dict]) -> list[str]:
+    sources = {
+        str(result.get("data_manifest", {}).get("source") or result.get("data_source", ""))
+        for result in results
+        if result.get("data_manifest", {}).get("source") or result.get("data_source")
+    }
+    return sorted(sources)
+
+
+def _provider_history_summary(results: list[dict]) -> list[dict[str, Any]]:
+    by_source: dict[str, dict[str, Any]] = {}
+    for result in results:
+        manifest = result.get("data_manifest", {})
+        source = str(manifest.get("source") or result.get("data_source", "unknown"))
+        summary = by_source.setdefault(
+            source,
+            {
+                "source": source,
+                "start": manifest.get("start"),
+                "end": manifest.get("end"),
+                "rows": manifest.get("rows"),
+                "years": manifest.get("years"),
+                "symbols": [],
+                "symbol_history": [],
+            },
+        )
+        summary["start"] = _min_non_empty(summary.get("start"), manifest.get("start"))
+        summary["end"] = _max_non_empty(summary.get("end"), manifest.get("end"))
+        summary["rows"] = _max_number(summary.get("rows"), manifest.get("rows"))
+        summary["years"] = _max_number(summary.get("years"), manifest.get("years"))
+        summary["symbols"] = sorted(set(summary["symbols"]) | {str(symbol) for symbol in manifest.get("symbols", [])})
+        summary["symbol_history"].extend(_symbol_history(manifest))
+    return [by_source[source] for source in sorted(by_source)]
+
+
+def _symbol_history(manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    allowed = ("requested_symbol", "selected_provider", "first_date", "last_date", "daily_bars", "history_years")
+    rows = []
+    for row in manifest.get("symbol_diagnostics", []):
+        rows.append({key: row.get(key) for key in allowed if key in row})
+    return rows
+
+
+def _min_non_empty(left: Any, right: Any) -> Any:
+    if left in {None, ""}:
+        return right
+    if right in {None, ""}:
+        return left
+    return min(str(left), str(right))
+
+
+def _max_non_empty(left: Any, right: Any) -> Any:
+    if left in {None, ""}:
+        return right
+    if right in {None, ""}:
+        return left
+    return max(str(left), str(right))
+
+
+def _max_number(left: Any, right: Any) -> Any:
+    if left is None:
+        return right
+    if right is None:
+        return left
+    try:
+        return max(float(left), float(right))
+    except (TypeError, ValueError):
+        return left
+
+
+def _sanitize_metadata(value: Any, key: str = "") -> Any:
+    if _is_secret_key(key):
+        return "<redacted>"
+    if isinstance(value, dict):
+        return {item_key: _sanitize_metadata(item_value, str(item_key)) for item_key, item_value in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_metadata(item) for item in value]
+    if isinstance(value, str):
+        return _redact_secret_assignments(value)
+    return value
+
+
+def _sanitize_command(command: list[str] | str) -> list[str] | str:
+    if isinstance(command, str):
+        return _redact_secret_assignments(command)
+    sanitized = []
+    redact_next = False
+    for token in command:
+        text = str(token)
+        if redact_next:
+            sanitized.append("<redacted>")
+            redact_next = False
+            continue
+        if "=" in text:
+            name, value = text.split("=", 1)
+            if _is_secret_key(name):
+                sanitized.append(f"{name}=<redacted>")
+            else:
+                sanitized.append(_redact_secret_assignments(text))
+            continue
+        sanitized.append(_redact_secret_assignments(text))
+        if text.startswith("-") and _is_secret_key(text):
+            redact_next = True
+    return sanitized
+
+
+def _is_secret_key(key: str) -> bool:
+    return bool(re.search(r"(api[-_]?key|token|secret|password|credential|auth)", key, flags=re.IGNORECASE))
+
+
+def _redact_secret_assignments(value: str) -> str:
+    return re.sub(
+        r"(?i)\b(api[-_]?key|token|secret|password|credential|auth)(=)[^\s&]+",
+        lambda match: f"{match.group(1)}{match.group(2)}<redacted>",
+        value,
+    )

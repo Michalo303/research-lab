@@ -9,7 +9,7 @@ from research_lab.backtest import close_frame, cost_stress, weighted_backtest
 from research_lab.config import LabConfig, ensure_project_structure
 from research_lab.data import DataBundle, load_daily_universe, load_eodhd_daily_universe, load_intraday_symbol, load_massive_daily_universe
 from research_lab.registry import append_jsonl, write_allocation_model, write_leaderboard
-from research_lab.reports import write_daily_report, write_strategy_card
+from research_lab.reports import write_daily_report_artifacts, write_strategy_card
 from research_lab.strategies.baselines import build_weights, baseline_strategies, queued_daily_symbols, queued_hypothesis_strategies
 from research_lab.tiering import classify_strategy
 from research_lab.walk_forward import run_true_walk_forward
@@ -119,7 +119,7 @@ def run_daily_research(root: Path | None = None) -> list[dict]:
     leaderboard_rows = [_leaderboard_row(r) for r in results]
     write_leaderboard(config.root / "registry" / "leaderboard.csv", leaderboard_rows)
     write_allocation_model(config.root / "registry" / "allocation_model.csv", leaderboard_rows)
-    write_daily_report(config.root / "reports" / "daily" / f"{date.today().isoformat()}.md", results)
+    write_daily_report_artifacts(config.root, results)
     return results
 
 
