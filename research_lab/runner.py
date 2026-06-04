@@ -8,6 +8,7 @@ import re
 from research_lab.backtest import close_frame, cost_stress, weighted_backtest
 from research_lab.config import LabConfig, ensure_project_structure
 from research_lab.data import DataBundle, load_daily_universe, load_eodhd_daily_universe, load_intraday_symbol, load_massive_daily_universe
+from research_lab.drawdown_diagnostics import compute_drawdown_diagnostics
 from research_lab.registry import append_jsonl, write_allocation_model, write_leaderboard
 from research_lab.reports import write_daily_report_artifacts, write_strategy_card
 from research_lab.strategies.baselines import build_weights, baseline_strategies, queued_daily_symbols, queued_hypothesis_strategies
@@ -101,6 +102,7 @@ def run_daily_research(root: Path | None = None) -> list[dict]:
             "cost_stress": stress,
             "metrics": backtest["metrics"],
             "split_metrics": backtest["split_metrics"],
+            "drawdown_diagnostics": compute_drawdown_diagnostics(backtest["equity"], cagr=backtest["metrics"].get("cagr")),
             "walk_forward": walk_forward,
             "average_turnover": backtest["average_turnover"],
             "average_exposure": backtest["average_exposure"],
