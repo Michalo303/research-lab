@@ -109,6 +109,8 @@ cat data/manifests/daily_universe.json
 
 The manifest must show `"source": "eodhd"` and a history length matching the available EODHD coverage. If the daily report shows `massive`, systemd did not receive `EODHD_API_KEY` or the server is on an older checkout.
 
+Daily report reruns keep the dashboard-compatible latest path at `reports/daily/YYYY-MM-DD.md`. Each run also writes an immutable copy to `reports/runs/YYYY-MM-DD/<run_id>/daily_report.md` with `run_metadata.json` beside it. Use the run metadata to trace the UTC timestamp, git commit, branch, dirty status, data sources, and provider history summary for manual reruns.
+
 ## Massive Stocks Starter Fallback
 
 Use Massive only as an explicit fallback when EODHD is not configured or an EODHD outage is being investigated:
