@@ -8,9 +8,13 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from research_lab.drawdown_diagnostics import drawdown_diagnostics_for_result
+
 
 def write_strategy_card(path: Path, result: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    drawdown = drawdown_diagnostics_for_result(result)
+    recovery_label = _format_recovery_date(drawdown)
     lines = [
         f"# Strategy Card: {result['strategy_id']}",
         "",
@@ -36,6 +40,13 @@ def write_strategy_card(path: Path, result: dict) -> None:
         "",
         "## Drawdown",
         f"Unseen max drawdown: {result['split_metrics']['unseen']['max_drawdown']:.2%}.",
+        f"Worst drawdown start: {_format_optional_date(drawdown['worst_drawdown_start'])}.",
+        f"Worst drawdown trough: {_format_optional_date(drawdown['worst_drawdown_trough'])}.",
+        f"Worst drawdown recovery: {recovery_label}.",
+        f"Drawdown duration days: {drawdown['drawdown_duration_days']}.",
+        f"Worst calendar-year return: {_format_percent(drawdown['worst_year_return'])}.",
+        f"Best calendar-year return: {_format_percent(drawdown['best_year_return'])}.",
+        f"CAGR / abs(max drawdown): {drawdown['cagr_to_drawdown_ratio']:.2f}.",
         "",
         "## Robustness",
         f"Double-cost stress survives: {result['cost_stress']['survives_double_cost']}. Parameter stability is marked as TODO for deeper weekly runs.",
@@ -63,6 +74,8 @@ def write_daily_report(path: Path, results: list[dict], report_date: date | None
     source_note = _source_note(results)
     next_actions = _next_actions(results)
     rejection_diagnostics = _rejection_diagnostics_rows(rejected)
+    drawdown_diagnostics = _drawdown_diagnostics_rows(results)
+    rejection_drawdown_attribution = _rejection_drawdown_attribution_rows(rejected)
     rows = [
         "| strategy_id | family | asset | timeframe | data_source | train | validation | unseen | max_dd | tier |",
         "|---|---|---|---|---|---:|---:|---:|---:|---|",
@@ -111,6 +124,12 @@ def write_daily_report(path: Path, results: list[dict], report_date: date | None
         "## Rejection Diagnostics",
         "",
         *rejection_diagnostics,
+        "",
+        *rejection_drawdown_attribution,
+        "",
+        "## Drawdown Diagnostics",
+        "",
+        *drawdown_diagnostics,
         "",
         "## Leaderboard Changes",
         "",
@@ -191,6 +210,56 @@ def collect_git_info(root: Path) -> dict[str, Any]:
         "branch": branch if branch != "HEAD" else None,
         "dirty": bool(tracked_status) if tracked_status is not None else None,
     }
+
+
+def _drawdown_diagnostics_rows(results: list[dict]) -> list[str]:
+    if not results:
+        return ["- none"]
+    rows = [
+        "| strategy_id | start | trough | recovery | duration_days | max_dd | worst_year | best_year | cagr_to_dd |",
+        "|---|---|---|---|---:|---:|---:|---:|---:|",
+    ]
+    for result in results:
+        diagnostic = drawdown_diagnostics_for_result(result)
+        rows.append(
+            "| {strategy_id} | {start} | {trough} | {recovery} | {duration} | {max_dd} | {worst_year} | {best_year} | {ratio:.2f} |".format(
+                strategy_id=result["strategy_id"],
+                start=_format_optional_date(diagnostic["worst_drawdown_start"]),
+                trough=_format_optional_date(diagnostic["worst_drawdown_trough"]),
+                recovery=_format_recovery_date(diagnostic),
+                duration=diagnostic["drawdown_duration_days"],
+                max_dd=_format_percent(diagnostic["max_drawdown"]),
+                worst_year=_format_percent(diagnostic["worst_year_return"]),
+                best_year=_format_percent(diagnostic["best_year_return"]),
+                ratio=diagnostic["cagr_to_drawdown_ratio"],
+            )
+        )
+    return rows
+
+
+def _rejection_drawdown_attribution_rows(rejected: list[dict]) -> list[str]:
+    if not rejected:
+        return ["### Rejection Drawdown Attribution", "", "- none"]
+    rows = ["### Rejection Drawdown Attribution", ""]
+    for result in rejected:
+        diagnostic = drawdown_diagnostics_for_result(result)
+        rows.append(
+            "- {strategy_id}: worst_drawdown_start={start}; worst_drawdown_trough={trough}; "
+            "worst_drawdown_recovery={recovery}; drawdown_duration_days={duration}; "
+            "max_drawdown={max_dd}; worst_year_return={worst_year}; best_year_return={best_year}; "
+            "cagr_to_drawdown_ratio={ratio:.2f}".format(
+                strategy_id=result["strategy_id"],
+                start=diagnostic["worst_drawdown_start"],
+                trough=diagnostic["worst_drawdown_trough"],
+                recovery=diagnostic["worst_drawdown_recovery"] or "unrecovered",
+                duration=diagnostic["drawdown_duration_days"],
+                max_dd=_format_percent(diagnostic["max_drawdown"]),
+                worst_year=_format_percent(diagnostic["worst_year_return"]),
+                best_year=_format_percent(diagnostic["best_year_return"]),
+                ratio=diagnostic["cagr_to_drawdown_ratio"],
+            )
+        )
+    return rows
 
 
 def _rejection_diagnostics_rows(rejected: list[dict]) -> list[str]:
@@ -286,6 +355,16 @@ def _failure(reason: str, metric: str, actual: str, threshold: str) -> dict:
 
 def _format_percent(value: float) -> str:
     return f"{value:.2%}"
+
+
+def _format_optional_date(value: Any) -> str:
+    return str(value) if value else "none"
+
+
+def _format_recovery_date(diagnostic: dict[str, Any]) -> str:
+    if diagnostic.get("worst_drawdown_recovery"):
+        return str(diagnostic["worst_drawdown_recovery"])
+    return "unrecovered" if diagnostic.get("worst_drawdown_start") else "none"
 
 
 def _source_note(results: list[dict]) -> str:
