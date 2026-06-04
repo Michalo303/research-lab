@@ -7,26 +7,7 @@ from statistics import median
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from research_lab.alerting import build_weekly_alerts, summarize_alerts, write_and_send_alerts
-from research_lab.apify_dataroma import DEFAULT_SUPERINVESTORS, run_dataroma_actor
-from research_lab.cost_monitor import run_research_cost_monitor, summarize_research_costs
-from research_lab.dashboard import validate_static_dashboard, write_static_dashboard
-from research_lab.data_quality import run_data_quality_audit
-from research_lab.deployment_gate import run_deployment_gate, summarize_deployment_gate
-from research_lab.event_study import run_event_window_study
-from research_lab.fundamentals import enrich_smartmoney_fundamentals
-from research_lab.hypothesis_dedupe import audit_hypothesis_queue
-from research_lab.parameter_sweep import run_parameter_sweep, summarize_parameter_sweep
-from research_lab.paper_ledger import run_paper_portfolio_ledger, summarize_paper_ledger
-from research_lab.portfolio import (
-    run_portfolio_combination_backtest,
-    run_portfolio_scoring,
-    summarize_portfolio_backtest,
-    summarize_portfolio_scoring,
-)
-from research_lab.robustness import summarize_weekly_robustness, write_weekly_robustness_outputs
-from research_lab.sentiment import summarize_sentiment_for_weekly
-from research_lab.signals import run_signal_generation, summarize_signals
+from research_lab.robustness import summarize_weekly_robustness
 from research_lab.weekly_validation_gate import (
     build_weekly_validation_metrics,
     evaluate_weekly_validation_gate,
@@ -79,7 +60,36 @@ def _true_walk_forward_regime_breakdown(rows):
     return "; ".join(f"{regime} {passed}/{total}" for regime, (passed, total) in sorted(totals.items()))
 
 
+def build_weekly_validation_gate_section(robustness_rows, deployment_rows, evaluated_at=None) -> list[str]:
+    weekly_gate = evaluate_weekly_validation_gate(
+        build_weekly_validation_metrics(robustness_rows, deployment_rows),
+        evaluated_at=evaluated_at,
+    )
+    return render_weekly_validation_gate_markdown(weekly_gate).splitlines()
+
+
 def main() -> None:
+    from research_lab.alerting import build_weekly_alerts, summarize_alerts, write_and_send_alerts
+    from research_lab.apify_dataroma import DEFAULT_SUPERINVESTORS, run_dataroma_actor
+    from research_lab.cost_monitor import run_research_cost_monitor, summarize_research_costs
+    from research_lab.dashboard import validate_static_dashboard, write_static_dashboard
+    from research_lab.data_quality import run_data_quality_audit
+    from research_lab.deployment_gate import run_deployment_gate, summarize_deployment_gate
+    from research_lab.event_study import run_event_window_study
+    from research_lab.fundamentals import enrich_smartmoney_fundamentals
+    from research_lab.hypothesis_dedupe import audit_hypothesis_queue
+    from research_lab.parameter_sweep import run_parameter_sweep, summarize_parameter_sweep
+    from research_lab.paper_ledger import run_paper_portfolio_ledger, summarize_paper_ledger
+    from research_lab.portfolio import (
+        run_portfolio_combination_backtest,
+        run_portfolio_scoring,
+        summarize_portfolio_backtest,
+        summarize_portfolio_scoring,
+    )
+    from research_lab.robustness import write_weekly_robustness_outputs
+    from research_lab.sentiment import summarize_sentiment_for_weekly
+    from research_lab.signals import run_signal_generation, summarize_signals
+
     root = Path.cwd()
     apify_status = "skipped: APIFY_TOKEN is not set"
     if os.getenv("APIFY_TOKEN", "").strip():
@@ -181,7 +191,11 @@ def main() -> None:
         *summarize_portfolio_scoring(portfolio["rows"]),
         *summarize_portfolio_backtest(portfolio_backtest["summary"]),
         "",
-        *render_weekly_validation_gate_markdown(weekly_gate).splitlines(),
+        *build_weekly_validation_gate_section(
+            robustness["robustness_rows"],
+            deployment_gate["rows"],
+            evaluated_at=weekly_gate.evaluated_at,
+        ),
         "",
         "## Deployment Gate",
         "",
