@@ -1,27 +1,25 @@
 from __future__ import annotations
 
 import json
-import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from research_lab.edge import classify_edge
+from research_lab.queue_dedupe import audit_queue_file, candidate_fingerprint
 
 
 def hypothesis_fingerprint(item: dict[str, Any]) -> str:
-    family = _token(item.get("family", "unknown"))
-    ticker = _token(item.get("ticker", ""))
-    source_group = _source_group(item)
-    edge_bucket = classify_edge(item)["edge_bucket"]
-    title_family = _title_family(item)
-    if ticker:
-        return "|".join(["ticker", family, source_group, ticker, edge_bucket])
-    return "|".join(["theme", family, source_group, edge_bucket, title_family])
+    return candidate_fingerprint(item)
 
 
 def existing_hypothesis_fingerprints(path: Path) -> set[str]:
-    return {hypothesis_fingerprint(item) for item in read_hypotheses(path)}
+    fingerprints = set()
+    for item in read_hypotheses(path):
+        try:
+            fingerprints.add(hypothesis_fingerprint(item))
+        except ValueError:
+            continue
+    return fingerprints
 
 
 def read_hypotheses(path: Path) -> list[dict[str, Any]]:
@@ -41,41 +39,35 @@ def read_hypotheses(path: Path) -> list[dict[str, Any]]:
 
 
 def dedupe_hypotheses(items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    kept = []
-    duplicates = []
-    seen = set()
-    for item in items:
-        fingerprint = hypothesis_fingerprint(item)
-        enriched = {**item, "dedupe_fingerprint": fingerprint}
-        if fingerprint in seen:
-            duplicates.append(enriched)
-            continue
-        kept.append(enriched)
-        seen.add(fingerprint)
+    result = audit_items(items)
+    kept = [_with_fingerprint(item) for item in result.retained_records]
+    duplicates = [_with_fingerprint(item) for item in result.duplicate_records]
     return kept, duplicates
+
+
+def audit_items(items: list[dict[str, Any]]):
+    from research_lab.queue_dedupe import dedupe_candidates
+
+    return dedupe_candidates(items)
 
 
 def audit_hypothesis_queue(root: Path, apply: bool = False) -> dict[str, Any]:
     path = root / "registry" / "hypothesis_queue.jsonl"
-    items = read_hypotheses(path)
-    kept, duplicates = dedupe_hypotheses(items)
+    result = audit_queue_file(path, write=apply, backup_stamp=_archive_stamp() if apply else None)
     report_path = root / "reports" / "self_improvement" / "hypothesis_dedupe_audit.md"
     report_path.parent.mkdir(parents=True, exist_ok=True)
-    archive_path: Path | None = None
-    if apply and path.exists():
-        archive_path = path.with_name(f"{path.stem}.{_archive_stamp()}.before_dedupe{path.suffix}")
-        archive_path.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
-        with path.open("w", encoding="utf-8") as handle:
-            for item in kept:
-                handle.write(json.dumps(_without_runtime_fingerprint(item), sort_keys=True) + "\n")
-    _write_report(report_path, len(items), kept, duplicates, apply, archive_path)
+    _write_report(report_path, result)
     return {
-        "total": len(items),
-        "kept": len(kept),
-        "duplicates": len(duplicates),
+        "total": result.input_count,
+        "kept": result.retained_count,
+        "duplicates": result.duplicate_count,
         "report_path": report_path,
-        "applied": apply,
-        "archive_path": archive_path,
+        "applied": result.applied,
+        "archive_path": result.backup_path,
+        "malformed": result.malformed_count,
+        "fingerprints_generated": result.fingerprints_generated,
+        "duplicate_groups": result.duplicate_groups,
+        "warnings": result.warnings,
     }
 
 
@@ -83,78 +75,39 @@ def _archive_stamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
-def _source_group(item: dict[str, Any]) -> str:
-    source_key = str(item.get("source_key", "")).lower()
-    source_title = str(item.get("source_title", "")).lower()
-    source_url = str(item.get("source_url", "")).lower()
-    for value in (source_key, source_title, source_url):
-        if value.startswith("smartmoney"):
-            return "smartmoney"
-        if "dataroma" in value or "13f" in value:
-            return "filings"
-        if "quantocracy" in value:
-            return "quantocracy"
-        if "arxiv" in value:
-            return "arxiv"
-        if value:
-            return _token(value.split(":")[0].split("/")[2] if "://" in value and len(value.split("/")) > 2 else value.split(":")[0])
-    return "unknown"
+def _with_fingerprint(item: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return {**item, "dedupe_fingerprint": hypothesis_fingerprint(item)}
+    except ValueError:
+        return dict(item)
 
 
-def _title_family(item: dict[str, Any]) -> str:
-    title = str(item.get("title", ""))
-    normalized = title.lower()
-    replacements = {
-        "regime-filtered": "momentum",
-        "top-n": "momentum",
-        "dual momentum": "momentum",
-        "pullback": "pullback",
-        "mean reversion": "pullback",
-        "volatility-targeted": "volatility",
-        "vwap": "intraday",
-    }
-    for phrase, family in replacements.items():
-        if phrase in normalized:
-            return family
-    tokens = [token for token in re.split(r"[^a-z0-9]+", normalized) if token]
-    return "-".join(tokens[:4]) or "untitled"
-
-
-def _token(value: Any) -> str:
-    return re.sub(r"[^a-z0-9._-]+", "-", str(value).strip().lower()).strip("-")
-
-
-def _without_runtime_fingerprint(item: dict[str, Any]) -> dict[str, Any]:
-    output = dict(item)
-    output.pop("dedupe_fingerprint", None)
-    return output
-
-
-def _write_report(
-    path: Path,
-    total: int,
-    kept: list[dict[str, Any]],
-    duplicates: list[dict[str, Any]],
-    applied: bool,
-    archive_path: Path | None,
-) -> None:
+def _write_report(path: Path, result) -> None:
     lines = [
         "# Hypothesis Dedupe Audit",
         "",
-        f"- total hypotheses: {total}",
-        f"- kept: {len(kept)}",
-        f"- duplicates: {len(duplicates)}",
-        f"- applied: {applied}",
-        f"- archive_path: {archive_path or ''}",
+        f"- input_count: {result.input_count}",
+        f"- retained_count: {result.retained_count}",
+        f"- duplicate_count: {result.duplicate_count}",
+        f"- malformed_count: {result.malformed_count}",
+        f"- fingerprints_generated: {result.fingerprints_generated}",
+        f"- applied: {result.applied}",
+        f"- backup_path: {result.backup_path or ''}",
+        f"- archive_path: {result.backup_path or ''}",
         "",
-        "## Duplicate Examples",
+        "## Duplicate Groups",
         "",
     ]
-    for item in duplicates[:50]:
+    for group in result.duplicate_groups[:50]:
         lines.extend(
             [
-                f"- {item.get('hypothesis_id', '')}: {item.get('title', '')}",
-                f"  fingerprint: {item.get('dedupe_fingerprint', '')}",
+                f"- fingerprint: {group.get('fingerprint', '')}",
+                f"  retained_index: {group.get('retained_index', '')}",
+                f"  duplicate_indices: {group.get('duplicate_indices', [])}",
+                f"  reason: {group.get('reason', '')}",
             ]
         )
+    if result.warnings:
+        lines.extend(["", "## Warnings", ""])
+        lines.extend(f"- {warning}" for warning in result.warnings[:50])
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
