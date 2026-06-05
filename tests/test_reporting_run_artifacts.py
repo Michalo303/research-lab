@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from research_lab.reports import classify_git_dirty_paths, write_daily_report_artifacts
+from research_lab.reports import _dirty_paths_from_git_status, classify_git_dirty_paths, write_daily_report_artifacts
 
 
 def test_daily_report_artifacts_include_run_id_metadata_and_expected_paths(tmp_path):
@@ -290,6 +290,107 @@ def test_report_artifact_writer_does_not_stage_runtime_outputs(tmp_path):
     ],
 )
 def test_classify_git_dirty_paths(dirty_paths, expected):
+    assert classify_git_dirty_paths(dirty_paths) == expected
+
+
+@pytest.mark.parametrize(
+    ("status_lines", "expected"),
+    [
+        (
+            [" M data/manifests/daily_universe.json"],
+            {
+                "dirty": True,
+                "code_dirty": False,
+                "runtime_artifacts_dirty": True,
+                "dirty_files": ["data/manifests/daily_universe.json"],
+                "dirty_classification": "runtime_artifacts_only",
+            },
+        ),
+        (
+            [" M data/manifests/daily_universe.json", " M registry/leaderboard.csv"],
+            {
+                "dirty": True,
+                "code_dirty": False,
+                "runtime_artifacts_dirty": True,
+                "dirty_files": ["data/manifests/daily_universe.json", "registry/leaderboard.csv"],
+                "dirty_classification": "runtime_artifacts_only",
+            },
+        ),
+        (
+            ["M  registry/leaderboard.csv"],
+            {
+                "dirty": True,
+                "code_dirty": False,
+                "runtime_artifacts_dirty": True,
+                "dirty_files": ["registry/leaderboard.csv"],
+                "dirty_classification": "runtime_artifacts_only",
+            },
+        ),
+        (
+            [" M research_lab/reports.py"],
+            {
+                "dirty": True,
+                "code_dirty": True,
+                "runtime_artifacts_dirty": False,
+                "dirty_files": ["research_lab/reports.py"],
+                "dirty_classification": "code_or_config_dirty",
+            },
+        ),
+        (
+            [" M data/manifests/daily_universe.json", " M research_lab/reports.py"],
+            {
+                "dirty": True,
+                "code_dirty": True,
+                "runtime_artifacts_dirty": True,
+                "dirty_files": ["data/manifests/daily_universe.json", "research_lab/reports.py"],
+                "dirty_classification": "mixed_code_and_runtime_dirty",
+            },
+        ),
+        (
+            ["?? tests/test_new_file.py"],
+            {
+                "dirty": True,
+                "code_dirty": True,
+                "runtime_artifacts_dirty": False,
+                "dirty_files": ["tests/test_new_file.py"],
+                "dirty_classification": "code_or_config_dirty",
+            },
+        ),
+        (
+            ["A  research_lab/new_file.py"],
+            {
+                "dirty": True,
+                "code_dirty": True,
+                "runtime_artifacts_dirty": False,
+                "dirty_files": ["research_lab/new_file.py"],
+                "dirty_classification": "code_or_config_dirty",
+            },
+        ),
+        (
+            ["MM registry/experiments.jsonl"],
+            {
+                "dirty": True,
+                "code_dirty": False,
+                "runtime_artifacts_dirty": True,
+                "dirty_files": ["registry/experiments.jsonl"],
+                "dirty_classification": "runtime_artifacts_only",
+            },
+        ),
+        (
+            ["R  data/manifests/old_daily_universe.json -> data/manifests/daily_universe.json"],
+            {
+                "dirty": True,
+                "code_dirty": False,
+                "runtime_artifacts_dirty": True,
+                "dirty_files": ["data/manifests/daily_universe.json"],
+                "dirty_classification": "runtime_artifacts_only",
+            },
+        ),
+    ],
+)
+def test_dirty_metadata_classifies_raw_git_short_status(status_lines, expected):
+    dirty_paths = _dirty_paths_from_git_status("\n".join(status_lines))
+
     assert classify_git_dirty_paths(dirty_paths) == expected
 
 

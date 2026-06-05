@@ -257,11 +257,14 @@ def _git_metadata(git: dict[str, Any]) -> dict[str, Any]:
 def _dirty_paths_from_git_status(status: str) -> list[str]:
     paths: list[str] = []
     for line in status.splitlines():
-        if len(line) < 4:
+        if not line:
             continue
-        path_text = line[3:]
+        status_columns = line[:2]
+        path_text = line[3:] if len(line) > 3 and line[2] == " " else line[2:].lstrip()
+        if not status_columns.strip() or not path_text:
+            continue
         if " -> " in path_text:
-            paths.extend(_clean_status_path(part) for part in path_text.split(" -> ", 1))
+            paths.append(_clean_status_path(path_text.split(" -> ", 1)[1]))
         else:
             paths.append(_clean_status_path(path_text))
     return paths
