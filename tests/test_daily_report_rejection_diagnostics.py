@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from research_lab.reports import build_rejection_diagnostics, write_daily_report
+from research_lab.reports import build_next_research_guidance, build_rejection_diagnostics, write_daily_report
 
 
 def test_rejection_diagnostics_include_weak_validation_and_unseen_returns():
@@ -143,6 +143,105 @@ def test_daily_report_renders_stable_rejection_diagnostics_for_non_accepted_stra
         "walk_forward_pass_rate | 50.00% | >= 67.00% |"
     ) in first_section
     assert "ACCEPTED" not in first_section
+
+
+def test_next_research_guidance_prioritizes_dominant_blocker_category():
+    results = [
+        _result(
+            strategy_id="ACCEPTED",
+            tier="A",
+            tier_reason="Passes Tier A return, drawdown, cost, and trade-quality gates.",
+        ),
+        _result(
+            strategy_id="RETURN_1",
+            tier="Rejected",
+            tier_reason="Negative unseen result.",
+            split_metrics={"validation": {"cagr": -0.01}, "unseen": {"cagr": -0.02}},
+        ),
+        _result(
+            strategy_id="RETURN_2",
+            tier="Rejected",
+            tier_reason="Negative unseen result.",
+            split_metrics={"validation": {"cagr": -0.03}, "unseen": {"cagr": -0.04}},
+        ),
+        _result(
+            strategy_id="DRAWDOWN",
+            tier="Rejected",
+            tier_reason="Unseen max drawdown exceeds 15%.",
+            split_metrics={"unseen": {"max_drawdown": -0.22}},
+        ),
+    ]
+
+    assert build_next_research_guidance(results) == [
+        "- dominant blocker category: unseen return weakness (4 signals across 2 strategies)",
+        "- next research direction: prioritize ideas with positive validation and unseen CAGR before relaxing any risk or promotion gates.",
+        "- blocker mix: unseen return weakness=4; risk/drawdown=1",
+        "- data quality: no synthetic/fallback data signal in rejection diagnostics.",
+        "- confidence: enough diagnostic signals for conservative next-step guidance.",
+    ]
+
+
+def test_next_research_guidance_uses_fixed_tie_breaking_and_notes_synthetic_fallback():
+    results = [
+        _result(
+            strategy_id="RETURN",
+            tier="Rejected",
+            tier_reason="Negative unseen result.",
+            split_metrics={"unseen": {"cagr": -0.01}},
+            data_manifest={"source": "synthetic", "years": 2.5, "fallback_used": True, "fallback_reason": "EODHD failed"},
+        ),
+        _result(
+            strategy_id="RISK",
+            tier="Rejected",
+            tier_reason="Unseen max drawdown exceeds 15%.",
+            split_metrics={"unseen": {"max_drawdown": -0.21}},
+            cost_stress={"survives_double_cost": False, "double_unseen_cagr": -0.03},
+        ),
+    ]
+
+    assert build_next_research_guidance(results) == [
+        "- dominant blocker category: data quality/fallback (3 signals across 1 strategy)",
+        "- next research direction: fix provider coverage, fallback usage, or real-history limits before interpreting strategy performance.",
+        "- blocker mix: data quality/fallback=3; risk/drawdown=2; unseen return weakness=1",
+        "- data quality: synthetic/fallback diagnostics present in 1 strategy; treat guidance as data-quality limited.",
+        "- confidence: enough diagnostic signals for conservative next-step guidance.",
+    ]
+
+
+def test_next_research_guidance_is_inconclusive_without_usable_rejection_diagnostics():
+    accepted_only = [
+        _result(
+            strategy_id="ACCEPTED",
+            tier="A",
+            tier_reason="Passes Tier A return, drawdown, cost, and trade-quality gates.",
+        )
+    ]
+
+    assert build_next_research_guidance(accepted_only) == [
+        "- dominant blocker category: inconclusive",
+        "- next research direction: guidance is limited because there are no rejected or non-accepted strategies with usable diagnostics.",
+        "- blocker mix: none",
+        "- data quality: no synthetic/fallback data signal in rejection diagnostics.",
+        "- confidence: insufficient diagnostic signal; do not infer a research direction from this run.",
+    ]
+
+
+def test_daily_report_renders_next_research_guidance_before_next_actions(tmp_path):
+    path = tmp_path / "daily.md"
+    results = [
+        _result(
+            strategy_id="WEAK_RETURNS",
+            tier="Rejected",
+            tier_reason="Negative unseen result.",
+            split_metrics={"unseen": {"cagr": -0.01}},
+        )
+    ]
+
+    write_daily_report(path, results)
+
+    guidance = _section(path, "## Next Research Guidance", "## Leaderboard Changes")
+    assert "- dominant blocker category: unseen return weakness" in guidance
+    assert "## Next Research Guidance" in path.read_text(encoding="utf-8")
 
 
 def _section(path: Path, start: str, end: str) -> str:
