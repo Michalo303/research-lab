@@ -14,6 +14,14 @@ from research_lab.drawdown_diagnostics import drawdown_diagnostics_for_result
 
 ACCEPTED_TIERS = {"A", "B"}
 
+GUIDANCE_CATEGORY_ORDER = [
+    "data quality/fallback",
+    "risk/drawdown",
+    "unseen return weakness",
+    "walk-forward robustness",
+    "promotion gate",
+]
+
 
 def write_strategy_card(path: Path, result: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -79,6 +87,7 @@ def write_daily_report(path: Path, results: list[dict], report_date: date | None
     source_note = _source_note(results)
     next_actions = _next_actions(results)
     rejection_diagnostics = _rejection_diagnostics_rows(non_accepted)
+    next_research_guidance = build_next_research_guidance(results)
     drawdown_diagnostics = _drawdown_diagnostics_rows(results)
     rejection_drawdown_attribution = _rejection_drawdown_attribution_rows(rejected)
     rows = [
@@ -135,6 +144,10 @@ def write_daily_report(path: Path, results: list[dict], report_date: date | None
         "## Drawdown Diagnostics",
         "",
         *drawdown_diagnostics,
+        "",
+        "## Next Research Guidance",
+        "",
+        *next_research_guidance,
         "",
         "## Leaderboard Changes",
         "",
@@ -392,6 +405,110 @@ def build_rejection_diagnostics(result: dict) -> list[str]:
     if result.get("tier") in ACCEPTED_TIERS:
         return []
     return [failure["reason"] for failure in _rejection_failures(result)]
+
+
+def build_next_research_guidance(results: list[dict]) -> list[str]:
+    signals = _next_research_guidance_signals(results)
+    if not signals:
+        return [
+            "- dominant blocker category: inconclusive",
+            "- next research direction: guidance is limited because there are no rejected or non-accepted strategies with usable diagnostics.",
+            "- blocker mix: none",
+            "- data quality: no synthetic/fallback data signal in rejection diagnostics.",
+            "- confidence: insufficient diagnostic signal; do not infer a research direction from this run.",
+        ]
+
+    counts: dict[str, int] = {}
+    strategies_by_category: dict[str, set[str]] = {}
+    for signal in signals:
+        category = signal["category"]
+        strategy_id = signal["strategy_id"]
+        counts[category] = counts.get(category, 0) + 1
+        strategies_by_category.setdefault(category, set()).add(strategy_id)
+
+    ordered_categories = _ordered_guidance_categories(counts)
+    dominant = ordered_categories[0]
+    dominant_count = counts[dominant]
+    dominant_strategy_count = len(strategies_by_category.get(dominant, set()))
+    data_quality_strategy_count = len(strategies_by_category.get("data quality/fallback", set()))
+
+    return [
+        (
+            f"- dominant blocker category: {dominant} "
+            f"({dominant_count} {_pluralize('signal', dominant_count)} across "
+            f"{dominant_strategy_count} {_pluralize('strategy', dominant_strategy_count)})"
+        ),
+        f"- next research direction: {_guidance_direction(dominant)}",
+        f"- blocker mix: {_guidance_blocker_mix(counts)}",
+        f"- data quality: {_guidance_data_quality_note(data_quality_strategy_count)}",
+        "- confidence: enough diagnostic signals for conservative next-step guidance.",
+    ]
+
+
+def _next_research_guidance_signals(results: list[dict]) -> list[dict[str, str]]:
+    signals = []
+    for result in results:
+        if result.get("tier") in ACCEPTED_TIERS:
+            continue
+        strategy_id = str(result.get("strategy_id") or "unknown")
+        for failure in _rejection_failures(result):
+            category = _guidance_category_for_failure(failure)
+            if category:
+                signals.append({"strategy_id": strategy_id, "category": category})
+    return signals
+
+
+def _guidance_category_for_failure(failure: dict[str, Any]) -> str | None:
+    reason = str(failure.get("reason") or "")
+    if reason in {"missing required provider data", "synthetic/fallback data used", "insufficient real data history"}:
+        return "data quality/fallback"
+    if reason in {"max drawdown too deep", "failed cost stress"}:
+        return "risk/drawdown"
+    if reason in {"validation return below threshold", "unseen return below threshold"}:
+        return "unseen return weakness"
+    if reason in {"insufficient walk-forward robustness", "too few unseen trades"}:
+        return "walk-forward robustness"
+    if reason in {"failed promotion gate", "no accepted tier reached"}:
+        return "promotion gate"
+    return None
+
+
+def _ordered_guidance_categories(counts: dict[str, int]) -> list[str]:
+    priority = {category: index for index, category in enumerate(GUIDANCE_CATEGORY_ORDER)}
+    return sorted(counts, key=lambda category: (-counts[category], priority.get(category, len(priority)), category))
+
+
+def _guidance_direction(category: str) -> str:
+    directions = {
+        "data quality/fallback": "fix provider coverage, fallback usage, or real-history limits before interpreting strategy performance.",
+        "risk/drawdown": "prioritize lower-drawdown and cost-robust variants before relaxing any risk or promotion gates.",
+        "unseen return weakness": "prioritize ideas with positive validation and unseen CAGR before relaxing any risk or promotion gates.",
+        "walk-forward robustness": "prioritize rolling out-of-sample robustness and sufficient unseen trade samples before promoting candidates.",
+        "promotion gate": "inspect the concrete promotion-gate diagnostics before choosing a strategy-family direction.",
+    }
+    return directions.get(category, "guidance is limited because no supported blocker category dominates.")
+
+
+def _guidance_blocker_mix(counts: dict[str, int]) -> str:
+    ordered = _ordered_guidance_categories(counts)
+    if not ordered:
+        return "none"
+    return "; ".join(f"{category}={counts[category]}" for category in ordered)
+
+
+def _guidance_data_quality_note(strategy_count: int) -> str:
+    if strategy_count:
+        return (
+            f"synthetic/fallback diagnostics present in {strategy_count} "
+            f"{_pluralize('strategy', strategy_count)}; treat guidance as data-quality limited."
+        )
+    return "no synthetic/fallback data signal in rejection diagnostics."
+
+
+def _pluralize(word: str, count: int) -> str:
+    if word == "strategy":
+        return word if count == 1 else "strategies"
+    return word if count == 1 else f"{word}s"
 
 
 def _rejection_diagnostic(result: dict) -> dict:
