@@ -78,6 +78,32 @@ def test_true_walk_forward_returns_window_and_aggregate_metrics():
     assert first["passed"] is True
 
 
+def test_true_walk_forward_emits_progress_when_callback_is_supplied(monkeypatch):
+    import research_lab.walk_forward as wf
+
+    panel = _daily_panel(("SPY",), start="2016-01-01", end="2023-12-31")
+    close = panel.xs("close", level=1, axis=1)
+    expected_windows = _rolling_calendar_windows(close.index, 5, 1, 1)
+    messages = []
+    times = iter([10.0, 12.5])
+
+    monkeypatch.setattr(wf, "perf_counter", lambda: next(times))
+
+    result = wf.run_true_walk_forward(
+        _buy_and_hold_spec("SPY"),
+        panel,
+        None,
+        close,
+        cost_bps=0.0,
+        periods_per_year=252,
+        progress_log=messages.append,
+    )
+
+    assert result["status"] == "ok"
+    assert messages[0] == f"true walk-forward start strategy=TEST_BUY_HOLD windows={len(expected_windows)}"
+    assert messages[1].startswith(f"true walk-forward done strategy=TEST_BUY_HOLD windows={len(expected_windows)} elapsed=")
+
+
 def test_true_walk_forward_does_not_build_weights_from_full_history(monkeypatch):
     import research_lab.walk_forward as wf
 
