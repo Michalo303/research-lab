@@ -170,11 +170,7 @@ def write_daily_report_artifacts(
         {
             "run_id": actual_run_id,
             "timestamp_utc": timestamp_utc.isoformat(),
-            "git": {
-                "commit": git.get("commit"),
-                "branch": git.get("branch"),
-                "dirty": git.get("dirty"),
-            },
+            "git": _git_metadata(git),
             "runner": runner_name,
             "command": _sanitize_command(command if command is not None else sys.argv),
             "latest_report_path": _relative_posix(root, latest_report_path),
@@ -204,12 +200,111 @@ def generate_run_id(timestamp: datetime | None = None, commit: str | None = None
 def collect_git_info(root: Path) -> dict[str, Any]:
     commit = _git_output(root, "rev-parse", "HEAD")
     branch = _git_output(root, "rev-parse", "--abbrev-ref", "HEAD")
-    tracked_status = _git_output(root, "status", "--short", "--untracked-files=no")
+    status = _git_output(root, "status", "--short")
+    dirty_paths = _dirty_paths_from_git_status(status or "")
     return {
         "commit": commit,
         "branch": branch if branch != "HEAD" else None,
-        "dirty": bool(tracked_status) if tracked_status is not None else None,
+        **classify_git_dirty_paths(dirty_paths),
     }
+
+
+def classify_git_dirty_paths(dirty_paths: list[str]) -> dict[str, Any]:
+    normalized_paths = _unique_dirty_paths(_normalize_dirty_path(path) for path in dirty_paths)
+    runtime_paths = [path for path in normalized_paths if _is_runtime_artifact_path(path)]
+    code_paths = [path for path in normalized_paths if path not in runtime_paths]
+    code_dirty = bool(code_paths)
+    runtime_artifacts_dirty = bool(runtime_paths)
+
+    if not normalized_paths:
+        dirty_classification = "clean"
+    elif code_dirty and runtime_artifacts_dirty:
+        dirty_classification = "mixed_code_and_runtime_dirty"
+    elif code_dirty:
+        dirty_classification = "code_or_config_dirty"
+    else:
+        dirty_classification = "runtime_artifacts_only"
+
+    return {
+        "dirty": bool(normalized_paths),
+        "code_dirty": code_dirty,
+        "runtime_artifacts_dirty": runtime_artifacts_dirty,
+        "dirty_files": normalized_paths,
+        "dirty_classification": dirty_classification,
+    }
+
+
+def _git_metadata(git: dict[str, Any]) -> dict[str, Any]:
+    fallback = classify_git_dirty_paths(git.get("dirty_files", []))
+    if git.get("dirty") is True and not fallback["dirty"]:
+        fallback = {
+            **fallback,
+            "dirty": True,
+            "code_dirty": True,
+            "dirty_classification": "code_or_config_dirty",
+        }
+    return {
+        "commit": git.get("commit"),
+        "branch": git.get("branch"),
+        "dirty": git.get("dirty", fallback["dirty"]),
+        "code_dirty": git.get("code_dirty", fallback["code_dirty"]),
+        "runtime_artifacts_dirty": git.get("runtime_artifacts_dirty", fallback["runtime_artifacts_dirty"]),
+        "dirty_files": git.get("dirty_files", fallback["dirty_files"]),
+        "dirty_classification": git.get("dirty_classification", fallback["dirty_classification"]),
+    }
+
+
+def _dirty_paths_from_git_status(status: str) -> list[str]:
+    paths: list[str] = []
+    for line in status.splitlines():
+        if len(line) < 4:
+            continue
+        path_text = line[3:]
+        if " -> " in path_text:
+            paths.extend(_clean_status_path(part) for part in path_text.split(" -> ", 1))
+        else:
+            paths.append(_clean_status_path(path_text))
+    return paths
+
+
+def _clean_status_path(path: str) -> str:
+    path = path.strip()
+    if len(path) >= 2 and path[0] == path[-1] == '"':
+        return path[1:-1]
+    return path
+
+
+def _normalize_dirty_path(path: str) -> str:
+    return str(path).strip().replace("\\", "/").lstrip("./")
+
+
+def _unique_dirty_paths(paths: Any) -> list[str]:
+    unique = []
+    seen = set()
+    for path in paths:
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        unique.append(path)
+    return unique
+
+
+def _is_runtime_artifact_path(path: str) -> bool:
+    if path.startswith("reports/runs/"):
+        return True
+    runtime_paths = {
+        "registry/allocation_model.csv",
+        "registry/leaderboard.csv",
+        "registry/experiments.jsonl",
+        "registry/strategy_registry.jsonl",
+    }
+    if path in runtime_paths:
+        return True
+    if path.startswith("data/manifests/") and path.endswith(".json") and "/" not in path.removeprefix("data/manifests/"):
+        return True
+    if path.startswith("reports/daily/") and path.endswith(".md") and "/" not in path.removeprefix("reports/daily/"):
+        return True
+    return False
 
 
 def _drawdown_diagnostics_rows(results: list[dict]) -> list[str]:
@@ -412,8 +507,20 @@ def _run_metadata_lines(metadata: dict[str, Any]) -> list[str]:
         f"- git_commit: {git.get('commit') or 'unknown'}",
         f"- git_branch: {git.get('branch') or 'unknown'}",
         f"- git_dirty: {git.get('dirty')}",
+        f"- code_dirty: {git.get('code_dirty')}",
+        f"- runtime_artifacts_dirty: {git.get('runtime_artifacts_dirty')}",
+        f"- dirty_classification: {git.get('dirty_classification')}",
+        f"- dirty_files: {_format_dirty_files(git.get('dirty_files'))}",
         f"- immutable_report_path: {metadata.get('run_report_path', '')}",
     ]
+
+
+def _format_dirty_files(dirty_files: Any) -> str:
+    if not dirty_files:
+        return "none"
+    if isinstance(dirty_files, list):
+        return ", ".join(str(path) for path in dirty_files) or "none"
+    return str(dirty_files)
 
 
 def _utc_timestamp(value: datetime | None) -> datetime:
