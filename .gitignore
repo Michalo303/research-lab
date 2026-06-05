@@ -15,10 +15,12 @@ APPROVED_FOR_LIVE_IBKR.md
 # Large or replaceable market data
 data/raw/*
 data/processed/*
+data/manifests/*
 
 # Preserve empty data dirs in git.
 !data/raw/.gitkeep
 !data/processed/.gitkeep
+!data/manifests/.gitkeep
 
 # Generated caches and local logs
 *.log
