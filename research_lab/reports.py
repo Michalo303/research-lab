@@ -8,7 +8,12 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from research_lab.config import REAL_EOD_DATA_SOURCES
 from research_lab.drawdown_diagnostics import drawdown_diagnostics_for_result
+from research_lab.tiering import _walk_forward_passes
+
+
+ACCEPTED_TIERS = {"A", "B"}
 
 
 def write_strategy_card(path: Path, result: dict) -> None:
@@ -67,13 +72,14 @@ def write_strategy_card(path: Path, result: dict) -> None:
 def write_daily_report(path: Path, results: list[dict], report_date: date | None = None, run_metadata: dict | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     today = (report_date or date.today()).isoformat()
-    accepted = [r for r in results if r["tier"] in {"A", "B"}]
+    accepted = [r for r in results if r["tier"] in ACCEPTED_TIERS]
+    non_accepted = [r for r in results if r["tier"] not in ACCEPTED_TIERS]
     rejected = [r for r in results if r["tier"] == "Rejected"]
     best = max(results, key=lambda r: r["split_metrics"]["unseen"]["mar"]) if results else None
     sources = sorted({r["data_manifest"]["source"] for r in results})
     source_note = _source_note(results)
     next_actions = _next_actions(results)
-    rejection_diagnostics = _rejection_diagnostics_rows(rejected)
+    rejection_diagnostics = _rejection_diagnostics_rows(non_accepted)
     drawdown_diagnostics = _drawdown_diagnostics_rows(results)
     rejection_drawdown_attribution = _rejection_drawdown_attribution_rows(rejected)
     rows = [
@@ -364,16 +370,17 @@ def _rejection_diagnostics_rows(rejected: list[dict]) -> list[str]:
     if not rejected:
         return ["- none"]
     rows = [
-        "| strategy_id | primary rejection reason | secondary rejection reasons | failed metric | actual value | required threshold |",
-        "|---|---|---|---|---:|---:|",
+        "| strategy_id | tier | tier_reason | rejection_reasons | failed_metric | actual_value | required_threshold |",
+        "|---|---|---|---|---|---|---|",
     ]
     for result in rejected:
         diagnostic = _rejection_diagnostic(result)
         rows.append(
-            "| {strategy_id} | {primary_reason} | {secondary_reasons} | {metric} | {actual} | {threshold} |".format(
-                strategy_id=result["strategy_id"],
-                primary_reason=diagnostic["primary_reason"],
-                secondary_reasons=diagnostic["secondary_reasons"],
+            "| {strategy_id} | {tier} | {tier_reason} | {reasons} | {metric} | {actual} | {threshold} |".format(
+                strategy_id=_markdown_cell(result["strategy_id"]),
+                tier=_markdown_cell(result.get("tier", "")),
+                tier_reason=_markdown_cell(result.get("tier_reason", "")),
+                reasons=_markdown_cell(diagnostic["reasons"]),
                 metric=diagnostic["metric"],
                 actual=diagnostic["actual"],
                 threshold=diagnostic["threshold"],
@@ -382,36 +389,48 @@ def _rejection_diagnostics_rows(rejected: list[dict]) -> list[str]:
     return rows
 
 
+def build_rejection_diagnostics(result: dict) -> list[str]:
+    if result.get("tier") in ACCEPTED_TIERS:
+        return []
+    return [failure["reason"] for failure in _rejection_failures(result)]
+
+
 def _rejection_diagnostic(result: dict) -> dict:
-    failures = _hard_rejection_failures(result)
-    primary_reason = result.get("tier_reason", "")
-    primary = next((failure for failure in failures if failure["reason"] == primary_reason), None)
-    if primary is None:
-        primary = failures[0] if failures else _fallback_rejection_failure(result)
-    secondary = [failure["reason"] for failure in failures if failure["reason"] != primary["reason"]]
+    failures = _rejection_failures(result)
+    primary = failures[0] if failures else _fallback_rejection_failure(result)
     return {
-        "primary_reason": primary_reason or primary["reason"],
-        "secondary_reasons": "; ".join(secondary) if secondary else "none",
+        "reasons": "; ".join(failure["reason"] for failure in failures) if failures else primary["reason"],
         "metric": primary["metric"],
         "actual": primary["actual"],
         "threshold": primary["threshold"],
     }
 
 
-def _hard_rejection_failures(result: dict) -> list[dict]:
+def _rejection_failures(result: dict) -> list[dict]:
     unseen = result.get("split_metrics", {}).get("unseen", {})
+    validation = result.get("split_metrics", {}).get("validation", {})
     cost_stress = result.get("cost_stress", {})
+    data_manifest = result.get("data_manifest", {})
+    walk_forward = result.get("walk_forward")
     family = result.get("family", "")
     failures = []
-    cagr = float(unseen.get("cagr", 0.0))
-    max_drawdown = float(unseen.get("max_drawdown", 0.0))
-    trade_count = int(unseen.get("trade_count", 0))
+    validation_cagr = _safe_float(validation.get("cagr"), 0.0)
+    cagr = _safe_float(unseen.get("cagr"), 0.0)
+    max_drawdown = _safe_float(unseen.get("max_drawdown"), 0.0)
+    trade_count = _safe_int(unseen.get("trade_count"), 0)
+    source = str(data_manifest.get("source") or result.get("data_source") or "")
+    years = _safe_float(data_manifest.get("years", result.get("history_length")), 0.0)
+    fallback_used = bool(data_manifest.get("fallback_used") or result.get("fallback_used"))
+    fallback_reason = str(data_manifest.get("fallback_reason") or result.get("fallback_reason") or "")
+
+    if validation_cagr <= 0:
+        failures.append(_failure("validation return below threshold", "validation_cagr", _format_percent(validation_cagr), "> 0.00%"))
     if cagr <= 0:
-        failures.append(_failure("Negative unseen result.", "unseen_cagr", _format_percent(cagr), "> 0.00%"))
+        failures.append(_failure("unseen return below threshold", "unseen_cagr", _format_percent(cagr), "> 0.00%"))
     if max_drawdown < -0.15:
         failures.append(
             _failure(
-                "Unseen max drawdown exceeds 15%.",
+                "max drawdown too deep",
                 "unseen_max_drawdown",
                 _format_percent(max_drawdown),
                 ">= -15.00%",
@@ -420,7 +439,7 @@ def _hard_rejection_failures(result: dict) -> list[dict]:
     if family in {"SWING", "INTRADAY"} and trade_count < 100:
         failures.append(
             _failure(
-                "Too few unseen trades for a trade-based strategy.",
+                "too few unseen trades",
                 "unseen_trades",
                 str(trade_count),
                 ">= 100",
@@ -429,13 +448,88 @@ def _hard_rejection_failures(result: dict) -> list[dict]:
     if not bool(cost_stress.get("survives_double_cost", True)):
         failures.append(
             _failure(
-                "Double transaction-cost stress destroys unseen profitability.",
+                "failed cost stress",
                 "double_cost_unseen_cagr",
-                _format_percent(float(cost_stress.get("double_unseen_cagr", 0.0))),
+                _format_percent(_safe_float(cost_stress.get("double_unseen_cagr"), 0.0)),
                 "> 0.00%",
             )
         )
+    if isinstance(walk_forward, dict) and not _walk_forward_passes(walk_forward):
+        failures.append(_walk_forward_failure(walk_forward))
+    if fallback_reason or result.get("missing_symbols") or data_manifest.get("missing_symbols"):
+        failures.append(
+            _failure(
+                "missing required provider data",
+                "provider_data",
+                fallback_reason or _format_missing_symbols(result, data_manifest),
+                "all required symbols present from requested provider",
+            )
+        )
+    if fallback_used or source not in REAL_EOD_DATA_SOURCES:
+        failures.append(
+            _failure(
+                "synthetic/fallback data used",
+                "data_source",
+                f"{source or 'unknown'}; fallback_used={fallback_used}",
+                "real production EOD provider without fallback",
+            )
+        )
+    if _insufficient_history(family, years):
+        failures.append(
+            _failure(
+                "insufficient real data history",
+                "data_years",
+                f"{years:.1f}",
+                _history_threshold(family),
+            )
+        )
+    if result.get("tier") not in {"Rejected", *ACCEPTED_TIERS}:
+        failures.append(_failure("failed promotion gate", "tier", str(result.get("tier", "")), "A or B"))
+        failures.append(_failure("no accepted tier reached", "tier", str(result.get("tier", "")), "A or B"))
     return failures
+
+
+def _walk_forward_failure(walk_forward: dict) -> dict:
+    method = walk_forward.get("method")
+    status = walk_forward.get("status")
+    pass_rate = _safe_float(walk_forward.get("pass_rate"), 0.0)
+    window_count = _safe_int(walk_forward.get("window_count"), 0)
+    median_test_cagr = _safe_float(walk_forward.get("median_test_cagr"), 0.0)
+    worst_test_drawdown = _safe_float(walk_forward.get("worst_test_drawdown"), -1.0)
+    if method != "true_rolling_oos":
+        return _failure("insufficient walk-forward robustness", "walk_forward_method", str(method), "true_rolling_oos")
+    if status != "ok":
+        return _failure("insufficient walk-forward robustness", "walk_forward_status", str(status), "ok")
+    if pass_rate < 0.67:
+        return _failure("insufficient walk-forward robustness", "walk_forward_pass_rate", _format_percent(pass_rate), ">= 67.00%")
+    if window_count < 3:
+        return _failure("insufficient walk-forward robustness", "walk_forward_windows", str(window_count), ">= 3")
+    if median_test_cagr <= 0:
+        return _failure("insufficient walk-forward robustness", "walk_forward_median_test_cagr", _format_percent(median_test_cagr), "> 0.00%")
+    return _failure("insufficient walk-forward robustness", "walk_forward_worst_drawdown", _format_percent(worst_test_drawdown), ">= -20.00%")
+
+
+def _format_missing_symbols(result: dict, data_manifest: dict) -> str:
+    missing = result.get("missing_symbols") or data_manifest.get("missing_symbols") or []
+    if isinstance(missing, list):
+        return ", ".join(str(symbol) for symbol in missing) or "unknown"
+    return str(missing)
+
+
+def _insufficient_history(family: str, years: float) -> bool:
+    if family in {"LONGTERM", "ROTATION"}:
+        return years < 10.0
+    if family == "SWING":
+        return years < 3.0
+    return False
+
+
+def _history_threshold(family: str) -> str:
+    if family in {"LONGTERM", "ROTATION"}:
+        return ">= 10.0 years"
+    if family == "SWING":
+        return ">= 3.0 years"
+    return "sufficient history"
 
 
 def _fallback_rejection_failure(result: dict) -> dict:
@@ -449,6 +543,24 @@ def _fallback_rejection_failure(result: dict) -> dict:
 
 def _failure(reason: str, metric: str, actual: str, threshold: str) -> dict:
     return {"reason": reason, "metric": metric, "actual": actual, "threshold": threshold}
+
+
+def _safe_float(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _markdown_cell(value: Any) -> str:
+    return str(value).replace("|", "\\|")
 
 
 def _format_percent(value: float) -> str:
