@@ -10,7 +10,6 @@ from typing import Any
 
 from research_lab.config import REAL_EOD_DATA_SOURCES
 from research_lab.drawdown_diagnostics import drawdown_diagnostics_for_result
-from research_lab.tiering import _walk_forward_passes
 
 
 ACCEPTED_TIERS = {"A", "B"}
@@ -454,8 +453,10 @@ def _rejection_failures(result: dict) -> list[dict]:
                 "> 0.00%",
             )
         )
-    if isinstance(walk_forward, dict) and not _walk_forward_passes(walk_forward):
-        failures.append(_walk_forward_failure(walk_forward))
+    if isinstance(walk_forward, dict):
+        walk_forward_failure = _walk_forward_failure(walk_forward)
+        if walk_forward_failure:
+            failures.append(walk_forward_failure)
     if fallback_reason or result.get("missing_symbols") or data_manifest.get("missing_symbols"):
         failures.append(
             _failure(
@@ -489,7 +490,7 @@ def _rejection_failures(result: dict) -> list[dict]:
     return failures
 
 
-def _walk_forward_failure(walk_forward: dict) -> dict:
+def _walk_forward_failure(walk_forward: dict) -> dict | None:
     method = walk_forward.get("method")
     status = walk_forward.get("status")
     pass_rate = _safe_float(walk_forward.get("pass_rate"), 0.0)
@@ -506,7 +507,9 @@ def _walk_forward_failure(walk_forward: dict) -> dict:
         return _failure("insufficient walk-forward robustness", "walk_forward_windows", str(window_count), ">= 3")
     if median_test_cagr <= 0:
         return _failure("insufficient walk-forward robustness", "walk_forward_median_test_cagr", _format_percent(median_test_cagr), "> 0.00%")
-    return _failure("insufficient walk-forward robustness", "walk_forward_worst_drawdown", _format_percent(worst_test_drawdown), ">= -20.00%")
+    if worst_test_drawdown < -0.20:
+        return _failure("insufficient walk-forward robustness", "walk_forward_worst_drawdown", _format_percent(worst_test_drawdown), ">= -20.00%")
+    return None
 
 
 def _format_missing_symbols(result: dict, data_manifest: dict) -> str:

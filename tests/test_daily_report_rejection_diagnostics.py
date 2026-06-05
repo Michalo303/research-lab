@@ -71,6 +71,28 @@ def test_accepted_strategy_has_no_rejection_diagnostics():
     assert build_rejection_diagnostics(result) == []
 
 
+def test_rejection_diagnostics_handle_partial_walk_forward_metrics():
+    result = _result(
+        strategy_id="PARTIAL_WF",
+        tier="C",
+        tier_reason="Positive unseen result, but rolling walk-forward is not strong enough for promotion.",
+        walk_forward={
+            "method": "true_rolling_oos",
+            "status": "ok",
+            "window_count": None,
+            "pass_rate": None,
+            "median_test_cagr": None,
+            "worst_test_drawdown": None,
+        },
+    )
+
+    assert build_rejection_diagnostics(result) == [
+        "insufficient walk-forward robustness",
+        "failed promotion gate",
+        "no accepted tier reached",
+    ]
+
+
 def test_daily_report_renders_stable_rejection_diagnostics_for_non_accepted_strategies(tmp_path):
     results = [
         _result(
