@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from research_lab.reports import write_daily_report_artifacts
+from research_lab.reports import classify_git_dirty_paths, write_daily_report_artifacts
 
 
 def test_daily_report_artifacts_include_run_id_metadata_and_expected_paths(tmp_path):
@@ -40,11 +40,23 @@ def test_daily_report_artifacts_include_run_id_metadata_and_expected_paths(tmp_p
     metadata = json.loads(outcome["metadata_path"].read_text(encoding="utf-8"))
     assert metadata["run_id"] == "20260603T120304000000Z-abcdef1"
     assert metadata["timestamp_utc"] == "2026-06-03T12:03:04+00:00"
-    assert metadata["git"] == git_info
+    assert metadata["git"] == {
+        **git_info,
+        "code_dirty": False,
+        "runtime_artifacts_dirty": False,
+        "dirty_files": [],
+        "dirty_classification": "clean",
+    }
     assert metadata["runner"] == "run_daily_research"
     assert metadata["command"] == ["scripts/run_daily_research.py"]
     assert metadata["latest_report_path"] == "reports/daily/2026-06-03.md"
     assert metadata["run_report_path"] == "reports/runs/2026-06-03/20260603T120304000000Z-abcdef1/daily_report.md"
+    report = outcome["run_report_path"].read_text(encoding="utf-8")
+    assert "- git_dirty: False" in report
+    assert "- code_dirty: False" in report
+    assert "- runtime_artifacts_dirty: False" in report
+    assert "- dirty_classification: clean" in report
+    assert "- dirty_files: none" in report
 
 
 def test_two_runs_on_same_date_create_distinct_immutable_artifacts(tmp_path):
@@ -157,6 +169,35 @@ def test_existing_caller_can_still_read_latest_daily_report_path(tmp_path):
     assert "| S1 | LONGTERM | ETF | 1D | eodhd |" in report
 
 
+def test_report_metadata_separates_runtime_artifact_dirty_from_code_dirty(tmp_path):
+    git_info = {
+        "commit": "abcdef1234567890",
+        "branch": "main",
+        **classify_git_dirty_paths(["registry/leaderboard.csv"]),
+    }
+
+    outcome = write_daily_report_artifacts(
+        tmp_path,
+        [_result("eodhd")],
+        timestamp=datetime(2026, 6, 3, 12, 3, 4, tzinfo=timezone.utc),
+        git_info=git_info,
+    )
+
+    metadata = json.loads(outcome["metadata_path"].read_text(encoding="utf-8"))
+    assert metadata["git"]["dirty"] is True
+    assert metadata["git"]["code_dirty"] is False
+    assert metadata["git"]["runtime_artifacts_dirty"] is True
+    assert metadata["git"]["dirty_files"] == ["registry/leaderboard.csv"]
+    assert metadata["git"]["dirty_classification"] == "runtime_artifacts_only"
+
+    report = outcome["run_report_path"].read_text(encoding="utf-8")
+    assert "- git_dirty: True" in report
+    assert "- code_dirty: False" in report
+    assert "- runtime_artifacts_dirty: True" in report
+    assert "- dirty_classification: runtime_artifacts_only" in report
+    assert "- dirty_files: registry/leaderboard.csv" in report
+
+
 def test_report_artifacts_are_written_only_under_supplied_root(tmp_path):
     outcome = write_daily_report_artifacts(
         tmp_path,
@@ -181,6 +222,75 @@ def test_report_artifact_writer_does_not_stage_runtime_outputs(tmp_path):
 
     staged = subprocess.run(["git", "diff", "--cached", "--name-only"], cwd=tmp_path, check=True, capture_output=True, text=True)
     assert staged.stdout == ""
+
+
+@pytest.mark.parametrize(
+    ("dirty_paths", "expected"),
+    [
+        (
+            [],
+            {
+                "dirty": False,
+                "code_dirty": False,
+                "runtime_artifacts_dirty": False,
+                "dirty_files": [],
+                "dirty_classification": "clean",
+            },
+        ),
+        (
+            ["registry/leaderboard.csv"],
+            {
+                "dirty": True,
+                "code_dirty": False,
+                "runtime_artifacts_dirty": True,
+                "dirty_files": ["registry/leaderboard.csv"],
+                "dirty_classification": "runtime_artifacts_only",
+            },
+        ),
+        (
+            ["research_lab/runner.py"],
+            {
+                "dirty": True,
+                "code_dirty": True,
+                "runtime_artifacts_dirty": False,
+                "dirty_files": ["research_lab/runner.py"],
+                "dirty_classification": "code_or_config_dirty",
+            },
+        ),
+        (
+            ["registry/leaderboard.csv", "research_lab/runner.py"],
+            {
+                "dirty": True,
+                "code_dirty": True,
+                "runtime_artifacts_dirty": True,
+                "dirty_files": ["registry/leaderboard.csv", "research_lab/runner.py"],
+                "dirty_classification": "mixed_code_and_runtime_dirty",
+            },
+        ),
+        (
+            ["tests/test_x.py"],
+            {
+                "dirty": True,
+                "code_dirty": True,
+                "runtime_artifacts_dirty": False,
+                "dirty_files": ["tests/test_x.py"],
+                "dirty_classification": "code_or_config_dirty",
+            },
+        ),
+        (
+            ["data/manifests/eodhd_manifest.json"],
+            {
+                "dirty": True,
+                "code_dirty": False,
+                "runtime_artifacts_dirty": True,
+                "dirty_files": ["data/manifests/eodhd_manifest.json"],
+                "dirty_classification": "runtime_artifacts_only",
+            },
+        ),
+    ],
+)
+def test_classify_git_dirty_paths(dirty_paths, expected):
+    assert classify_git_dirty_paths(dirty_paths) == expected
 
 
 def _result(source: str) -> dict:
