@@ -5,7 +5,8 @@ from pathlib import Path
 
 
 RUNTIME_TRACKED_PATHS = [
-    "data/manifests",
+    "data/manifests/daily_universe.json",
+    "data/manifests/intraday_BTCUSDT.json",
     "registry/allocation_model.csv",
     "registry/experiments.jsonl",
     "registry/hypothesis_queue.jsonl",
