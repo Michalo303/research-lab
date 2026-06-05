@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
 import re
+from time import perf_counter
 
 from research_lab.backtest import close_frame, cost_stress, weighted_backtest
 from research_lab.config import LabConfig, ensure_project_structure
@@ -17,25 +19,32 @@ from research_lab.walk_forward import run_true_walk_forward
 
 
 def run_daily_research(root: Path | None = None) -> list[dict]:
+    run_start = perf_counter()
     config = LabConfig.from_env(root)
+    _log_daily_progress(f"start provider={config.data_provider} root={config.root}")
     if config.mode != "research_only":
         raise RuntimeError("Refusing to run unless RESEARCH_LAB_MODE=research_only.")
     ensure_project_structure(config.root)
 
-    daily_bundle = _load_daily_data_bundle(config)
+    with _timed_daily_stage("loading daily universe", "daily universe"):
+        daily_bundle = _load_daily_data_bundle(config)
     _print_daily_data_diagnostics(daily_bundle)
-    intraday_bundle = load_intraday_symbol(config.root, "BTCUSDT")
+    with _timed_daily_stage("loading intraday BTCUSDT", "intraday BTCUSDT"):
+        intraday_bundle = load_intraday_symbol(config.root, "BTCUSDT")
 
     results = []
     start_sequence = _next_sequence(config.root)
     specs = baseline_strategies() + queued_hypothesis_strategies(config.root, limit=4)
     for offset, spec in enumerate(specs):
+        experiment_start = perf_counter()
         sequence = start_sequence + offset
         strategy_id = spec.strategy_id(sequence)
+        _log_daily_progress(f"running experiment {offset + 1}/{len(specs)} {strategy_id}")
         data_bundle = intraday_bundle if spec.family == "INTRADAY" else daily_bundle
         panel = data_bundle.data
         missing_symbols = _missing_symbols(spec, panel)
         if missing_symbols:
+            _log_daily_progress(f"experiment skipped strategy={strategy_id} reason=missing_symbols elapsed={perf_counter() - experiment_start:.2f}s")
             append_jsonl(
                 config.root / "registry" / "data_gaps.jsonl",
                 {
@@ -65,6 +74,7 @@ def run_daily_research(root: Path | None = None) -> list[dict]:
             close,
             cost_bps,
             periods_per_year,
+            progress_log=_log_daily_progress,
         )
         tier_args = [
             spec.family,
@@ -114,15 +124,42 @@ def run_daily_research(root: Path | None = None) -> list[dict]:
             "tier_reason": tier_reason,
             "research_only": True,
         }
-        _persist_result(config.root, result)
-        _persist_hypothesis_result(config.root, result)
+        with _timed_daily_stage("writing strategy cards and registry", "strategy cards and registry"):
+            _persist_result(config.root, result)
+            _persist_hypothesis_result(config.root, result)
         results.append(result)
+        _log_daily_progress(
+            f"experiment done strategy={strategy_id} tier={tier} elapsed={perf_counter() - experiment_start:.2f}s"
+        )
 
     leaderboard_rows = [_leaderboard_row(r) for r in results]
-    write_leaderboard(config.root / "registry" / "leaderboard.csv", leaderboard_rows)
-    write_allocation_model(config.root / "registry" / "allocation_model.csv", leaderboard_rows)
-    write_daily_report_artifacts(config.root, results)
+    with _timed_daily_stage("writing registry summaries", "registry summaries"):
+        write_leaderboard(config.root / "registry" / "leaderboard.csv", leaderboard_rows)
+        write_allocation_model(config.root / "registry" / "allocation_model.csv", leaderboard_rows)
+    report_start = perf_counter()
+    _log_daily_progress("writing daily report start")
+    report_artifacts = write_daily_report_artifacts(config.root, results)
+    report_path = report_artifacts.get("latest_report_path", config.root / "reports" / "daily")
+    _log_daily_progress(f"daily report written in {perf_counter() - report_start:.2f}s path={report_path}")
+    _log_daily_progress(f"completed in {perf_counter() - run_start:.2f}s")
     return results
+
+
+def _log_daily_progress(message: str) -> None:
+    print(f"[daily] {message}", flush=True)
+
+
+@contextmanager
+def _timed_daily_stage(start_label: str, done_label: str):
+    start = perf_counter()
+    _log_daily_progress(f"{start_label} start")
+    try:
+        yield
+    except Exception:
+        _log_daily_progress(f"{done_label} failed in {perf_counter() - start:.2f}s")
+        raise
+    else:
+        _log_daily_progress(f"{done_label} done in {perf_counter() - start:.2f}s")
 
 
 def _unique(items: list[str]) -> list[str]:

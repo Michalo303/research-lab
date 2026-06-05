@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 import statistics
+from time import perf_counter
 from typing import Any
 
 import pandas as pd
@@ -19,26 +21,36 @@ def run_true_walk_forward(
     train_years: int = 5,
     test_years: int = 1,
     step_years: int = 1,
+    progress_log: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     close = close.sort_index()
     if close.empty or not isinstance(close.index, pd.DatetimeIndex):
         return _empty_walk_forward("not_enough_data", train_years, test_years, step_years)
 
+    bounds_list = _rolling_calendar_windows(close.index, train_years, test_years, step_years)
+    strategy_name = getattr(spec, "short_name", "unknown")
+    start = perf_counter()
+    if progress_log:
+        progress_log(f"true walk-forward start strategy={strategy_name} windows={len(bounds_list)}")
+
     windows = []
-    for number, bounds in enumerate(_rolling_calendar_windows(close.index, train_years, test_years, step_years), start=1):
+    for number, bounds in enumerate(bounds_list, start=1):
         window = _evaluate_window(number, bounds, spec, daily_panel, intraday_panel, close, cost_bps, periods_per_year)
         if window is not None:
             windows.append(window)
 
     if not windows:
-        return _empty_walk_forward("not_enough_oos_windows", train_years, test_years, step_years)
+        result = _empty_walk_forward("not_enough_oos_windows", train_years, test_years, step_years)
+        if progress_log:
+            progress_log(f"true walk-forward done strategy={strategy_name} windows=0 elapsed={perf_counter() - start:.2f}s")
+        return result
 
     test_cagrs = [float(row["test_cagr"]) for row in windows]
     test_mars = [float(row["test_mar"]) for row in windows]
     test_drawdowns = [float(row["test_max_drawdown"]) for row in windows]
     passed = sum(1 for row in windows if row["passed"])
     positive = sum(1 for value in test_cagrs if value > 0)
-    return {
+    result = {
         "method": "true_rolling_oos",
         "train_years": train_years,
         "test_years": test_years,
@@ -56,6 +68,9 @@ def run_true_walk_forward(
         "windows": windows,
         "status": "ok",
     }
+    if progress_log:
+        progress_log(f"true walk-forward done strategy={strategy_name} windows={len(windows)} elapsed={perf_counter() - start:.2f}s")
+    return result
 
 
 def _evaluate_window(
