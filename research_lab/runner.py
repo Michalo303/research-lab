@@ -13,7 +13,14 @@ from research_lab.data import DataBundle, load_daily_universe, load_eodhd_daily_
 from research_lab.drawdown_diagnostics import compute_drawdown_diagnostics
 from research_lab.registry import append_jsonl, write_allocation_model, write_leaderboard
 from research_lab.reports import write_daily_report_artifacts, write_strategy_card
-from research_lab.strategies.baselines import build_weights, baseline_strategies, queued_daily_symbols, queued_hypothesis_strategies
+from research_lab.strategies.baselines import (
+    build_weights,
+    baseline_strategies,
+    dedupe_strategy_specs,
+    next_run_guided_strategies,
+    queued_daily_symbols,
+    queued_hypothesis_strategies,
+)
 from research_lab.tiering import classify_strategy
 from research_lab.walk_forward import run_true_walk_forward
 
@@ -34,7 +41,11 @@ def run_daily_research(root: Path | None = None) -> list[dict]:
 
     results = []
     start_sequence = _next_sequence(config.root)
-    specs = baseline_strategies() + queued_hypothesis_strategies(config.root, limit=4)
+    specs = dedupe_strategy_specs(
+        baseline_strategies()
+        + next_run_guided_strategies(config.root, limit=2)
+        + queued_hypothesis_strategies(config.root, limit=4)
+    )
     for offset, spec in enumerate(specs):
         experiment_start = perf_counter()
         sequence = start_sequence + offset

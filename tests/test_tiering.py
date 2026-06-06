@@ -111,3 +111,37 @@ def test_tiering_rejects_failed_true_walk_forward_thresholds(override):
 
     assert tier == "C"
     assert "walk-forward" in reason.lower()
+
+
+def test_tiering_keeps_20260606_near_miss_tier_c_when_walk_forward_pass_rate_is_below_gate():
+    metrics = _metrics()
+    metrics["unseen"] = {**metrics["unseen"], "cagr": 0.0399, "max_drawdown": -0.1339, "sharpe": 0.9, "mar": 0.7}
+
+    tier, reason = classify_strategy(
+        "LONGTERM",
+        metrics,
+        {"survives_double_cost": True},
+        "eodhd",
+        30.0,
+        _passing_walk_forward(pass_rate=0.5714),
+    )
+
+    assert tier == "C"
+    assert "walk-forward" in reason.lower()
+
+
+def test_tiering_still_rejects_unseen_drawdown_worse_than_15_percent():
+    metrics = _metrics()
+    metrics["unseen"] = {**metrics["unseen"], "cagr": 0.10, "max_drawdown": -0.1501}
+
+    tier, reason = classify_strategy(
+        "LONGTERM",
+        metrics,
+        {"survives_double_cost": True},
+        "eodhd",
+        30.0,
+        _passing_walk_forward(),
+    )
+
+    assert tier == "Rejected"
+    assert reason == "Unseen max drawdown exceeds 15%."

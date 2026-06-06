@@ -226,6 +226,38 @@ def test_next_research_guidance_is_inconclusive_without_usable_rejection_diagnos
     ]
 
 
+def test_next_research_guidance_surfaces_conservative_near_miss_mutation_target():
+    results = [
+        _result(
+            strategy_id="LONGTERM_ETF_1D_TREND_VOL_CAP_20260606_006",
+            family="LONGTERM",
+            tier="C",
+            tier_reason="Positive unseen result, but rolling walk-forward is not strong enough for promotion.",
+            split_metrics={
+                "train": {"cagr": 0.0340},
+                "validation": {"cagr": 0.0545},
+                "unseen": {"cagr": 0.0399, "max_drawdown": -0.1339},
+            },
+            walk_forward={
+                "method": "true_rolling_oos",
+                "status": "ok",
+                "window_count": 7,
+                "pass_rate": 0.5714,
+                "median_test_cagr": 0.01,
+                "worst_test_drawdown": -0.18,
+            },
+        )
+    ]
+
+    guidance = build_next_research_guidance(results)
+
+    assert "- near-miss mutation target: LONGTERM_ETF_1D_TREND_VOL_CAP_20260606_006" in guidance
+    assert (
+        "- conservative mutation brief: preserve trend + volatility cap structure; search for lower drawdown and higher "
+        "walk-forward pass rate without relaxing promotion gates."
+    ) in guidance
+
+
 def test_daily_report_renders_next_research_guidance_before_next_actions(tmp_path):
     path = tmp_path / "daily.md"
     results = [
