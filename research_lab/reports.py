@@ -10,6 +10,7 @@ from typing import Any
 
 from research_lab.config import REAL_EOD_DATA_SOURCES
 from research_lab.drawdown_diagnostics import drawdown_diagnostics_for_result
+from research_lab.research_orchestrator import build_research_guidance, summarize_recent_failures
 
 
 ACCEPTED_TIERS = {"A", "B"}
@@ -87,6 +88,7 @@ def write_daily_report(path: Path, results: list[dict], report_date: date | None
     source_note = _source_note(results)
     next_actions = _next_actions(results)
     rejection_diagnostics = _rejection_diagnostics_rows(non_accepted)
+    orchestrator_guidance = _orchestrator_guidance_lines(results)
     next_research_guidance = build_next_research_guidance(results)
     drawdown_diagnostics = _drawdown_diagnostics_rows(results)
     rejection_drawdown_attribution = _rejection_drawdown_attribution_rows(rejected)
@@ -144,6 +146,10 @@ def write_daily_report(path: Path, results: list[dict], report_date: date | None
         "## Drawdown Diagnostics",
         "",
         *drawdown_diagnostics,
+        "",
+        "## Orchestrator Guidance",
+        "",
+        *orchestrator_guidance,
         "",
         "## Next Research Guidance",
         "",
@@ -455,6 +461,37 @@ def build_next_research_guidance(results: list[dict]) -> list[str]:
             ]
         )
     return guidance
+
+
+def _orchestrator_guidance_lines(results: list[dict]) -> list[str]:
+    guidance = build_research_guidance(summarize_recent_failures(results))
+    lines = [
+        f"- dominant blocker category: {guidance.dominant_blocker_category}",
+        f"- blocker mix: {_format_orchestrator_blocker_mix(guidance.blocker_mix)}",
+        f"- promotion blocked by data quality: {str(guidance.promotion_blocked).lower()}",
+        f"- confidence: {guidance.confidence}",
+    ]
+    for direction in guidance.prioritized_next_directions:
+        features = ", ".join(direction.required_features) if direction.required_features else "none"
+        lines.append(f"- prioritized direction: {direction.name} - {direction.rationale}; required_features={features}")
+    if guidance.deprioritized_candidate_types:
+        rendered = "; ".join(
+            f"{penalty.pattern_key} score={penalty.score}" for penalty in guidance.deprioritized_candidate_types[:5]
+        )
+        lines.append(f"- deprioritized candidate types: {rendered}")
+    else:
+        lines.append("- deprioritized candidate types: none")
+    if guidance.data_quality_limitations:
+        lines.append(f"- data quality limitations: {'; '.join(guidance.data_quality_limitations)}")
+    else:
+        lines.append("- data quality limitations: none")
+    return lines
+
+
+def _format_orchestrator_blocker_mix(blocker_mix: dict[str, int]) -> str:
+    if not blocker_mix:
+        return "none"
+    return "; ".join(f"{category}={count}" for category, count in blocker_mix.items())
 
 
 def _next_research_guidance_signals(results: list[dict]) -> list[dict[str, str]]:
