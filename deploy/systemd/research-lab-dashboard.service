@@ -5,6 +5,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+User=trading
+Group=trading
 WorkingDirectory=/opt/trading/research-lab
 ExecStart=/opt/trading/research-lab/.venv/bin/python -m research_lab.dashboard_server --host 127.0.0.1 --port 8787 --root /opt/trading/research-lab
 Restart=on-failure
