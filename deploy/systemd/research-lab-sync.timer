@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Research Lab safe GitHub main sync
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+Unit=research-lab-sync.service
+
+[Install]
+WantedBy=timers.target
