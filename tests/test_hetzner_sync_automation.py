@@ -32,6 +32,18 @@ def test_sync_systemd_service_runs_as_trading_and_uses_wrapper():
     assert "research-lab-sync.timer" not in content
 
 
+def test_sync_systemd_service_uses_repo_local_git_config_paths():
+    assert SERVICE.exists()
+
+    content = SERVICE.read_text(encoding="utf-8")
+
+    assert "ProtectHome=true" in content
+    assert "Environment=GIT_CONFIG_GLOBAL=/dev/null" in content
+    assert "Environment=GIT_CONFIG_NOSYSTEM=1" in content
+    assert "Environment=XDG_CONFIG_HOME=/opt/trading/research-lab/.git-systemd-config" in content
+    assert "/home/trading/.config/git" not in content
+
+
 def test_sync_timer_is_conservative_and_persistent():
     assert TIMER.exists()
 

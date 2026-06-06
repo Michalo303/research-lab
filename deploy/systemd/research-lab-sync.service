@@ -9,6 +9,9 @@ User=trading
 Group=trading
 WorkingDirectory=/opt/trading/research-lab
 ExecStart=/opt/trading/research-lab/scripts/run_safe_sync_with_preflight.sh
+Environment=GIT_CONFIG_GLOBAL=/dev/null
+Environment=GIT_CONFIG_NOSYSTEM=1
+Environment=XDG_CONFIG_HOME=/opt/trading/research-lab/.git-systemd-config
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
