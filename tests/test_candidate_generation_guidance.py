@@ -61,6 +61,41 @@ def test_high_drawdown_queue_families_are_deprioritized_but_not_banned(tmp_path)
     assert [spec.short_name for spec in specs] == ["QUEUE_VOL_TARGET", "QUEUE_PULLBACK"]
 
 
+def test_failure_memory_prefers_materially_changed_risk_repair_candidate(tmp_path):
+    _write_experiments(
+        tmp_path,
+        [
+            _result(
+                strategy_id="SWING_ETF_1D_QUEUE_PULLBACK_20260606_009",
+                family="SWING",
+                short_name="QUEUE_PULLBACK",
+                builder="swing_trend_filtered_pullback",
+                unseen_max_drawdown=-0.34,
+                unseen_trades=24,
+            )
+        ],
+    )
+    _write_queue(
+        tmp_path,
+        [
+            {"hypothesis_id": "SWING_1", "family": "SWING", "ticker": "QQQ", "title": "Plain pullback", "source_title": "source"},
+            {
+                "hypothesis_id": "SWING_2",
+                "family": "SWING",
+                "ticker": "QQQ",
+                "title": "Pullback with explicit risk repair",
+                "source_title": "source",
+                "risk_overlay_changed": True,
+                "min_unseen_trades_target": 120,
+            },
+        ],
+    )
+
+    specs = queued_hypothesis_strategies(tmp_path, limit=2)
+
+    assert [spec.parameters["source_hypothesis_id"] for spec in specs] == ["SWING_2", "SWING_1"]
+
+
 def test_executable_dedupe_collapses_specs_that_only_reorder_unordered_symbols():
     first = _spec("FIRST", {"symbols": ["SPY", "TLT"], "lookback": 126})
     second = _spec("SECOND", {"symbols": ["TLT", "SPY"], "lookback": 126})
@@ -123,6 +158,7 @@ def _result(
     parameters: dict | None = None,
     unseen_cagr: float = 0.02,
     unseen_max_drawdown: float = -0.10,
+    unseen_trades: int = 150,
     wf_pass_rate: float = 0.8,
 ):
     return {
@@ -139,7 +175,7 @@ def _result(
         "split_metrics": {
             "train": {"cagr": 0.034},
             "validation": {"cagr": 0.0545},
-            "unseen": {"cagr": unseen_cagr, "max_drawdown": unseen_max_drawdown},
+            "unseen": {"cagr": unseen_cagr, "max_drawdown": unseen_max_drawdown, "trade_count": unseen_trades},
         },
         "cost_stress": {"survives_double_cost": True},
         "walk_forward": {

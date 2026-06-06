@@ -276,6 +276,33 @@ def test_daily_report_renders_next_research_guidance_before_next_actions(tmp_pat
     assert "## Next Research Guidance" in path.read_text(encoding="utf-8")
 
 
+def test_daily_report_renders_orchestrator_guidance(tmp_path):
+    path = tmp_path / "daily.md"
+    results = [
+        _result(
+            strategy_id="RISK_1",
+            family="SWING",
+            tier="Rejected",
+            tier_reason="Unseen max drawdown exceeds 15%.",
+            split_metrics={"unseen": {"max_drawdown": -0.24, "trade_count": 18}},
+        ),
+        _result(
+            strategy_id="RISK_2",
+            family="SWING",
+            tier="Rejected",
+            tier_reason="Unseen max drawdown exceeds 15%.",
+            split_metrics={"unseen": {"max_drawdown": -0.31, "trade_count": 21}},
+        ),
+    ]
+
+    write_daily_report(path, results)
+
+    section = _section(path, "## Orchestrator Guidance", "## Next Research Guidance")
+    assert "- dominant blocker category: risk/drawdown" in section
+    assert "- prioritized direction: risk_overlay_repair" in section
+    assert "- promotion blocked by data quality: false" in section
+
+
 def _section(path: Path, start: str, end: str) -> str:
     text = path.read_text(encoding="utf-8")
     start_index = text.index(start)

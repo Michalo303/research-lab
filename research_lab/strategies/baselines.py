@@ -9,6 +9,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from research_lab.research_orchestrator import build_research_guidance, score_candidate_direction, summarize_recent_failures
+
 
 UNORDERED_EXECUTABLE_LIST_KEYS = {"symbols", "universe", "tickers", "assets", "asset_universe"}
 
@@ -139,10 +141,10 @@ def queued_hypothesis_strategies(root: Path, limit: int = 4) -> list[StrategySpe
         spec = _spec_from_hypothesis(item)
         if spec:
             candidates.append((order, key, spec))
-    penalties = _recent_drawdown_penalties(root)
+    guidance = build_research_guidance(summarize_recent_failures(root))
     ranked = sorted(
         _dedupe_ordered_specs(candidates),
-        key=lambda item: (_drawdown_penalty_for_spec(item[2], penalties), _conservative_preference_rank(item[2]), item[0], item[1]),
+        key=lambda item: (score_candidate_direction(item[2], guidance), _conservative_preference_rank(item[2]), item[0], item[1]),
     )
     specs = [spec for _order, _key, spec in ranked]
     if limit is not None:
@@ -363,6 +365,7 @@ def swing_trend_filtered_pullback(spec: StrategySpec, daily_panel: pd.DataFrame,
     fast = close.rolling(spec.parameters.get("fast_sma", 50)).mean()
     slow = close.rolling(spec.parameters.get("slow_sma", 150)).mean()
     atr = (daily_panel[(symbol, "high")] - daily_panel[(symbol, "low")]).rolling(14).mean()
+    max_exposure = _bounded_float(spec.parameters.get("max_exposure", 1.0), lower=0.0, upper=1.0)
     position = []
     entry_price = 0.0
     active = False
@@ -377,7 +380,7 @@ def swing_trend_filtered_pullback(spec: StrategySpec, daily_panel: pd.DataFrame,
             exit_signal = rsi.loc[ts] > spec.parameters.get("rsi_exit", 58) or close.loc[ts] < slow.loc[ts] or stop
             if exit_signal:
                 active = False
-        position.append(1.0 if active else 0.0)
+        position.append(max_exposure if active else 0.0)
     return pd.DataFrame({symbol: position}, index=close.index)
 
 
@@ -677,6 +680,7 @@ def _spec_from_hypothesis(item: dict) -> StrategySpec | None:
     title = item.get("title", "Queued hypothesis")
     source_title = item.get("source_title", "unknown source")
     hypothesis_id = item.get("hypothesis_id", "")
+    source_feedback = _source_feedback_parameters(item)
     if family == "ROTATION":
         return StrategySpec(
             family="ROTATION",
@@ -692,6 +696,7 @@ def _spec_from_hypothesis(item: dict) -> StrategySpec | None:
                 "risk_sma": 200,
                 "source_hypothesis_id": hypothesis_id,
                 "source_title": source_title,
+                **source_feedback,
             },
             rules="Monthly top-2 momentum rotation, but de-risk to cash when SPY is below SMA200.",
             builder="rotation_momentum_drawdown_filter",
@@ -711,8 +716,10 @@ def _spec_from_hypothesis(item: dict) -> StrategySpec | None:
                 "rsi_entry": 40,
                 "rsi_exit": 58,
                 "atr_stop": 2.0,
+                **_risk_overlay_execution_parameters(item),
                 "source_hypothesis_id": hypothesis_id,
                 "source_title": source_title,
+                **source_feedback,
             },
             rules="Enter QQQ pullbacks in an uptrend; exit on RSI recovery, slow-trend break, or ATR stop.",
             builder="swing_trend_filtered_pullback",
@@ -731,8 +738,42 @@ def _spec_from_hypothesis(item: dict) -> StrategySpec | None:
                 "target_vol": 0.12,
                 "source_hypothesis_id": hypothesis_id,
                 "source_title": source_title,
+                **source_feedback,
             },
             rules="Hold SPY above SMA150 with exposure scaled down when realized volatility exceeds target.",
             builder="long_term_vol_target",
         )
     return None
+
+
+def _source_feedback_parameters(item: dict[str, Any]) -> dict[str, Any]:
+    passthrough = {}
+    for key in (
+        "risk_overlay_changed",
+        "walk_forward_repair",
+        "trade_count_repair",
+        "cost_stress_repair",
+        "turnover_repair",
+        "material_design_change",
+        "edge_repair",
+        "validation_repair",
+        "min_unseen_trades_target",
+        "duplicate_hint",
+    ):
+        if key in item:
+            passthrough[f"source_{key}"] = item[key]
+    return passthrough
+
+
+def _risk_overlay_execution_parameters(item: dict[str, Any]) -> dict[str, Any]:
+    if not item.get("risk_overlay_changed"):
+        return {}
+    return {"max_exposure": _bounded_float(item.get("max_exposure", 0.50), lower=0.05, upper=1.0)}
+
+
+def _bounded_float(value: Any, *, lower: float, upper: float) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        number = lower
+    return min(max(number, lower), upper)
