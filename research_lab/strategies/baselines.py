@@ -4,9 +4,13 @@ import json
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
+
+
+UNORDERED_EXECUTABLE_LIST_KEYS = {"symbols", "universe", "tickers", "assets", "asset_universe"}
 
 
 @dataclass(frozen=True)
@@ -129,19 +133,59 @@ def queued_hypothesis_strategies(root: Path, limit: int = 4) -> list[StrategySpe
     if not queue_path.exists():
         return []
     items = [json.loads(line) for line in queue_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    specs = []
-    seen_keys: set[str] = set()
-    for item in items:
+    candidates = []
+    for order, item in enumerate(items):
         key = str(item.get("source_key") or item.get("hypothesis_id") or f"{item.get('family', '')}:{item.get('ticker', '')}:{item.get('title', '')}")
-        if key in seen_keys:
-            continue
-        seen_keys.add(key)
         spec = _spec_from_hypothesis(item)
         if spec:
-            specs.append(spec)
+            candidates.append((order, key, spec))
+    penalties = _recent_drawdown_penalties(root)
+    ranked = sorted(
+        _dedupe_ordered_specs(candidates),
+        key=lambda item: (_drawdown_penalty_for_spec(item[2], penalties), _conservative_preference_rank(item[2]), item[0], item[1]),
+    )
+    specs = [spec for _order, _key, spec in ranked]
+    if limit is not None:
+        specs = specs[: max(int(limit), 0)]
+    return specs
+
+
+def next_run_guided_strategies(root: Path, limit: int = 2) -> list[StrategySpec]:
+    near_misses = [result for result in reversed(_recent_experiment_results(root)) if _is_near_miss_trend_vol_cap(result)]
+    specs: list[StrategySpec] = []
+    seen_targets: set[str] = set()
+    for result in near_misses:
+        target_key = _strategy_family_key(result)
+        if target_key in seen_targets:
+            continue
+        seen_targets.add(target_key)
+        specs.extend(_trend_vol_cap_conservative_mutations(result))
         if len(specs) >= limit:
             break
-    return specs
+    return dedupe_strategy_specs(specs)[: max(int(limit), 0)]
+
+
+def dedupe_strategy_specs(specs: list[StrategySpec]) -> list[StrategySpec]:
+    seen: set[str] = set()
+    retained: list[StrategySpec] = []
+    for spec in specs:
+        fingerprint = strategy_execution_fingerprint(spec)
+        if fingerprint in seen:
+            continue
+        seen.add(fingerprint)
+        retained.append(spec)
+    return retained
+
+
+def strategy_execution_fingerprint(spec: StrategySpec) -> str:
+    payload = {
+        "family": spec.family,
+        "asset_class": spec.asset_class,
+        "timeframe": spec.timeframe,
+        "builder": spec.builder,
+        "parameters": _executable_parameters(spec.parameters),
+    }
+    return json.dumps(_normalize_for_fingerprint(payload), sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
 
 def queued_daily_symbols(root: Path, limit: int = 8) -> list[str]:
@@ -388,6 +432,244 @@ def _select_positive_momentum(row: pd.Series, top_n: int, require_positive: bool
     if require_positive:
         clean = clean[clean > 0]
     return [str(symbol) for symbol in clean.head(top_n).index]
+
+
+def _dedupe_ordered_specs(candidates: list[tuple[int, str, StrategySpec]]) -> list[tuple[int, str, StrategySpec]]:
+    seen_keys: set[str] = set()
+    seen_specs: set[str] = set()
+    retained: list[tuple[int, str, StrategySpec]] = []
+    for order, key, spec in candidates:
+        spec_fingerprint = strategy_execution_fingerprint(spec)
+        if key in seen_keys or spec_fingerprint in seen_specs:
+            continue
+        seen_keys.add(key)
+        seen_specs.add(spec_fingerprint)
+        retained.append((order, key, spec))
+    return retained
+
+
+def _recent_experiment_results(root: Path, max_rows: int = 200) -> list[dict[str, Any]]:
+    path = root / "registry" / "experiments.jsonl"
+    if not path.exists():
+        return []
+    rows = []
+    for line in path.read_text(encoding="utf-8").splitlines()[-max_rows:]:
+        if not line.strip():
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(item, dict):
+            rows.append(item)
+    return rows
+
+
+def _recent_drawdown_penalties(root: Path) -> dict[str, int]:
+    penalties: dict[str, int] = {}
+    for result in _recent_experiment_results(root):
+        drawdown = _safe_float(result.get("split_metrics", {}).get("unseen", {}).get("max_drawdown"), 0.0)
+        penalty = _drawdown_penalty(drawdown)
+        if penalty <= 0:
+            continue
+        for key in _penalty_keys(result):
+            penalties[key] = max(penalties.get(key, 0), penalty)
+    return penalties
+
+
+def _drawdown_penalty_for_spec(spec: StrategySpec, penalties: dict[str, int]) -> int:
+    keys = {
+        f"family:{spec.family}",
+        f"family_short:{spec.family}:{spec.short_name}",
+        f"builder:{spec.builder}",
+    }
+    return max((penalties.get(key, 0) for key in keys), default=0)
+
+
+def _drawdown_penalty(max_drawdown: float) -> int:
+    if max_drawdown <= -0.60:
+        return 5
+    if max_drawdown <= -0.50:
+        return 4
+    if max_drawdown <= -0.30:
+        return 3
+    if max_drawdown < -0.15:
+        return 2
+    return 0
+
+
+def _penalty_keys(result: dict[str, Any]) -> list[str]:
+    family = str(result.get("family") or "")
+    short_name = str(result.get("short_name") or _short_name_from_strategy_id(str(result.get("strategy_id") or "")))
+    builder = str(result.get("builder") or _builder_for_short_name(short_name))
+    keys = []
+    if family:
+        keys.append(f"family:{family}")
+    if family and short_name:
+        keys.append(f"family_short:{family}:{short_name}")
+    if builder:
+        keys.append(f"builder:{builder}")
+    return keys
+
+
+def _conservative_preference_rank(spec: StrategySpec) -> int:
+    text = " ".join(
+        [
+            spec.family,
+            spec.short_name,
+            spec.builder,
+            spec.hypothesis,
+            spec.rules,
+            json.dumps(spec.parameters, sort_keys=True, default=str),
+        ]
+    ).lower()
+    conservative_terms = ("vol", "target", "defensive", "cash", "drawdown", "cap", "circuit")
+    return 0 if any(term in text for term in conservative_terms) else 1
+
+
+def _is_near_miss_trend_vol_cap(result: dict[str, Any]) -> bool:
+    if result.get("tier") != "C":
+        return False
+    if str(result.get("family") or "") != "LONGTERM":
+        return False
+    short_name = str(result.get("short_name") or _short_name_from_strategy_id(str(result.get("strategy_id") or "")))
+    builder = str(result.get("builder") or _builder_for_short_name(short_name))
+    if short_name != "TREND_VOL_CAP" and builder != "long_term_vol_target_cap":
+        return False
+    split = result.get("split_metrics", {})
+    if _safe_float(split.get("train", {}).get("cagr"), 0.0) <= 0:
+        return False
+    if _safe_float(split.get("validation", {}).get("cagr"), 0.0) <= 0:
+        return False
+    unseen = split.get("unseen", {})
+    if _safe_float(unseen.get("cagr"), 0.0) <= 0:
+        return False
+    if _safe_float(unseen.get("max_drawdown"), -1.0) < -0.15:
+        return False
+    walk_forward = result.get("walk_forward", {})
+    return (
+        isinstance(walk_forward, dict)
+        and walk_forward.get("method") == "true_rolling_oos"
+        and walk_forward.get("status") == "ok"
+        and 0.50 <= _safe_float(walk_forward.get("pass_rate"), 0.0) < 0.67
+    )
+
+
+def _trend_vol_cap_conservative_mutations(result: dict[str, Any]) -> list[StrategySpec]:
+    params = dict(result.get("parameters") or {})
+    symbol = str(params.get("symbol") or "SPY")
+    sma = int(_safe_float(params.get("sma"), 200))
+    vol_window = int(_safe_float(params.get("vol_window"), 63))
+    target_vol = _safe_float(params.get("target_vol"), 0.10)
+    max_weight = _safe_float(params.get("max_weight"), 0.75)
+    source_strategy_id = str(result.get("strategy_id") or "unknown")
+    base = {
+        "symbol": symbol,
+        "sma": sma,
+        "vol_window": vol_window,
+        "source_strategy_id": source_strategy_id,
+    }
+    return [
+        StrategySpec(
+            family="LONGTERM",
+            asset_class="ETF",
+            timeframe="1D",
+            short_name="TREND_VOL_CAP_CONSERVATIVE",
+            hypothesis=f"Conservative mutation of {source_strategy_id}: reduce volatility target and exposure cap while preserving the trend plus volatility-cap structure.",
+            parameters={
+                **base,
+                "target_vol": min(target_vol * 0.80, 0.08),
+                "max_weight": min(max_weight * 0.80, 0.60),
+            },
+            rules="Hold SPY above the long-term SMA with lower realized-volatility targeting and a stricter exposure cap; otherwise hold cash.",
+            builder="long_term_vol_target_cap",
+        ),
+        StrategySpec(
+            family="LONGTERM",
+            asset_class="ETF",
+            timeframe="1D",
+            short_name="TREND_VOL_CAP_STABLE",
+            hypothesis=f"Stability mutation of {source_strategy_id}: smooth volatility estimates and reduce max exposure while preserving the trend plus volatility-cap structure.",
+            parameters={
+                **base,
+                "vol_window": max(vol_window, 84),
+                "target_vol": min(target_vol * 0.90, 0.09),
+                "max_weight": min(max_weight * 0.87, 0.65),
+            },
+            rules="Hold SPY above the long-term SMA with smoother realized-volatility targeting capped below the original exposure; otherwise hold cash.",
+            builder="long_term_vol_target_cap",
+        ),
+    ]
+
+
+def _executable_parameters(parameters: dict[str, Any]) -> dict[str, Any]:
+    return {
+        str(key): value
+        for key, value in parameters.items()
+        if not str(key).startswith("source_")
+    }
+
+
+def _normalize_for_fingerprint(value: Any, key_path: tuple[str, ...] = ()) -> Any:
+    if isinstance(value, dict):
+        return {
+            normalized_key: _normalize_for_fingerprint(item, (*key_path, normalized_key))
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+            if (normalized_key := str(key).strip().lower())
+        }
+    if isinstance(value, list):
+        items = [_normalize_for_fingerprint(item, key_path) for item in value]
+        if key_path and key_path[-1] in UNORDERED_EXECUTABLE_LIST_KEYS:
+            return sorted(items, key=lambda item: json.dumps(item, sort_keys=True, default=str))
+        return items
+    if isinstance(value, tuple):
+        return _normalize_for_fingerprint(list(value), key_path)
+    if isinstance(value, float):
+        if not np.isfinite(value):
+            return None
+        if value.is_integer():
+            return int(value)
+        return float(format(value, ".12g"))
+    if isinstance(value, str):
+        return " ".join(value.strip().lower().split())
+    return value
+
+
+def _short_name_from_strategy_id(strategy_id: str) -> str:
+    marker = "_1D_"
+    if marker not in strategy_id:
+        return ""
+    tail = strategy_id.split(marker, 1)[1]
+    parts = tail.split("_")
+    if len(parts) <= 2:
+        return tail
+    return "_".join(parts[:-2])
+
+
+def _builder_for_short_name(short_name: str) -> str:
+    return {
+        "QUEUE_PULLBACK": "swing_trend_filtered_pullback",
+        "QUEUE_VOL_TARGET": "long_term_vol_target",
+        "TREND_VOL_CAP": "long_term_vol_target_cap",
+    }.get(short_name, "")
+
+
+def _strategy_family_key(result: dict[str, Any]) -> str:
+    return ":".join(
+        [
+            str(result.get("family") or ""),
+            str(result.get("asset_class") or ""),
+            str(result.get("timeframe") or ""),
+            str(result.get("short_name") or _short_name_from_strategy_id(str(result.get("strategy_id") or ""))),
+        ]
+    )
+
+
+def _safe_float(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _spec_from_hypothesis(item: dict) -> StrategySpec | None:

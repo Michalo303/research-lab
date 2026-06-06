@@ -432,7 +432,7 @@ def build_next_research_guidance(results: list[dict]) -> list[str]:
     dominant_strategy_count = len(strategies_by_category.get(dominant, set()))
     data_quality_strategy_count = len(strategies_by_category.get("data quality/fallback", set()))
 
-    return [
+    guidance = [
         (
             f"- dominant blocker category: {dominant} "
             f"({dominant_count} {_pluralize('signal', dominant_count)} across "
@@ -443,6 +443,18 @@ def build_next_research_guidance(results: list[dict]) -> list[str]:
         f"- data quality: {_guidance_data_quality_note(data_quality_strategy_count)}",
         "- confidence: enough diagnostic signals for conservative next-step guidance.",
     ]
+    near_miss = _best_near_miss_mutation_target(results)
+    if near_miss:
+        guidance.extend(
+            [
+                f"- near-miss mutation target: {near_miss['strategy_id']}",
+                (
+                    "- conservative mutation brief: preserve trend + volatility cap structure; search for lower drawdown and higher "
+                    "walk-forward pass rate without relaxing promotion gates."
+                ),
+            ]
+        )
+    return guidance
 
 
 def _next_research_guidance_signals(results: list[dict]) -> list[dict[str, str]]:
@@ -503,6 +515,61 @@ def _guidance_data_quality_note(strategy_count: int) -> str:
             f"{_pluralize('strategy', strategy_count)}; treat guidance as data-quality limited."
         )
     return "no synthetic/fallback data signal in rejection diagnostics."
+
+
+def _best_near_miss_mutation_target(results: list[dict]) -> dict | None:
+    targets = [result for result in results if _is_near_miss_trend_vol_cap_result(result)]
+    if not targets:
+        return None
+    return sorted(
+        targets,
+        key=lambda result: (
+            -_safe_float(result.get("walk_forward", {}).get("pass_rate"), 0.0),
+            -_safe_float(result.get("split_metrics", {}).get("unseen", {}).get("cagr"), 0.0),
+            -_safe_float(result.get("split_metrics", {}).get("unseen", {}).get("max_drawdown"), -1.0),
+            str(result.get("strategy_id") or ""),
+        ),
+    )[0]
+
+
+def _is_near_miss_trend_vol_cap_result(result: dict) -> bool:
+    if result.get("tier") != "C":
+        return False
+    strategy_id = str(result.get("strategy_id") or "")
+    short_name = str(result.get("short_name") or _short_name_from_strategy_id(strategy_id))
+    builder = str(result.get("builder") or "")
+    if result.get("family") != "LONGTERM":
+        return False
+    if short_name != "TREND_VOL_CAP" and builder != "long_term_vol_target_cap":
+        return False
+    split = result.get("split_metrics", {})
+    if _safe_float(split.get("train", {}).get("cagr"), 0.0) <= 0:
+        return False
+    if _safe_float(split.get("validation", {}).get("cagr"), 0.0) <= 0:
+        return False
+    unseen = split.get("unseen", {})
+    if _safe_float(unseen.get("cagr"), 0.0) <= 0:
+        return False
+    if _safe_float(unseen.get("max_drawdown"), -1.0) < -0.15:
+        return False
+    walk_forward = result.get("walk_forward", {})
+    return (
+        isinstance(walk_forward, dict)
+        and walk_forward.get("method") == "true_rolling_oos"
+        and walk_forward.get("status") == "ok"
+        and 0.50 <= _safe_float(walk_forward.get("pass_rate"), 0.0) < 0.67
+    )
+
+
+def _short_name_from_strategy_id(strategy_id: str) -> str:
+    marker = "_1D_"
+    if marker not in strategy_id:
+        return ""
+    tail = strategy_id.split(marker, 1)[1]
+    parts = tail.split("_")
+    if len(parts) <= 2:
+        return tail
+    return "_".join(parts[:-2])
 
 
 def _pluralize(word: str, count: int) -> str:
