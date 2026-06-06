@@ -1,0 +1,17 @@
+[Unit]
+Description=Research Lab safe GitHub main sync
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=trading
+Group=trading
+WorkingDirectory=/opt/trading/research-lab
+ExecStart=/opt/trading/research-lab/scripts/run_safe_sync_with_preflight.sh
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/trading/research-lab
+TimeoutStartSec=300
