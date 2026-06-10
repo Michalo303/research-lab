@@ -138,6 +138,41 @@ cd /opt/trading/research-lab
 bash deploy/install_systemd_timers.sh
 ```
 
+## Hetzner GitHub Sync
+
+Hetzner automatically syncs GitHub `main` using a systemd timer.
+
+- Repo path: `/opt/trading/research-lab`
+- Runtime user: `trading`
+- Sync service: `research-lab-sync.service`
+- Sync timer: `research-lab-sync.timer`
+- Log file: `/opt/trading/research-lab/logs/hetzner-sync.log`
+- Cadence: hourly
+- Sync mode: preflight-gated, fast-forward only
+
+All Git operations in the repo must run as `trading`, not root:
+
+```bash
+sudo -u trading -H bash -lc 'cd /opt/trading/research-lab && git status --short'
+```
+
+The sync wrapper runs readiness diagnostics first, then runs the fast-forward-only sync script only if readiness passes:
+
+```bash
+scripts/check_hetzner_sync_readiness.sh
+scripts/sync_from_github.sh
+```
+
+Sync fails closed if readiness checks fail. Inspect the timer and sync log with:
+
+```bash
+systemctl status research-lab-sync.timer --no-pager
+systemctl list-timers research-lab-sync.timer --no-pager
+tail -120 /opt/trading/research-lab/logs/hetzner-sync.log
+```
+
+Do not use `git reset --hard`, `git clean`, or manual runtime cleanup on Hetzner.
+
 Weekly validation:
 
 ```bash
