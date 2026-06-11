@@ -3,14 +3,15 @@ from __future__ import annotations
 import csv
 import itertools
 import json
+import os
 import statistics
 from pathlib import Path
 from typing import Any
 
 from research_lab.backtest import close_frame, cost_stress, weighted_backtest
 from research_lab.config import LabConfig, REAL_EOD_DATA_SOURCES
-from research_lab.data import load_daily_universe, load_eodhd_daily_universe, load_massive_daily_universe
 from research_lab.robustness import build_stability_rows, load_backtest_results
+from research_lab.runner import _load_daily_data_bundle
 from research_lab.strategies.baselines import StrategySpec, build_weights, queued_daily_symbols
 from research_lab.tiering import classify_strategy
 
@@ -31,6 +32,10 @@ PARAMETER_SWEEP_COLUMNS = [
     "wf_worst_test_drawdown",
     "wf_status",
     "cost_survives",
+    "data_source",
+    "data_years",
+    "provider_fallback_used",
+    "rejection_reason",
     "verdict",
     "final_verdict",
     "tier_reason",
@@ -52,12 +57,17 @@ def run_parameter_sweep(root: Path, report_stem: str, max_groups: int = 4, max_v
     representatives = _select_representatives(results, max_groups=max_groups)
     symbols = _daily_symbols(root, representatives)
     daily_bundle = _load_daily_bundle(config, symbols)
+    data_diagnostics = _provider_diagnostics(config, daily_bundle)
 
     rows = []
     for item in representatives:
         for variant_number, params in enumerate(_parameter_variants(item.get("short_name", ""), item.get("parameters", {}), max_variants_per_group), start=1):
             spec = _spec_from_result(item, params)
             if spec is None or _missing_symbols(spec, daily_bundle.data):
+                continue
+            rejection_reason = _data_quality_rejection(spec, daily_bundle.manifest)
+            if rejection_reason:
+                rows.append(_rejection_row(spec, variant_number, params, daily_bundle.manifest, rejection_reason))
                 continue
             close = close_frame(daily_bundle.data)
             weights = build_weights(spec, daily_bundle.data, None)
@@ -71,13 +81,25 @@ def run_parameter_sweep(root: Path, report_stem: str, max_groups: int = 4, max_v
                 float(daily_bundle.manifest.get("years", 0.0)),
                 backtest["walk_forward"],
             )
-            rows.append(_row(spec, variant_number, params, backtest["split_metrics"], stress, backtest["walk_forward"], tier, tier_reason))
+            rows.append(
+                _row(
+                    spec,
+                    variant_number,
+                    params,
+                    backtest["split_metrics"],
+                    stress,
+                    backtest["walk_forward"],
+                    tier,
+                    tier_reason,
+                    daily_bundle.manifest,
+                )
+            )
 
     report_dir = root / "reports" / "weekly"
     report_dir.mkdir(parents=True, exist_ok=True)
     path = report_dir / f"{report_stem}_parameter_sweep.csv"
     _write_csv(path, rows)
-    return {"rows": rows, "path": path}
+    return {"rows": rows, "path": path, "data_diagnostics": data_diagnostics}
 
 
 def summarize_parameter_sweep(rows: list[dict[str, Any]]) -> list[str]:
@@ -144,18 +166,38 @@ def _daily_symbols(root: Path, representatives: list[dict[str, Any]]) -> list[st
 
 
 def _load_daily_bundle(config: LabConfig, symbols: list[str]):
-    if config.eodhd_api_key or config.data_provider == "eodhd":
-        return load_eodhd_daily_universe(config.root, symbols, config.eodhd_api_key, config.eodhd_start_date)
-    if config.data_provider == "massive":
-        return load_massive_daily_universe(
-            config.root,
-            symbols,
-            config.massive_api_key,
-            config.massive_base_url,
-            config.massive_start_date,
-            config.massive_adjusted,
+    bundle = _load_daily_data_bundle(config, symbols=symbols)
+    source = str(bundle.manifest.get("source", "")).lower()
+    if source == "synthetic" and not _synthetic_allowed_for_weekly(config):
+        raise RuntimeError(
+            "weekly deep research requires real EOD data; set "
+            "RESEARCH_LAB_ALLOW_SYNTHETIC_FALLBACK=1 only for explicit test/dev runs."
         )
-    return load_daily_universe(config.root, symbols, config.use_yfinance)
+    return bundle
+
+
+def _synthetic_allowed_for_weekly(config: LabConfig) -> bool:
+    return (
+        os.getenv("RESEARCH_LAB_ALLOW_SYNTHETIC_FALLBACK", "0") == "1"
+        or config.mode.lower() in {"test", "dev", "development"}
+    )
+
+
+def _provider_diagnostics(config: LabConfig, bundle) -> dict[str, Any]:
+    manifest = bundle.manifest
+    symbols = list(manifest.get("requested_symbols") or manifest.get("symbols") or [])
+    return {
+        "requested_provider": config.data_provider,
+        "selected_provider": manifest.get("source", ""),
+        "actual_provider": manifest.get("source", ""),
+        "symbols": symbols,
+        "start_date": manifest.get("start", ""),
+        "end_date": manifest.get("end", ""),
+        "data_years": float(manifest.get("years", 0.0) or 0.0),
+        "fallback_used": bool(manifest.get("fallback_used", False)),
+        "fallback_reason": str(manifest.get("fallback_reason", "")),
+        "symbol_diagnostics": list(manifest.get("symbol_diagnostics") or []),
+    }
 
 
 def _spec_from_result(item: dict[str, Any], params: dict[str, Any]) -> StrategySpec | None:
@@ -289,6 +331,65 @@ def _missing_symbols(spec: StrategySpec, panel) -> bool:
     return any(symbol not in available for symbol in required)
 
 
+def _data_quality_rejection(spec: StrategySpec, manifest: dict[str, Any]) -> str:
+    source = str(manifest.get("source", "")).lower()
+    years = _safe_float(manifest.get("years"), 0.0)
+    if source not in REAL_EOD_DATA_SOURCES or years <= 0.0:
+        return "insufficient_history"
+    required_years = _minimum_history_years(spec.family)
+    if required_years and years < required_years:
+        return "insufficient_history"
+    return ""
+
+
+def _minimum_history_years(family: str) -> float:
+    if family in {"LONGTERM", "ROTATION"}:
+        return 10.0
+    if family == "SWING":
+        return 3.0
+    return 0.0
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _rejection_row(
+    spec: StrategySpec,
+    variant_number: int,
+    params: dict[str, Any],
+    manifest: dict[str, Any],
+    rejection_reason: str,
+) -> dict[str, Any]:
+    return {
+        "family": spec.family,
+        "short_name": spec.short_name,
+        "variant": variant_number,
+        "parameters_json": json.dumps(params, sort_keys=True),
+        "tier": "Rejected",
+        "train_cagr": 0.0,
+        "validation_cagr": 0.0,
+        "unseen_cagr": 0.0,
+        "unseen_max_drawdown": 0.0,
+        "wf_window_count": 0,
+        "wf_pass_rate": 0.0,
+        "wf_median_test_cagr": 0.0,
+        "wf_worst_test_drawdown": 0.0,
+        "wf_status": "rejected_prevalidation",
+        "cost_survives": False,
+        "data_source": str(manifest.get("source", "")),
+        "data_years": _safe_float(manifest.get("years"), 0.0),
+        "provider_fallback_used": bool(manifest.get("fallback_used", False)),
+        "rejection_reason": rejection_reason,
+        "verdict": "fail",
+        "final_verdict": "fail",
+        "tier_reason": "Rejected before parameter validation: insufficient real provider history.",
+    }
+
+
 def _row(
     spec: StrategySpec,
     variant_number: int,
@@ -298,6 +399,7 @@ def _row(
     walk_forward: dict[str, Any],
     tier: str,
     tier_reason: str,
+    data_manifest: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     unseen = split_metrics["unseen"]
     train = split_metrics["train"]
@@ -305,6 +407,7 @@ def _row(
     cost_survives = bool(stress.get("survives_double_cost"))
     wf_pass_rate = float(walk_forward.get("pass_rate", 0.0) or 0.0)
     verdict = _variant_verdict(train["cagr"], validation["cagr"], unseen["cagr"], unseen["max_drawdown"], cost_survives, wf_pass_rate)
+    data_manifest = data_manifest or {}
     return {
         "family": spec.family,
         "short_name": spec.short_name,
@@ -321,6 +424,10 @@ def _row(
         "wf_worst_test_drawdown": float(walk_forward.get("worst_test_drawdown", 0.0) or 0.0),
         "wf_status": str(walk_forward.get("status", "")),
         "cost_survives": cost_survives,
+        "data_source": str(data_manifest.get("source", "")),
+        "data_years": _safe_float(data_manifest.get("years"), 0.0),
+        "provider_fallback_used": bool(data_manifest.get("fallback_used", False)),
+        "rejection_reason": "",
         "verdict": verdict,
         "final_verdict": verdict,
         "tier_reason": tier_reason,

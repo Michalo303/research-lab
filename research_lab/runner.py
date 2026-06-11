@@ -325,8 +325,8 @@ def _leaderboard_row(result: dict) -> dict:
     }
 
 
-def _load_daily_data_bundle(config: LabConfig) -> DataBundle:
-    eod_symbols = _unique(["SPY", "QQQ", "TLT", "GLD"] + queued_daily_symbols(config.root, limit=8))
+def _load_daily_data_bundle(config: LabConfig, symbols: list[str] | None = None) -> DataBundle:
+    eod_symbols = _unique(symbols or ["SPY", "QQQ", "TLT", "GLD"] + queued_daily_symbols(config.root, limit=8))
     fallback_reason = ""
     if config.eodhd_api_key:
         try:
@@ -356,7 +356,7 @@ def _load_daily_data_bundle(config: LabConfig) -> DataBundle:
         _print_daily_selection_trace(config, bundle, fallback_reason)
         return bundle
 
-    synthetic_symbols = ["SPY", "QQQ", "TLT", "GLD", "BTC-USD"]
+    synthetic_symbols = eod_symbols if symbols is not None else ["SPY", "QQQ", "TLT", "GLD", "BTC-USD"]
     bundle = load_daily_universe(config.root, synthetic_symbols, config.use_yfinance)
     if fallback_reason:
         _mark_fallback(bundle, fallback_reason)

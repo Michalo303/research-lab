@@ -1,3 +1,5 @@
+import json
+
 import pandas as pd
 
 from research_lab.data_quality import audit_ohlcv_panel, run_data_quality_audit
@@ -51,3 +53,30 @@ def test_run_data_quality_audit_writes_registry_and_report(tmp_path):
     assert result["csv_path"].exists()
     assert result["report_path"].exists()
     assert any(row["check"] == "adjustment_assumption" for row in result["rows"])
+
+
+def test_run_data_quality_audit_uses_manifest_stored_csv_for_eodhd(tmp_path):
+    processed = tmp_path / "data" / "processed"
+    manifests = tmp_path / "data" / "manifests"
+    processed.mkdir(parents=True)
+    manifests.mkdir(parents=True)
+    stored_csv = processed / "eodhd_daily_universe.csv"
+    pd.DataFrame(
+        {
+            "SPY.open": [100.0, 101.0],
+            "SPY.high": [101.0, 102.0],
+            "SPY.low": [99.0, 100.0],
+            "SPY.close": [100.0, 101.0],
+            "SPY.volume": [1000.0, 1000.0],
+        },
+        index=pd.to_datetime(["2026-01-02", "2026-01-05"]),
+    ).to_csv(stored_csv)
+    (manifests / "daily_universe.json").write_text(
+        json.dumps({"source": "eodhd", "adjusted": True, "symbols": ["SPY"], "stored_csv": str(stored_csv)}),
+        encoding="utf-8",
+    )
+
+    result = run_data_quality_audit(tmp_path, "2026-W21")
+
+    assert result["rows"]
+    assert any(row["dataset"] == "daily_universe" for row in result["rows"])

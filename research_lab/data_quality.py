@@ -46,12 +46,13 @@ def audit_ohlcv_panel(panel: pd.DataFrame, manifest: dict[str, Any], required_sy
 
 def run_data_quality_audit(root: Path, report_stem: str) -> dict[str, Any]:
     manifest_path = root / "data" / "manifests" / "daily_universe.json"
-    csv_path = root / "data" / "processed" / "massive_daily_universe.csv"
     rows: list[dict[str, Any]] = []
-    if manifest_path.exists() and csv_path.exists():
+    if manifest_path.exists():
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        panel = _read_processed_panel(csv_path)
-        rows = audit_ohlcv_panel(panel, manifest, required_symbols=list(manifest.get("symbols") or []))
+        csv_path = _manifest_csv_path(root, manifest)
+        if csv_path is not None and csv_path.exists():
+            panel = _read_processed_panel(csv_path)
+            rows = audit_ohlcv_panel(panel, manifest, required_symbols=list(manifest.get("symbols") or []))
     registry_path = root / "registry" / "data_quality_audit.csv"
     registry_path.parent.mkdir(parents=True, exist_ok=True)
     _write_csv(registry_path, rows)
@@ -59,6 +60,17 @@ def run_data_quality_audit(root: Path, report_stem: str) -> dict[str, Any]:
     report_path.parent.mkdir(parents=True, exist_ok=True)
     _write_report(report_path, rows)
     return {"rows": rows, "csv_path": registry_path, "report_path": report_path}
+
+
+def _manifest_csv_path(root: Path, manifest: dict[str, Any]) -> Path | None:
+    stored_csv = str(manifest.get("stored_csv") or "").strip()
+    if stored_csv:
+        path = Path(stored_csv)
+        return path if path.is_absolute() else root / path
+    source = str(manifest.get("source") or "").strip().lower()
+    if source in {"eodhd", "massive"}:
+        return root / "data" / "processed" / f"{source}_daily_universe.csv"
+    return None
 
 
 def _read_processed_panel(path: Path) -> pd.DataFrame:

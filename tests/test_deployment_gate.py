@@ -114,6 +114,23 @@ def test_deployment_gate_accepts_valid_true_walk_forward():
     assert row["reasons"] == []
 
 
+def test_deployment_gate_rejects_promotion_candidate_with_insufficient_history():
+    item = _item(_passing_walk_forward())
+    item["data_manifest"] = {"source": "synthetic", "years": 0.0}
+
+    row = _gate_row(
+        item,
+        {"robustness_verdict": "pass"},
+        {("ROTATION", "DUAL_MOMENTUM"): "pass"},
+        {"portfolio_score": 1.0, "suggested_weight_pct": 5.0},
+        PaperGateConfig(),
+    )
+
+    assert row["paper_eligible"] is False
+    assert row["data_quality_verdict"] == "fail"
+    assert "insufficient_history" in row["reasons"]
+
+
 def test_deployment_gate_rejects_missing_parameter_verdict():
     row = _row(_passing_walk_forward(), parameter_by_group={})
 

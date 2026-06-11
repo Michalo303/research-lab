@@ -4,6 +4,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from research_lab.config import REAL_EOD_DATA_SOURCES
+
 
 @dataclass(frozen=True)
 class PaperGateConfig:
@@ -76,6 +78,9 @@ def _gate_row(item, robustness, parameter_by_group, portfolio, config):
     robustness = robustness or {}
     portfolio = portfolio or {}
     walk_forward = item.get("walk_forward")
+    data_quality_passed = _passes_data_quality(item)
+    if not data_quality_passed:
+        reasons.append("insufficient_history")
 
     walk_forward_passed = _passes_strict_walk_forward(
         walk_forward, robustness, config
@@ -104,6 +109,7 @@ def _gate_row(item, robustness, parameter_by_group, portfolio, config):
         "tier": item.get("tier"),
         "paper_eligible": paper_eligible,
         "gate_verdict": "pass" if paper_eligible else "fail",
+        "data_quality_verdict": "pass" if data_quality_passed else "fail",
         "walk_forward_verdict": "pass" if walk_forward_passed else "fail",
         "drawdown_verdict": "pass" if drawdown_passed else "fail",
         "minimum_walk_forward_windows": config.min_walk_forward_windows,
@@ -154,6 +160,7 @@ def run_deployment_gate(root: Path, report_stem: str, robustness_rows, parameter
             "tier",
             "paper_eligible",
             "gate_verdict",
+            "data_quality_verdict",
             "walk_forward_verdict",
             "drawdown_verdict",
             "minimum_walk_forward_windows",
@@ -180,3 +187,26 @@ def summarize_deployment_gate(rows) -> list[str]:
         f"- paper eligible: {eligible}",
         f"- paper blocked: {len(rows) - eligible}",
     ]
+
+
+def _passes_data_quality(item) -> bool:
+    source = str(
+        item.get("data_source")
+        or item.get("data_manifest", {}).get("source")
+        or ""
+    ).lower()
+    years = _as_number(
+        item.get("data_years", item.get("data_manifest", {}).get("years"))
+    )
+    if source not in REAL_EOD_DATA_SOURCES or years is None or years <= 0:
+        return False
+    required_years = _minimum_history_years(str(item.get("family", "")))
+    return required_years == 0.0 or years >= required_years
+
+
+def _minimum_history_years(family: str) -> float:
+    if family in {"LONGTERM", "ROTATION"}:
+        return 10.0
+    if family == "SWING":
+        return 3.0
+    return 0.0

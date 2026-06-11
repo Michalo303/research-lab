@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from scripts.run_weekly_deep_research import build_weekly_validation_gate_section
+from scripts.run_weekly_deep_research import build_weekly_data_provider_section, build_weekly_validation_gate_section
 
 
 FIXED_TIME = datetime(2026, 6, 4, 12, 0, tzinfo=timezone.utc)
@@ -67,3 +67,31 @@ def test_weekly_report_contract_missing_rows_render_deterministic_failure(tmp_pa
     assert "missing_required_metrics:" in markdown
     assert "no_experiments_run" in markdown
     assert "- key metrics:" in markdown
+
+
+def test_weekly_report_contract_includes_provider_history_diagnostics(tmp_path):
+    section = build_weekly_data_provider_section(
+        {
+            "requested_provider": "eodhd",
+            "selected_provider": "eodhd",
+            "actual_provider": "eodhd",
+            "symbols": ["SPY", "QQQ"],
+            "start_date": "1990-01-02",
+            "end_date": "2026-06-10",
+            "data_years": 36.4,
+            "fallback_used": False,
+            "fallback_reason": "",
+        }
+    )
+    report = tmp_path / "weekly_provider.md"
+    report.write_text("\n".join(section) + "\n", encoding="utf-8")
+    markdown = report.read_text(encoding="utf-8")
+
+    assert "## Data Provider Diagnostics" in markdown
+    assert "- requested provider: eodhd" in markdown
+    assert "- selected provider: eodhd" in markdown
+    assert "- actual provider used: eodhd" in markdown
+    assert "- universe: SPY, QQQ" in markdown
+    assert "- data range: 1990-01-02 to 2026-06-10" in markdown
+    assert "- data years: 36.40" in markdown
+    assert "- fallback occurred: False" in markdown

@@ -68,6 +68,45 @@ def build_weekly_validation_gate_section(robustness_rows, deployment_rows, evalu
     return render_weekly_validation_gate_markdown(weekly_gate).splitlines()
 
 
+def build_weekly_data_provider_section(diagnostics: dict | None) -> list[str]:
+    diagnostics = diagnostics or {}
+    symbols = diagnostics.get("symbols") or []
+    if isinstance(symbols, str):
+        symbols_text = symbols
+    else:
+        symbols_text = ", ".join(str(symbol) for symbol in symbols)
+    data_years = float(diagnostics.get("data_years", 0.0) or 0.0)
+    return [
+        "## Data Provider Diagnostics",
+        "",
+        f"- requested provider: {diagnostics.get('requested_provider', '')}",
+        f"- selected provider: {diagnostics.get('selected_provider', '')}",
+        f"- actual provider used: {diagnostics.get('actual_provider', '')}",
+        f"- universe: {symbols_text}",
+        f"- data range: {diagnostics.get('start_date', '')} to {diagnostics.get('end_date', '')}",
+        f"- data years: {data_years:.2f}",
+        f"- fallback occurred: {bool(diagnostics.get('fallback_used', False))}",
+        f"- fallback reason: {diagnostics.get('fallback_reason', '')}",
+    ]
+
+
+def print_weekly_data_provider_diagnostics(diagnostics: dict | None) -> None:
+    diagnostics = diagnostics or {}
+    print(
+        "weekly_data_selection"
+        f" | requested_provider={diagnostics.get('requested_provider', '')}"
+        f" | selected_provider={diagnostics.get('selected_provider', '')}"
+        f" | actual_provider={diagnostics.get('actual_provider', '')}"
+        f" | universe={','.join(str(symbol) for symbol in diagnostics.get('symbols', []) or [])}"
+        f" | start_date={diagnostics.get('start_date', '')}"
+        f" | end_date={diagnostics.get('end_date', '')}"
+        f" | data_years={float(diagnostics.get('data_years', 0.0) or 0.0):.2f}"
+        f" | fallback_used={bool(diagnostics.get('fallback_used', False))}"
+        f" | fallback_reason={diagnostics.get('fallback_reason', '')}",
+        flush=True,
+    )
+
+
 def main() -> None:
     from research_lab.alerting import build_weekly_alerts, summarize_alerts, write_and_send_alerts
     from research_lab.apify_dataroma import DEFAULT_SUPERINVESTORS, run_dataroma_actor
@@ -111,6 +150,7 @@ def main() -> None:
     report_stem = f"{iso_year}-W{iso_week:02d}"
     robustness = write_weekly_robustness_outputs(root, report_stem)
     parameter_sweep = run_parameter_sweep(root, report_stem)
+    print_weekly_data_provider_diagnostics(parameter_sweep.get("data_diagnostics"))
     portfolio = run_portfolio_scoring(root, report_stem)
     sentiment_status = "sentiment layer not available"
     sentiment_rows = []
@@ -181,6 +221,8 @@ def main() -> None:
         "## Robustness Findings",
         "",
         *_weekly_robustness_findings(robustness["robustness_rows"], robustness["stability_rows"]),
+        "",
+        *build_weekly_data_provider_section(parameter_sweep.get("data_diagnostics")),
         "",
         "## Parameter Findings",
         "",
