@@ -9,6 +9,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from research_lab.failure_memory import build_failure_memory, execution_relevant_parameters
 from research_lab.research_orchestrator import build_research_guidance, score_candidate_direction, summarize_recent_failures
 
 
@@ -142,9 +143,16 @@ def queued_hypothesis_strategies(root: Path, limit: int = 4) -> list[StrategySpe
         if spec:
             candidates.append((order, key, spec))
     guidance = build_research_guidance(summarize_recent_failures(root))
+    failure_memory = build_failure_memory(root)
     ranked = sorted(
         _dedupe_ordered_specs(candidates),
-        key=lambda item: (score_candidate_direction(item[2], guidance), _conservative_preference_rank(item[2]), item[0], item[1]),
+        key=lambda item: (
+            failure_memory.penalty_for_spec(item[2]).score,
+            score_candidate_direction(item[2], guidance),
+            _conservative_preference_rank(item[2]),
+            item[0],
+            item[1],
+        ),
     )
     specs = [spec for _order, _key, spec in ranked]
     if limit is not None:
@@ -606,11 +614,7 @@ def _trend_vol_cap_conservative_mutations(result: dict[str, Any]) -> list[Strate
 
 
 def _executable_parameters(parameters: dict[str, Any]) -> dict[str, Any]:
-    return {
-        str(key): value
-        for key, value in parameters.items()
-        if not str(key).startswith("source_")
-    }
+    return execution_relevant_parameters(parameters)
 
 
 def _normalize_for_fingerprint(value: Any, key_path: tuple[str, ...] = ()) -> Any:
@@ -682,6 +686,10 @@ def _spec_from_hypothesis(item: dict) -> StrategySpec | None:
     hypothesis_id = item.get("hypothesis_id", "")
     source_feedback = _source_feedback_parameters(item)
     if family == "ROTATION":
+        parameter_overrides = _parameter_overrides_from_hypothesis(
+            item,
+            {"lookback", "top_n", "risk_sma"},
+        )
         return StrategySpec(
             family="ROTATION",
             asset_class="ETF",
@@ -694,6 +702,7 @@ def _spec_from_hypothesis(item: dict) -> StrategySpec | None:
                 "top_n": 2,
                 "risk_symbol": "SPY",
                 "risk_sma": 200,
+                **parameter_overrides,
                 "source_hypothesis_id": hypothesis_id,
                 "source_title": source_title,
                 **source_feedback,
@@ -703,6 +712,10 @@ def _spec_from_hypothesis(item: dict) -> StrategySpec | None:
         )
     if family == "SWING":
         ticker = str(item.get("ticker", "QQQ")).strip().upper() or "QQQ"
+        parameter_overrides = _parameter_overrides_from_hypothesis(
+            item,
+            {"fast_sma", "slow_sma", "rsi_entry", "rsi_exit", "atr_stop"},
+        )
         return StrategySpec(
             family="SWING",
             asset_class="ETF",
@@ -717,6 +730,7 @@ def _spec_from_hypothesis(item: dict) -> StrategySpec | None:
                 "rsi_exit": 58,
                 "atr_stop": 2.0,
                 **_risk_overlay_execution_parameters(item),
+                **parameter_overrides,
                 "source_hypothesis_id": hypothesis_id,
                 "source_title": source_title,
                 **source_feedback,
@@ -725,6 +739,10 @@ def _spec_from_hypothesis(item: dict) -> StrategySpec | None:
             builder="swing_trend_filtered_pullback",
         )
     if family == "LONGTERM":
+        parameter_overrides = _parameter_overrides_from_hypothesis(
+            item,
+            {"sma", "vol_window", "target_vol"},
+        )
         return StrategySpec(
             family="LONGTERM",
             asset_class="ETF",
@@ -736,6 +754,7 @@ def _spec_from_hypothesis(item: dict) -> StrategySpec | None:
                 "sma": 150,
                 "vol_window": 63,
                 "target_vol": 0.12,
+                **parameter_overrides,
                 "source_hypothesis_id": hypothesis_id,
                 "source_title": source_title,
                 **source_feedback,
@@ -769,6 +788,13 @@ def _risk_overlay_execution_parameters(item: dict[str, Any]) -> dict[str, Any]:
     if not item.get("risk_overlay_changed"):
         return {}
     return {"max_exposure": _bounded_float(item.get("max_exposure", 0.50), lower=0.05, upper=1.0)}
+
+
+def _parameter_overrides_from_hypothesis(item: dict[str, Any], allowed: set[str]) -> dict[str, Any]:
+    parameters = item.get("parameters")
+    if not isinstance(parameters, dict):
+        return {}
+    return {key: parameters[key] for key in allowed if key in parameters}
 
 
 def _bounded_float(value: Any, *, lower: float, upper: float) -> float:
