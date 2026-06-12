@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from research_lab.registry import append_jsonl
+from research_lab.risk_management import apply_risk_guidance
 
 
 CREATIVE_TEMPLATES = [
@@ -103,19 +104,21 @@ def promote_creative_ideas_to_hypotheses(root: Path, max_promotions: int = 6) ->
         source_key = f"creative:{idea['idea_key']}"
         if source_key in existing_source_keys:
             continue
-        payload = {
-            "hypothesis_id": f"HYP_{now}_CREATIVE_{len(promoted) + 1:03d}",
-            "title": idea["title"],
-            "family": idea["family"],
-            "rationale": idea["rationale"],
-            "source_title": idea["source_title"],
-            "source_url": idea["source_url"],
-            "source_key": source_key,
-            "tags": idea["tags"],
-            "status": "queued",
-            "research_only": True,
-            "creative_idea_id": idea["idea_id"],
-        }
+        payload = apply_risk_guidance(
+            {
+                "hypothesis_id": f"HYP_{now}_CREATIVE_{len(promoted) + 1:03d}",
+                "title": idea["title"],
+                "family": idea["family"],
+                "rationale": idea["rationale"],
+                "source_title": idea["source_title"],
+                "source_url": idea["source_url"],
+                "source_key": source_key,
+                "tags": idea["tags"],
+                "status": "queued",
+                "research_only": True,
+                "creative_idea_id": idea["idea_id"],
+            }
+        )
         append_jsonl(root / "registry" / "hypothesis_queue.jsonl", payload)
         promoted.append(payload)
         existing_source_keys.add(source_key)
@@ -176,4 +179,3 @@ def _write_creative_report(root: Path, ideas: list[dict]) -> Path:
         )
     path.write_text("\n".join(lines), encoding="utf-8")
     return path
-

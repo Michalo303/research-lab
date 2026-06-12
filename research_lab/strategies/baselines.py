@@ -9,6 +9,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from research_lab.risk_management import has_strong_rotation_risk_overlay
+
 
 UNORDERED_EXECUTABLE_LIST_KEYS = {"symbols", "universe", "tickers", "assets", "asset_universe"}
 
@@ -134,9 +136,12 @@ def queued_hypothesis_strategies(root: Path, limit: int = 4) -> list[StrategySpe
         return []
     items = [json.loads(line) for line in queue_path.read_text(encoding="utf-8").splitlines() if line.strip()]
     candidates = []
+    extreme_rotation_drawdown = _has_recent_extreme_rotation_drawdown(root)
     for order, item in enumerate(items):
         key = str(item.get("source_key") or item.get("hypothesis_id") or f"{item.get('family', '')}:{item.get('ticker', '')}:{item.get('title', '')}")
         spec = _spec_from_hypothesis(item)
+        if spec and spec.family == "ROTATION" and extreme_rotation_drawdown and not has_strong_rotation_risk_overlay(item):
+            continue
         if spec:
             candidates.append((order, key, spec))
     penalties = _recent_drawdown_penalties(root)
@@ -475,6 +480,16 @@ def _recent_drawdown_penalties(root: Path) -> dict[str, int]:
         for key in _penalty_keys(result):
             penalties[key] = max(penalties.get(key, 0), penalty)
     return penalties
+
+
+def _has_recent_extreme_rotation_drawdown(root: Path) -> bool:
+    for result in _recent_experiment_results(root):
+        if str(result.get("family") or "") != "ROTATION":
+            continue
+        drawdown = _safe_float(result.get("split_metrics", {}).get("unseen", {}).get("max_drawdown"), 0.0)
+        if drawdown <= -0.50:
+            return True
+    return False
 
 
 def _drawdown_penalty_for_spec(spec: StrategySpec, penalties: dict[str, int]) -> int:

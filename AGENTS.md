@@ -73,3 +73,22 @@ Future work should prioritize:
 Do not weaken validation gates merely to produce accepted strategies.
 Do not treat rejected strategies as infrastructure failures.
 Do not deploy strategies unless existing promotion and validation gates pass.
+
+## Risk-management research layer
+
+Risk management is a first-class research objective. Future strategy work must explicitly optimize for survival, drawdown containment, walk-forward robustness, and portfolio-level risk, not only higher CAGR.
+
+Every new hypothesis source and strategy-template catalog path should prioritize:
+
+- volatility targeting;
+- drawdown circuit breakers;
+- cash or defensive regimes;
+- gross, net, single-asset, and correlated exposure caps;
+- correlation-aware portfolio risk;
+- crisis-period diagnostics;
+- cost and slippage stress;
+- parameter-neighborhood stability.
+
+Near-miss candidates such as `LONGTERM_ETF_1D_TREND_VOL_CAP` should be mutated primarily through risk controls, including lower volatility targets, lower exposure caps, smoother volatility windows, cash filters, and stronger drawdown controls. Do not chase return by loosening lookbacks, adding leverage, or relaxing exits before testing risk overlays.
+
+Strategies with high CAGR but unstable drawdown must be deprioritized. Rotation strategies with historically extreme drawdowns must not be expanded through generic momentum variants until a stronger risk overlay exists. Synthetic or fallback-data candidates remain blocked from promotion.

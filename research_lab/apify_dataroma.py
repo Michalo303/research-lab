@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from research_lab.registry import append_jsonl
+from research_lab.risk_management import apply_risk_guidance
 
 
 DEFAULT_SUPERINVESTORS = ["BRK", "HC", "BAUPOST", "PI", "AM"]
@@ -77,33 +78,35 @@ def _items_to_hypotheses(root: Path, items: list[dict]) -> list[dict]:
         source_key = f"apify-dataroma:{investor}:{ticker}:{activity}:{weight}"
         if source_key in existing:
             continue
-        payload = {
-            "hypothesis_id": f"HYP_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_APIFY_{len(hypotheses) + 1:03d}",
-            "title": "Dataroma full-holdings smart-money pullback",
-            "family": "SWING",
-            "ticker": ticker,
-            "rationale": (
-                f"{investor} holds {ticker} at {weight}% of portfolio with recentActivity={activity}. "
-                "Use this only as a universe/conviction filter; test price-based pullback entries."
-            ),
-            "source_title": f"apify_dataroma:{investor}",
-            "source_url": str(item.get("superinvestorUrl") or ""),
-            "source_key": source_key,
-            "tags": ["dataroma", "apify", "13f", "smart_money", "swing"],
-            "status": "queued",
-            "research_only": True,
-            "apify_dataroma": {
-                "superinvestor_name": investor,
-                "superinvestor_id": item.get("superinvestorId"),
-                "percent_of_portfolio": weight,
-                "recent_activity": activity,
-                "reported_price": item.get("reportedPrice"),
-                "current_price": item.get("currentPrice"),
-                "change_from_reported_price": item.get("changeFromReportedPrice"),
-                "portfolio_date": item.get("portfolioDate"),
-                "period": item.get("period"),
-            },
-        }
+        payload = apply_risk_guidance(
+            {
+                "hypothesis_id": f"HYP_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_APIFY_{len(hypotheses) + 1:03d}",
+                "title": "Dataroma full-holdings smart-money pullback",
+                "family": "SWING",
+                "ticker": ticker,
+                "rationale": (
+                    f"{investor} holds {ticker} at {weight}% of portfolio with recentActivity={activity}. "
+                    "Use this only as a universe/conviction filter; test price-based pullback entries."
+                ),
+                "source_title": f"apify_dataroma:{investor}",
+                "source_url": str(item.get("superinvestorUrl") or ""),
+                "source_key": source_key,
+                "tags": ["dataroma", "apify", "13f", "smart_money", "swing"],
+                "status": "queued",
+                "research_only": True,
+                "apify_dataroma": {
+                    "superinvestor_name": investor,
+                    "superinvestor_id": item.get("superinvestorId"),
+                    "percent_of_portfolio": weight,
+                    "recent_activity": activity,
+                    "reported_price": item.get("reportedPrice"),
+                    "current_price": item.get("currentPrice"),
+                    "change_from_reported_price": item.get("changeFromReportedPrice"),
+                    "portfolio_date": item.get("portfolioDate"),
+                    "period": item.get("period"),
+                },
+            }
+        )
         append_jsonl(root / "registry" / "hypothesis_queue.jsonl", payload)
         hypotheses.append(payload)
         existing.add(source_key)
