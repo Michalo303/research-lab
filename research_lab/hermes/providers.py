@@ -84,6 +84,9 @@ def _invoke_openai_compatible(prompt: str, env: Mapping[str, str], urlopen: Call
         return ProviderResult(
             "provider_unavailable", message="HERMES_OPENAI_BASE_URL and HERMES_OPENAI_MODEL are required"
         )
+    endpoint_error = _validate_openai_base_url(base_url)
+    if endpoint_error:
+        return ProviderResult("provider_error", message=endpoint_error)
     if not api_key and not _is_loopback(base_url):
         return ProviderResult("provider_unavailable", message="HERMES_OPENAI_API_KEY is required for remote endpoints")
     payload = json.dumps(
@@ -98,15 +101,15 @@ def _invoke_openai_compatible(prompt: str, env: Mapping[str, str], urlopen: Call
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-    request = urllib.request.Request(f"{base_url}/chat/completions", data=payload, headers=headers, method="POST")
     try:
+        request = urllib.request.Request(f"{base_url}/chat/completions", data=payload, headers=headers, method="POST")
         with urlopen(request, timeout=_timeout(env)) as response:
             raw_response = response.read(MAX_PROVIDER_OUTPUT_BYTES + 1)
             if len(raw_response) > MAX_PROVIDER_OUTPUT_BYTES:
                 return ProviderResult("provider_error", message="OpenAI-compatible provider response exceeded the size limit")
             response_payload = json.loads(raw_response.decode("utf-8"))
         content = response_payload["choices"][0]["message"]["content"]
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as exc:
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError, ValueError) as exc:
         return ProviderResult(
             "provider_error", message=_redact(f"OpenAI-compatible provider request failed: {_safe_error(exc)}", env)
         )
@@ -129,6 +132,18 @@ def _timeout(env: Mapping[str, str]) -> float:
 def _is_loopback(url: str) -> bool:
     hostname = (urlparse(url).hostname or "").lower()
     return hostname in {"localhost", "127.0.0.1", "::1"}
+
+
+def _validate_openai_base_url(base_url: str) -> str | None:
+    try:
+        parsed = urlparse(base_url)
+    except ValueError:
+        return "Invalid HERMES_OPENAI_BASE_URL"
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return "Invalid HERMES_OPENAI_BASE_URL; expected an absolute HTTP(S) URL"
+    if parsed.scheme == "http" and not _is_loopback(base_url):
+        return "Remote OpenAI-compatible endpoints require HTTPS; plaintext HTTP is allowed only for loopback hosts"
+    return None
 
 
 def _safe_error(exc: Exception) -> str:

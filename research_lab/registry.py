@@ -4,8 +4,10 @@ import csv
 import json
 import math
 import os
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from uuid import uuid4
 
 
 LEADERBOARD_FIELDS = [
@@ -43,6 +45,35 @@ ALLOCATION_FIELDS = [
 def append_jsonl(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {**payload, "logged_at": datetime.now(timezone.utc).isoformat()}
+    with _registry_lock(path):
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(_json_safe(payload), sort_keys=True) + "\n")
+
+
+def append_jsonl_batch_atomic(path: Path, payloads: list[dict]) -> None:
+    if not payloads:
+        return
+    logged_at = datetime.now(timezone.utc).isoformat()
+    lines = [json.dumps(_json_safe({**payload, "logged_at": logged_at}), sort_keys=True) for payload in payloads]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    with _registry_lock(path):
+        existing = path.read_bytes() if path.exists() else b""
+        separator = b"" if not existing or existing.endswith(b"\n") else b"\n"
+        replacement = existing + separator + ("\n".join(lines) + "\n").encode("utf-8")
+        try:
+            with temp_path.open("xb") as handle:
+                handle.write(replacement)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp_path, path)
+        finally:
+            if temp_path.exists():
+                temp_path.unlink()
+
+
+@contextmanager
+def _registry_lock(path: Path):
     lock_path = path.with_name(f"{path.name}.lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a+b") as lock_handle:
@@ -55,8 +86,7 @@ def append_jsonl(path: Path, payload: dict) -> None:
             lock_handle.seek(0)
             msvcrt.locking(lock_handle.fileno(), msvcrt.LK_LOCK, 1)
             try:
-                with path.open("a", encoding="utf-8") as handle:
-                    handle.write(json.dumps(_json_safe(payload), sort_keys=True) + "\n")
+                yield
             finally:
                 lock_handle.seek(0)
                 msvcrt.locking(lock_handle.fileno(), msvcrt.LK_UNLCK, 1)
@@ -65,8 +95,7 @@ def append_jsonl(path: Path, payload: dict) -> None:
 
             fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
             try:
-                with path.open("a", encoding="utf-8") as handle:
-                    handle.write(json.dumps(_json_safe(payload), sort_keys=True) + "\n")
+                yield
             finally:
                 fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
 

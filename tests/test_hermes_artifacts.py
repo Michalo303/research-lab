@@ -79,3 +79,26 @@ def test_latest_artifact_respects_daily_run_timestamp(tmp_path):
 
     assert selected["run_id"] == "before"
     assert selected["artifact_path"].endswith("before.json")
+
+
+def test_latest_artifact_prefers_terminal_phase_over_precommit_at_same_timestamp(tmp_path):
+    validated = {
+        "run_id": "two-phase",
+        "timestamp_utc": NOW.isoformat(),
+        "provider": "command",
+        "status": "validated",
+        "artifact_phase": "artifact_written",
+    }
+    committed = {
+        **validated,
+        "status": "ok",
+        "artifact_phase": "queue_committed",
+    }
+    write_run_artifact(tmp_path, validated, timestamp=NOW, suffix="validated")
+    write_run_artifact(tmp_path, committed, timestamp=NOW)
+
+    selected = latest_hermes_artifact(tmp_path)
+
+    assert selected["status"] == "ok"
+    assert selected["artifact_phase"] == "queue_committed"
+    assert selected["artifact_path"].endswith("two-phase.json")

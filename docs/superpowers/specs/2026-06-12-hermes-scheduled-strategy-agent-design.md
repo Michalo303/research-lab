@@ -87,13 +87,13 @@ The command is configured by the operator, parsed with `shlex`, and executed dir
 - `HERMES_OPENAI_MODEL`
 - `HERMES_OPENAI_API_KEY`, except for loopback endpoints where an empty key is allowed for local Ollama-compatible deployments
 
-The adapter uses the Python standard library to POST to `<base_url>/chat/completions`. It requests non-streaming JSON output, applies a finite timeout, and extracts `choices[0].message.content`. Credentials are sent only as an authorization header and are never written to artifacts, logs, exceptions, reports, or commands.
+The adapter uses the Python standard library to POST to `<base_url>/chat/completions`. It requests non-streaming JSON output, applies a finite timeout, and extracts `choices[0].message.content`. Remote endpoints require HTTPS; HTTP is allowed only for exact loopback hosts (`localhost`, `127.0.0.1`, and `::1`). Credentials are sent only as an authorization header and are never written to artifacts, logs, exceptions, reports, or commands.
 
 Unsupported or missing provider configuration returns `provider_unavailable`. Network or provider execution failures return `provider_error`. Neither state changes the queue.
 
 ## Queue Safety
 
-Provider output is parsed completely before any queue append occurs. Every proposal receives an individual validation result. Only valid, nonduplicate hypotheses are appended through the existing locked JSONL registry helper.
+Provider output is parsed completely before any queue commit occurs. Every proposal receives an individual validation result. Only valid, nonduplicate hypotheses are prepared for an atomic locked JSONL replacement.
 
 Each accepted record includes:
 
@@ -109,13 +109,13 @@ Malformed provider envelopes reject the entire output. Individual malformed hypo
 
 ## Immutable Artifacts
 
-Each invocation writes a new JSON artifact under:
+Each invocation writes immutable JSON artifacts under:
 
 ```text
-reports/hermes/runs/YYYY-MM-DD/<run_id>.json
+reports/hermes/runs/YYYY-MM-DD/<run_id>[.validated].json
 ```
 
-The artifact is created with exclusive-create semantics and is never overwritten. It contains:
+Artifacts are created with exclusive-create semantics and are never overwritten. A valid import writes an `artifact_written` precommit record before queue mutation, followed by a terminal `queue_committed` or `queue_commit_failed` record. They contain:
 
 - `run_id`
 - UTC timestamp
@@ -159,7 +159,7 @@ The timer runs daily at `02:00 UTC`, before the existing daily research timer at
 - Malformed envelope: write artifact with `invalid_output`, queue unchanged.
 - Mixed valid and invalid proposals: import valid proposals, record individual rejection reasons.
 - Artifact collision: fail rather than overwrite.
-- Queue write failure: artifact reports `queue_error`; existing queue history is not rewritten.
+- Queue commit failure: terminal artifact reports `queue_commit_failed`; atomic replacement preserves the complete existing queue.
 
 The systemd service treats provider-unavailable as a successful audited no-op so missing optional credentials do not break the daily pipeline. Unexpected internal errors remain nonzero failures.
 

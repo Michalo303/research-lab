@@ -11,7 +11,7 @@ from research_lab.hermes.artifacts import read_diagnostic_input, run_artifact_pa
 from research_lab.hermes.providers import ProviderResult, invoke_provider
 from research_lab.hermes.schema import execution_fingerprint, schema_prompt_text, validate_hypothesis
 from research_lab.llm.hypothesis_adapter import build_hermes_prompt
-from research_lab.registry import append_jsonl
+from research_lab.registry import append_jsonl_batch_atomic
 from research_lab.reports import collect_git_info, generate_run_id
 from research_lab.risk_management import apply_risk_guidance
 
@@ -22,6 +22,7 @@ def run_hypothesis_generation(
     env: Mapping[str, str] | None = None,
     timestamp: datetime | None = None,
     provider_invoker: Callable[[str, str, Mapping[str, str]], ProviderResult] = invoke_provider,
+    queue_committer: Callable[[Path, list[dict[str, Any]]], None] = append_jsonl_batch_atomic,
 ) -> dict[str, Any]:
     root = Path(root)
     current_env = dict(os.environ if env is None else env)
@@ -29,8 +30,10 @@ def run_hypothesis_generation(
     git_info = collect_git_info(root)
     run_id = generate_run_id(timestamp_utc, git_info.get("commit"))
     artifact_path = run_artifact_path(root, run_id, timestamp_utc)
-    if artifact_path.exists():
-        raise FileExistsError(f"Hermes run artifact already exists for run_id={run_id}: {artifact_path}")
+    validated_artifact_path = run_artifact_path(root, run_id, timestamp_utc, suffix="validated")
+    if artifact_path.exists() or validated_artifact_path.exists():
+        existing = artifact_path if artifact_path.exists() else validated_artifact_path
+        raise FileExistsError(f"Hermes run artifact already exists for run_id={run_id}: {existing}")
     provider = str(current_env.get("HERMES_PROVIDER", "")).strip().lower() or "not_configured"
     diagnostic = read_diagnostic_input(root)
     input_report_path = _relative(root, diagnostic.path) if diagnostic.path else ""
@@ -54,16 +57,26 @@ def run_hypothesis_generation(
         "rejection_reasons": [],
         "output_queue_path": "registry/hypothesis_queue.jsonl",
         "imported_hypothesis_ids": [],
+        "queue_impact": {"state": "unchanged", "planned_append_count": 0, "committed_append_count": 0},
     }
     if provider_result.status != "ok":
         return _finish(
             root,
-            {**base, "status": provider_result.status, "rejection_reasons": [provider_result.message] if provider_result.message else []},
+            {
+                **base,
+                "status": provider_result.status,
+                "artifact_phase": "no_queue_change",
+                "rejection_reasons": [provider_result.message] if provider_result.message else [],
+            },
             timestamp_utc,
         )
     envelope, envelope_error = _parse_envelope(provider_result.output)
     if envelope_error:
-        return _finish(root, {**base, "status": "invalid_output", "rejection_reasons": [envelope_error]}, timestamp_utc)
+        return _finish(
+            root,
+            {**base, "status": "invalid_output", "artifact_phase": "no_queue_change", "rejection_reasons": [envelope_error]},
+            timestamp_utc,
+        )
     proposals = envelope["hypotheses"]
     accepted: list[dict[str, Any]] = []
     rejection_reasons: list[str] = []
@@ -79,23 +92,52 @@ def run_hypothesis_generation(
             continue
         seen.add(fingerprint)
         accepted.append(_queue_payload(validation.hypothesis, run_id, provider, index, fingerprint))
-    imported_ids: list[str] = []
-    try:
-        for payload in accepted:
-            append_jsonl(root / "registry" / "hypothesis_queue.jsonl", payload)
-            imported_ids.append(payload["hypothesis_id"])
-    except OSError as exc:
-        rejection_reasons.append(f"queue_write_failed:{exc}")
+    if not accepted:
+        status = "completed_with_rejections" if rejection_reasons else "ok"
         return _finish(
             root,
             {
                 **base,
-                "status": "queue_error",
+                "status": status,
+                "artifact_phase": "no_queue_change",
                 "generated_hypotheses_count": len(proposals),
-                "imported_hypotheses_count": len(imported_ids),
-                "rejected_hypotheses_count": len(proposals) - len(imported_ids),
+                "rejected_hypotheses_count": len(proposals),
                 "rejection_reasons": rejection_reasons,
-                "imported_hypothesis_ids": imported_ids,
+            },
+            timestamp_utc,
+        )
+    planned_ids = [payload["hypothesis_id"] for payload in accepted]
+    validated_artifact = {
+        **base,
+        "status": "validated",
+        "artifact_phase": "artifact_written",
+        "generated_hypotheses_count": len(proposals),
+        "rejected_hypotheses_count": len(proposals) - len(accepted),
+        "rejection_reasons": rejection_reasons,
+        "planned_imported_hypotheses_count": len(accepted),
+        "planned_hypothesis_ids": planned_ids,
+        "queue_impact": {"state": "planned", "planned_append_count": len(accepted), "committed_append_count": 0},
+    }
+    precommit_path = write_run_artifact(root, validated_artifact, timestamp=timestamp_utc, suffix="validated")
+    try:
+        queue_committer(root / "registry" / "hypothesis_queue.jsonl", accepted)
+    except OSError as exc:
+        queue_failure_reasons = [*rejection_reasons, f"queue_commit_failed:{exc}"]
+        return _finish(
+            root,
+            {
+                **base,
+                "status": "queue_commit_failed",
+                "artifact_phase": "queue_commit_failed",
+                "generated_hypotheses_count": len(proposals),
+                "rejected_hypotheses_count": len(proposals),
+                "rejection_reasons": queue_failure_reasons,
+                "validated_artifact_path": _relative(root, precommit_path),
+                "queue_impact": {
+                    "state": "commit_failed",
+                    "planned_append_count": len(accepted),
+                    "committed_append_count": 0,
+                },
             },
             timestamp_utc,
         )
@@ -105,11 +147,18 @@ def run_hypothesis_generation(
         {
             **base,
             "status": status,
+            "artifact_phase": "queue_committed",
             "generated_hypotheses_count": len(proposals),
-            "imported_hypotheses_count": len(imported_ids),
-            "rejected_hypotheses_count": len(proposals) - len(imported_ids),
+            "imported_hypotheses_count": len(accepted),
+            "rejected_hypotheses_count": len(proposals) - len(accepted),
             "rejection_reasons": rejection_reasons,
-            "imported_hypothesis_ids": imported_ids,
+            "imported_hypothesis_ids": planned_ids,
+            "validated_artifact_path": _relative(root, precommit_path),
+            "queue_impact": {
+                "state": "committed",
+                "planned_append_count": len(accepted),
+                "committed_append_count": len(accepted),
+            },
         },
         timestamp_utc,
     )

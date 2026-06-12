@@ -132,6 +132,48 @@ def test_openai_compatible_allows_keyless_loopback_endpoint():
     assert result.status == "ok"
 
 
+def test_openai_compatible_rejects_remote_plaintext_http_before_transport():
+    calls = []
+
+    def fake_urlopen(request, timeout):
+        calls.append(request)
+        raise AssertionError("remote plaintext HTTP must be rejected before transport")
+
+    result = invoke_provider(
+        "openai_compatible",
+        "prompt",
+        {
+            "HERMES_OPENAI_BASE_URL": "http://remote.example/v1",
+            "HERMES_OPENAI_MODEL": "model",
+            "HERMES_OPENAI_API_KEY": "must-not-be-sent",
+        },
+        urlopen=fake_urlopen,
+    )
+
+    assert result.status == "provider_error"
+    assert result.output is None
+    assert "HTTPS" in result.message
+    assert "must-not-be-sent" not in result.message
+    assert calls == []
+
+
+def test_openai_compatible_malformed_base_url_returns_provider_error():
+    result = invoke_provider(
+        "openai_compatible",
+        "prompt",
+        {
+            "HERMES_OPENAI_BASE_URL": "not-a-url",
+            "HERMES_OPENAI_MODEL": "model",
+            "HERMES_OPENAI_API_KEY": "secret-value",
+        },
+    )
+
+    assert result.status == "provider_error"
+    assert result.output is None
+    assert "invalid" in result.message.lower()
+    assert "secret-value" not in result.message
+
+
 def test_openai_provider_error_does_not_expose_api_key():
     def fake_urlopen(request, timeout):
         raise urllib.error.URLError("connection refused")

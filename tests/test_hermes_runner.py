@@ -154,6 +154,80 @@ def test_cli_returns_success_for_audited_provider_unavailable(tmp_path, monkeypa
     assert main([]) == 0
 
 
+def test_malformed_openai_endpoint_creates_provider_error_artifact(tmp_path):
+    outcome = run_hypothesis_generation(
+        tmp_path,
+        env={
+            "HERMES_PROVIDER": "openai_compatible",
+            "HERMES_OPENAI_BASE_URL": "not-a-url",
+            "HERMES_OPENAI_MODEL": "model",
+            "HERMES_OPENAI_API_KEY": "secret-value",
+        },
+        timestamp=NOW,
+    )
+
+    assert outcome["status"] == "provider_error"
+    assert outcome["artifact_path"].exists()
+    artifact = json.loads(outcome["artifact_path"].read_text(encoding="utf-8"))
+    assert artifact["status"] == "provider_error"
+    assert "secret-value" not in outcome["artifact_path"].read_text(encoding="utf-8")
+    assert not (tmp_path / "registry" / "hypothesis_queue.jsonl").exists()
+
+
+def test_artifact_write_failure_leaves_queue_unchanged(tmp_path, monkeypatch):
+    queue = tmp_path / "registry" / "hypothesis_queue.jsonl"
+    queue.parent.mkdir(parents=True)
+    queue.write_text('{"hypothesis_id":"existing"}\n', encoding="utf-8")
+    before = queue.read_bytes()
+    monkeypatch.setattr(
+        "research_lab.hermes.run_hypothesis_generation.write_run_artifact",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("artifact storage unavailable")),
+    )
+
+    with pytest.raises(OSError, match="artifact storage unavailable"):
+        run_hypothesis_generation(
+            tmp_path,
+            env={"HERMES_PROVIDER": "command"},
+            timestamp=NOW,
+            provider_invoker=lambda *_args, **_kwargs: ProviderResult(
+                "ok", output=json.dumps({"hypotheses": [_valid()]})
+            ),
+        )
+
+    assert queue.read_bytes() == before
+
+
+def test_queue_commit_failure_is_audited_without_partial_import(tmp_path):
+    queue = tmp_path / "registry" / "hypothesis_queue.jsonl"
+    queue.parent.mkdir(parents=True)
+    queue.write_text('{"hypothesis_id":"existing"}\n', encoding="utf-8")
+    before = queue.read_bytes()
+    second = _valid("Second valid hypothesis")
+    second["parameters"] = {**second["parameters"], "sma": 150}
+
+    def fail_commit(_path, payloads):
+        assert len(payloads) == 2
+        raise OSError("atomic replace failed")
+
+    outcome = run_hypothesis_generation(
+        tmp_path,
+        env={"HERMES_PROVIDER": "command"},
+        timestamp=NOW,
+        provider_invoker=lambda *_args, **_kwargs: ProviderResult(
+            "ok", output=json.dumps({"hypotheses": [_valid(), second]})
+        ),
+        queue_committer=fail_commit,
+    )
+
+    assert outcome["status"] == "queue_commit_failed"
+    assert outcome["imported_hypotheses_count"] == 0
+    assert queue.read_bytes() == before
+    artifacts = sorted((tmp_path / "reports" / "hermes" / "runs").glob("*/*.json"))
+    assert len(artifacts) == 2
+    phases = {json.loads(path.read_text(encoding="utf-8"))["artifact_phase"] for path in artifacts}
+    assert phases == {"artifact_written", "queue_commit_failed"}
+
+
 def test_run_id_collision_is_rejected_before_provider_or_queue_write(tmp_path):
     calls = []
     provider = lambda *_args, **_kwargs: calls.append(True) or ProviderResult("ok", output=json.dumps({"hypotheses": [_valid()]}))

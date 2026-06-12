@@ -39,12 +39,18 @@ def dominant_blocker(report_text: str) -> str:
     return "no explicit blocker found"
 
 
-def write_run_artifact(root: Path, artifact: dict[str, Any], *, timestamp: datetime | None = None) -> Path:
+def write_run_artifact(
+    root: Path,
+    artifact: dict[str, Any],
+    *,
+    timestamp: datetime | None = None,
+    suffix: str | None = None,
+) -> Path:
     timestamp_utc = _utc(timestamp)
     run_id = str(artifact.get("run_id", "")).strip()
     if not run_id:
         raise ValueError("Hermes artifact requires run_id")
-    path = run_artifact_path(root, run_id, timestamp_utc)
+    path = run_artifact_path(root, run_id, timestamp_utc, suffix=suffix)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("x", encoding="utf-8") as handle:
         json.dump(artifact, handle, indent=2, sort_keys=True, ensure_ascii=True)
@@ -52,8 +58,9 @@ def write_run_artifact(root: Path, artifact: dict[str, Any], *, timestamp: datet
     return path
 
 
-def run_artifact_path(root: Path, run_id: str, timestamp: datetime) -> Path:
-    return root / "reports" / "hermes" / "runs" / _utc(timestamp).date().isoformat() / f"{run_id}.json"
+def run_artifact_path(root: Path, run_id: str, timestamp: datetime, *, suffix: str | None = None) -> Path:
+    filename = f"{run_id}.{suffix}.json" if suffix else f"{run_id}.json"
+    return root / "reports" / "hermes" / "runs" / _utc(timestamp).date().isoformat() / filename
 
 
 def latest_hermes_artifact(root: Path, *, before: datetime | None = None) -> dict[str, Any] | None:
@@ -70,7 +77,10 @@ def latest_hermes_artifact(root: Path, *, before: datetime | None = None) -> dic
         candidates.append((timestamp, path, payload))
     if not candidates:
         return None
-    _timestamp, path, payload = max(candidates, key=lambda item: (item[0], item[1].as_posix()))
+    _timestamp, path, payload = max(
+        candidates,
+        key=lambda item: (item[0], _artifact_phase_rank(item[2]), item[1].as_posix()),
+    )
     result = dict(payload)
     result["artifact_path"] = _relative(root, path)
     return result
@@ -79,6 +89,10 @@ def latest_hermes_artifact(root: Path, *, before: datetime | None = None) -> dic
 def _parse_timestamp(value: Any) -> datetime:
     parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     return _utc(parsed)
+
+
+def _artifact_phase_rank(payload: dict[str, Any]) -> int:
+    return 0 if payload.get("artifact_phase") == "artifact_written" else 1
 
 
 def _utc(value: datetime | None) -> datetime:

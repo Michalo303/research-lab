@@ -12,6 +12,10 @@ Run from the repository root:
 
 Every invocation writes an immutable JSON artifact under `reports/hermes/runs/YYYY-MM-DD/`. Missing provider configuration produces a `provider_unavailable` artifact and leaves `registry/hypothesis_queue.jsonl` unchanged.
 
+Remote OpenAI-compatible endpoints must use HTTPS. Plaintext HTTP is accepted only for exact loopback hosts (`localhost`, `127.0.0.1`, or `::1`), so an API key is never sent to a remote HTTP endpoint. Invalid or disallowed endpoint URLs produce an audited `provider_error` without changing the queue.
+
+For valid hypotheses, Hermes first writes an immutable `artifact_written` record containing the planned queue impact. It then writes the complete updated JSONL queue to a temporary file under the registry lock and commits it with `os.replace`. A terminal immutable artifact records `queue_committed` or `queue_commit_failed`; a failed commit preserves the complete prior queue.
+
 ## Command Provider
 
 Configure these values in the server's existing operator-managed environment:

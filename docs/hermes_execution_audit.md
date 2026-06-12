@@ -78,8 +78,8 @@ The failed daily and weekly services are outside this feature's scope. The audit
 3. The configured `command` or `openai_compatible` adapter returns JSON data.
 4. Local code parses the complete envelope and validates each hypothesis.
 5. Only existing builder names and schema-valid parameters are accepted.
-6. Valid nonduplicate records are appended to the hypothesis queue with Hermes provenance.
-7. Every invocation writes an immutable sanitized run artifact.
+6. Valid nonduplicate records are prepared as one queue delta with Hermes provenance.
+7. Hermes writes an immutable precommit artifact, atomically replaces the queue under its registry lock, and writes a terminal commit or failure artifact.
 8. The existing daily runner revalidates Hermes queue records and maps them to exact existing builders.
 9. The daily report records the latest eligible Hermes run status and counts.
 
