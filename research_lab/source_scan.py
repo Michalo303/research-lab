@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Iterable
 
 from research_lab.registry import append_jsonl
+from research_lab.risk_management import apply_risk_guidance
 
 
 KEYWORDS = {
@@ -79,18 +80,20 @@ def generate_hypotheses_from_sources(root: Path, max_items: int = 10) -> list[di
             continue
         tags = _tags_for_text(f"{item.get('title', '')} {item.get('summary', '')}")
         hypothesis = _hypothesis_for_tags(tags, item)
-        payload = {
-            "hypothesis_id": f"HYP_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{idx:03d}",
-            "title": hypothesis["title"],
-            "family": hypothesis["family"],
-            "rationale": hypothesis["rationale"],
-            "source_title": item.get("title", "seed"),
-            "source_url": item.get("url", ""),
-            "source_key": source_key,
-            "tags": tags,
-            "status": "queued",
-            "research_only": True,
-        }
+        payload = apply_risk_guidance(
+            {
+                "hypothesis_id": f"HYP_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{idx:03d}",
+                "title": hypothesis["title"],
+                "family": hypothesis["family"],
+                "rationale": hypothesis["rationale"],
+                "source_title": item.get("title", "seed"),
+                "source_url": item.get("url", ""),
+                "source_key": source_key,
+                "tags": tags,
+                "status": "queued",
+                "research_only": True,
+            }
+        )
         append_jsonl(root / "registry" / "hypothesis_queue.jsonl", payload)
         hypotheses.append(payload)
     _write_hypothesis_report(root, hypotheses)

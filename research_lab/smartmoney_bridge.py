@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from research_lab.registry import append_jsonl
+from research_lab.risk_management import apply_risk_guidance
 
 
 def import_smartmoney_candidates(
@@ -31,33 +32,35 @@ def import_smartmoney_candidates(
         source_key = f"smartmoney:{ticker}:{row.get('final_score', '')}:{row.get('smart_money_score', '')}"
         if source_key in existing_keys:
             continue
-        payload = {
-            "hypothesis_id": f"HYP_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_SMARTMONEY_{len(imported) + 1:03d}",
-            "title": "Smart-money accumulation pullback",
-            "family": "SWING",
-            "ticker": ticker,
-            "rationale": (
-                f"{ticker} passed the smartmoney screen with final_score={row.get('final_score')} "
-                f"and smart_money_score={row.get('smart_money_score')}. Test only price-based swing entries; "
-                "13F activity is a universe filter, not an entry signal."
-            ),
-            "source_title": f"smartmoney:{ticker}",
-            "source_url": str(candidates_path),
-            "source_key": source_key,
-            "tags": ["smart_money", "13f", "swing", "pullback"],
-            "status": "queued",
-            "research_only": True,
-            "smartmoney": {
-                "company_name": row.get("company_name", ""),
-                "final_score": row.get("final_score", ""),
-                "smart_money_score": row.get("smart_money_score", ""),
-                "number_of_buyers": row.get("number_of_buyers", ""),
-                "strict_quality_buyer_count": row.get("strict_quality_buyer_count", ""),
-                "too_late_assessment": row.get("too_late_assessment", ""),
-                "analyst_category": row.get("analyst_category", ""),
-                "sector": row.get("sector", ""),
-            },
-        }
+        payload = apply_risk_guidance(
+            {
+                "hypothesis_id": f"HYP_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_SMARTMONEY_{len(imported) + 1:03d}",
+                "title": "Smart-money accumulation pullback",
+                "family": "SWING",
+                "ticker": ticker,
+                "rationale": (
+                    f"{ticker} passed the smartmoney screen with final_score={row.get('final_score')} "
+                    f"and smart_money_score={row.get('smart_money_score')}. Test only price-based swing entries; "
+                    "13F activity is a universe filter, not an entry signal."
+                ),
+                "source_title": f"smartmoney:{ticker}",
+                "source_url": str(candidates_path),
+                "source_key": source_key,
+                "tags": ["smart_money", "13f", "swing", "pullback"],
+                "status": "queued",
+                "research_only": True,
+                "smartmoney": {
+                    "company_name": row.get("company_name", ""),
+                    "final_score": row.get("final_score", ""),
+                    "smart_money_score": row.get("smart_money_score", ""),
+                    "number_of_buyers": row.get("number_of_buyers", ""),
+                    "strict_quality_buyer_count": row.get("strict_quality_buyer_count", ""),
+                    "too_late_assessment": row.get("too_late_assessment", ""),
+                    "analyst_category": row.get("analyst_category", ""),
+                    "sector": row.get("sector", ""),
+                },
+            }
+        )
         append_jsonl(root / "registry" / "hypothesis_queue.jsonl", payload)
         imported.append(payload)
         existing_keys.add(source_key)
@@ -121,4 +124,3 @@ def _write_report(root: Path, smartmoney_path: Path, imported: list[dict]) -> Pa
         )
     path.write_text("\n".join(lines), encoding="utf-8")
     return path
-

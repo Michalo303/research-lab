@@ -8,6 +8,7 @@ import re
 from typing import Any
 
 from research_lab.queue_dedupe import candidate_fingerprint
+from research_lab.risk_management import apply_risk_guidance
 
 
 REQUIRED_TEMPLATE_FIELDS = ("template_id", "family", "asset_class", "builder", "timeframe", "title")
@@ -91,7 +92,7 @@ def _candidate_from_template(template: dict[str, Any], parameters: dict[str, Any
         "status": "queued",
         "research_only": True,
     }
-    return candidate
+    return apply_risk_guidance(candidate)
 
 
 def _dedupe_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
