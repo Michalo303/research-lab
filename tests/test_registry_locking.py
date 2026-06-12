@@ -4,7 +4,9 @@ import threading
 import time
 from contextlib import contextmanager
 
-from research_lab.registry import append_jsonl
+import pytest
+
+from research_lab.registry import append_jsonl, append_jsonl_batch_atomic
 
 
 @contextmanager
@@ -54,3 +56,23 @@ def test_append_jsonl_waits_for_registry_lock(tmp_path):
     assert finished.is_set()
     rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
     assert rows[0]["strategy_id"] == "S1"
+
+
+def test_atomic_batch_replace_failure_preserves_entire_existing_queue(tmp_path, monkeypatch):
+    path = tmp_path / "registry" / "hypothesis_queue.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_text('{"hypothesis_id":"existing"}\n', encoding="utf-8")
+    before = path.read_bytes()
+    monkeypatch.setattr(
+        "research_lab.registry.os.replace",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("replace failed")),
+    )
+
+    with pytest.raises(OSError, match="replace failed"):
+        append_jsonl_batch_atomic(
+            path,
+            [{"hypothesis_id": "new-1"}, {"hypothesis_id": "new-2"}],
+        )
+
+    assert path.read_bytes() == before
+    assert not list(path.parent.glob(f".{path.name}.*.tmp"))

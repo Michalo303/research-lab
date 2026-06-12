@@ -10,6 +10,7 @@ from typing import Any
 
 from research_lab.config import REAL_EOD_DATA_SOURCES
 from research_lab.drawdown_diagnostics import drawdown_diagnostics_for_result
+from research_lab.hermes.artifacts import latest_hermes_artifact
 from research_lab.research_orchestrator import build_research_guidance, summarize_recent_failures
 
 
@@ -123,6 +124,8 @@ def write_daily_report(path: Path, results: list[dict], report_date: date | None
         f"- data sources: {', '.join(sources) if sources else 'none'}",
         f"- biggest risk discovered: {source_note}",
         "",
+        *_hermes_report_lines(run_metadata.get("hermes") if run_metadata else None),
+        "",
         "## New Strategies Tested",
         "",
         *rows,
@@ -201,6 +204,7 @@ def write_daily_report_artifacts(
             "run_report_path": _relative_posix(root, run_report_path),
             "data_sources": _data_sources(results),
             "provider_history_summary": _provider_history_summary(results),
+            "hermes": _hermes_metadata(latest_hermes_artifact(root, before=timestamp_utc)),
         }
     )
     write_daily_report(latest_report_path, results, report_date=report_day, run_metadata=metadata)
@@ -213,6 +217,50 @@ def write_daily_report_artifacts(
         "metadata_path": metadata_path,
         "metadata": metadata,
     }
+
+
+def _hermes_metadata(artifact: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not artifact:
+        return None
+    allowed = (
+        "run_id",
+        "timestamp_utc",
+        "provider",
+        "status",
+        "generated_hypotheses_count",
+        "imported_hypotheses_count",
+        "rejected_hypotheses_count",
+        "rejection_reasons",
+        "imported_hypothesis_ids",
+        "input_report_path",
+        "dominant_blocker",
+        "artifact_path",
+    )
+    return {key: artifact.get(key) for key in allowed}
+
+
+def _hermes_report_lines(hermes: dict[str, Any] | None) -> list[str]:
+    lines = ["## Hermes Pre-Research Stage", ""]
+    if not hermes:
+        return [*lines, "- Hermes ran: no", "- status: no eligible Hermes artifact found before this daily run"]
+    reasons = hermes.get("rejection_reasons")
+    if not isinstance(reasons, list):
+        reasons = []
+    imported_ids = hermes.get("imported_hypothesis_ids")
+    if not isinstance(imported_ids, list):
+        imported_ids = []
+    return [
+        *lines,
+        "- Hermes ran: yes",
+        f"- provider: {hermes.get('provider', '')}",
+        f"- status: {hermes.get('status', '')}",
+        f"- generated hypotheses: {hermes.get('generated_hypotheses_count', 0)}",
+        f"- imported hypotheses: {hermes.get('imported_hypotheses_count', 0)}",
+        f"- rejected hypotheses: {hermes.get('rejected_hypotheses_count', 0)}",
+        f"- rejection reasons: {'; '.join(str(reason) for reason in reasons) if reasons else 'none'}",
+        f"- imported hypothesis IDs: {', '.join(str(item) for item in imported_ids) if imported_ids else 'none'}",
+        f"- artifact: {hermes.get('artifact_path', '')}",
+    ]
 
 
 def generate_run_id(timestamp: datetime | None = None, commit: str | None = None) -> str:

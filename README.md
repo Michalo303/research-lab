@@ -138,6 +138,8 @@ cd /opt/trading/research-lab
 bash deploy/install_systemd_timers.sh
 ```
 
+Hermes pre-daily strategy hypothesis scheduling is documented separately in [`docs/hermes_scheduling.md`](docs/hermes_scheduling.md). Its unit templates are intentionally not installed by the general timer helper.
+
 Weekly validation:
 
 ```bash
