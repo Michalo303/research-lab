@@ -38,7 +38,14 @@ runner is the only component allowed to calculate metrics and assign tiers.
 """
 
 
-def build_hermes_prompt(root: Path, max_sources: int = 12) -> str:
+def build_hermes_prompt(
+    root: Path,
+    max_sources: int = 12,
+    *,
+    diagnostics_text: str = "",
+    input_report_path: str = "",
+    schema_text: str = "",
+) -> str:
     sources = _read_jsonl(root / "registry" / "source_items.jsonl")[-max_sources:]
     leaderboard = _read_csv_text(root / "registry" / "leaderboard.csv")
     source_lines = []
@@ -61,18 +68,25 @@ def build_hermes_prompt(root: Path, max_sources: int = 12) -> str:
             "Recent research sources:",
             "\n".join(source_lines) or "- none",
             "",
+            f"Latest diagnostic report: {input_report_path or 'not available'}",
+            diagnostics_text[:12000] or "No daily diagnostics are available.",
+            "",
             "Required risk-management controls to consider in every hypothesis:",
             "\n".join(f"- {key}: {value}" for key, value in RISK_CONTROL_GUIDANCE.items()),
             "",
-            "Return 5-15 hypotheses as JSON Lines. Each line must contain:",
+            schema_text,
+            "",
+            "Return one JSON object with a hypotheses array containing 5-15 structured hypotheses.",
+            "Each hypothesis must contain:",
             (
-                '{"title": "...", "family": "LONGTERM|ROTATION|SWING|INTRADAY", '
-                '"rationale": "...", "tags": ["..."], "source_url": "...", '
+                '{"title": "...", "family": "LONGTERM|ROTATION|SWING|INTRADAY", "builder": "allowed builder", '
+                '"rationale": "...", "parameters": {}, "tags": ["..."], "source_url": "...", '
                 '"risk_controls": {"volatility_targeting": "...", "drawdown_circuit_breakers": "...", '
                 '"cash_defensive_regimes": "...", "exposure_caps": "...", '
                 '"correlation_aware_portfolio_risk": "...", "crisis_period_diagnostics": "...", '
                 '"cost_slippage_stress": "...", "parameter_neighborhood_stability": "..."}}'
             ),
+            "Do not return markdown fences, Python, shell commands, or executable code.",
         ]
     )
 

@@ -1,0 +1,19 @@
+[Unit]
+Description=Hermes validated strategy hypothesis generation
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=trading
+Group=trading
+WorkingDirectory=/opt/trading/research-lab
+EnvironmentFile=-/opt/trading/research-lab/.env
+ExecStartPre=/usr/bin/mkdir -p /opt/trading/research-lab/tmp
+ExecStart=/usr/bin/flock -n /opt/trading/research-lab/tmp/research.lock /opt/trading/research-lab/.venv/bin/python -m research_lab.hermes.run_hypothesis_generation --root /opt/trading/research-lab
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/trading/research-lab
+Restart=no
+TimeoutStartSec=900

@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Hermes hypothesis generation before daily research
+
+[Timer]
+OnCalendar=*-*-* 02:00:00 UTC
+Persistent=true
+Unit=hermes-hypothesis.service
+
+[Install]
+WantedBy=timers.target

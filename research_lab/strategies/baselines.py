@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 
 from research_lab.failure_memory import build_failure_memory, execution_relevant_parameters
+from research_lab.hermes.schema import validate_hypothesis
 from research_lab.research_orchestrator import build_research_guidance, score_candidate_direction, summarize_recent_failures
 from research_lab.risk_management import has_strong_rotation_risk_overlay
 
@@ -211,12 +212,23 @@ def queued_daily_symbols(root: Path, limit: int = 8) -> list[str]:
         if not line.strip():
             continue
         item = json.loads(line)
-        ticker = str(item.get("ticker", "")).strip().upper()
-        if ticker and ticker not in symbols:
-            symbols.append(ticker)
+        if str(item.get("family", "")).upper() == "INTRADAY" or str(item.get("timeframe", "")).upper() == "15M":
+            continue
+        item_symbols = [item.get("ticker")]
+        parameters = item.get("parameters")
+        if isinstance(parameters, dict):
+            item_symbols.extend([parameters.get("symbol"), parameters.get("risk_symbol")])
+            for key in ("symbols", "risk_assets", "defensive_assets"):
+                value = parameters.get(key)
+                if isinstance(value, list):
+                    item_symbols.extend(value)
+        for value in item_symbols:
+            ticker = str(value or "").strip().upper()
+            if ticker and ticker not in symbols:
+                symbols.append(ticker)
         if len(symbols) >= limit:
             break
-    return list(reversed(symbols))
+    return list(reversed(symbols[: max(int(limit), 0)]))
 
 
 def build_weights(spec: StrategySpec, daily_panel: pd.DataFrame, intraday: pd.DataFrame | None = None) -> pd.DataFrame:
@@ -694,6 +706,8 @@ def _safe_float(value: Any, default: float) -> float:
 
 
 def _spec_from_hypothesis(item: dict) -> StrategySpec | None:
+    if item.get("llm_generated"):
+        return _validated_hermes_spec(item)
     family = item.get("family")
     title = item.get("title", "Queued hypothesis")
     source_title = item.get("source_title", "unknown source")
@@ -777,6 +791,31 @@ def _spec_from_hypothesis(item: dict) -> StrategySpec | None:
             builder="long_term_vol_target",
         )
     return None
+
+
+def _validated_hermes_spec(item: dict[str, Any]) -> StrategySpec | None:
+    validation = validate_hypothesis(item)
+    if not validation.accepted or validation.hypothesis is None:
+        return None
+    hypothesis = validation.hypothesis
+    builder = hypothesis["builder"]
+    parameters = {
+        **hypothesis["parameters"],
+        "source_hypothesis_id": str(item.get("hypothesis_id", "")),
+        "source_title": str(item.get("source_title", "hermes")),
+        "source_hermes_run_id": str(item.get("hermes_run_id", "")),
+        "source_hermes_provider": str(item.get("hermes_provider", "")),
+    }
+    return StrategySpec(
+        family=hypothesis["family"],
+        asset_class=str(item.get("asset_class") or ("CRYPTO" if hypothesis["family"] == "INTRADAY" else "ETF")),
+        timeframe=str(item.get("timeframe") or ("15M" if hypothesis["family"] == "INTRADAY" else "1D")),
+        short_name=f"HERMES_{builder.upper()}",
+        hypothesis=f"{hypothesis['title']}: {hypothesis['rationale']}",
+        parameters=parameters,
+        rules=f"Execute existing whitelisted builder {builder} with locally validated parameters.",
+        builder=builder,
+    )
 
 
 def _source_feedback_parameters(item: dict[str, Any]) -> dict[str, Any]:

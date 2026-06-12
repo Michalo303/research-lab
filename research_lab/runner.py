@@ -225,6 +225,8 @@ def _persist_hypothesis_result(root: Path, result: dict) -> None:
         root / "registry" / "hypothesis_results.jsonl",
         {
             "hypothesis_id": hypothesis_id,
+            "hermes_run_id": result["parameters"].get("source_hermes_run_id", ""),
+            "hermes_provider": result["parameters"].get("source_hermes_provider", ""),
             "strategy_id": result["strategy_id"],
             "tier": result["tier"],
             "tier_reason": result["tier_reason"],
