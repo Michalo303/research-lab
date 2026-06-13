@@ -41,3 +41,9 @@ registry/eodhd_vendor_report.json
 # Local inventory/deployment artifacts
 INVENTORY_*
 deploy*.zip
+
+# Private Hermes library and curated notes must remain outside git.
+**/hermes_books/raw/
+**/hermes_books/index/
+**/hermes_books/extracted_notes/
+**/hermes_books/**/*.pdf
