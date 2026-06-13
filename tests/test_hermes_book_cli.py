@@ -2,7 +2,9 @@ import json
 
 import pytest
 
+import hermes_knowledge.cli as book_cli
 from hermes_knowledge.cli import main
+from hermes_knowledge.passage_extractor import extract_passages
 from research_lab.hermes.providers import ProviderResult
 
 
@@ -204,6 +206,57 @@ def test_preflight_reports_pdf_extractor_status(
     assert f"pdf_extractor=pypdf status={expected_status}" in output
     if not available:
         assert "diagnostic=pdf_reader_unavailable" in output
+
+
+def test_broken_pdf_skips_provider_and_note_output(tmp_path, monkeypatch, capsys):
+    base = _private_fixture(tmp_path)
+    sidecar = base / "text" / "book-aaaaaaaaaaaa.txt"
+    sidecar.unlink()
+    pdf_path = base / "raw" / "book.pdf"
+    pdf_path.parent.mkdir(parents=True)
+    pdf_path.write_bytes(b"%PDF-1.7\n")
+    provider_calls = []
+
+    def broken_pdf_reader(_path):
+        raise Exception("simulated PdfReadError")
+
+    def extract_with_broken_reader(selected, blocker, *, text_dir, passages_per_book):
+        return extract_passages(
+            selected,
+            blocker,
+            text_dir=text_dir,
+            passages_per_book=passages_per_book,
+            pdf_reader=broken_pdf_reader,
+        )
+
+    monkeypatch.setattr(book_cli, "extract_passages", extract_with_broken_reader)
+
+    assert (
+        main(
+            [
+                "extract",
+                "--base-dir",
+                str(base),
+                "--blocker",
+                "walk_forward_fail",
+                "--limit-books",
+                "1",
+                "--passages-per-book",
+                "1",
+            ],
+            env={"HERMES_PROVIDER": "command"},
+            provider_invoker=lambda *args: provider_calls.append(args),
+        )
+        == 0
+    )
+
+    assert provider_calls == []
+    assert not (base / "passage_candidates" / "walk_forward_fail.jsonl").exists()
+    assert not (base / "proposed_notes" / "walk_forward_fail.jsonl").exists()
+    output = capsys.readouterr().out
+    assert "passages=0" in output
+    assert "proposed=0" in output
+    assert "diagnostics=unreadable_text:1" in output
 
 
 def test_feedback_cli_updates_overlay_without_editing_extracted_note(tmp_path):

@@ -88,7 +88,7 @@ def _read_text(
         if str(exc) == "pdf_reader_unavailable":
             return None, "pdf_reader_unavailable"
         return None, "unreadable_text"
-    except (OSError, ValueError):
+    except Exception:
         return None, "unreadable_text"
 
 

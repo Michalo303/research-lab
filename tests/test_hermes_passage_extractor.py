@@ -169,3 +169,22 @@ def test_missing_pypdf_reports_pdf_reader_unavailable(tmp_path, monkeypatch):
     assert candidates == []
     assert [item.code for item in diagnostics] == ["pdf_reader_unavailable"]
     assert diagnostics[0].message == "PDF extractor dependency is unavailable."
+
+
+def test_pdf_parser_exception_becomes_unreadable_text_diagnostic(tmp_path):
+    selected = _selected(tmp_path)
+    Path(selected.book.source_path).write_bytes(b"%PDF-1.7\n")
+
+    def broken_pdf_reader(_path):
+        raise Exception("simulated PdfReadError")
+
+    candidates, diagnostics = extract_passages(
+        [selected],
+        "walk_forward_fail",
+        text_dir=tmp_path / "missing-sidecars",
+        pdf_reader=broken_pdf_reader,
+    )
+
+    assert candidates == []
+    assert [item.code for item in diagnostics] == ["unreadable_text"]
+    assert diagnostics[0].message == "Book text was unavailable."
