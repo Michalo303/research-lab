@@ -156,6 +156,90 @@ def test_validate_entry_rejects_nested_full_text_payload():
         validate_entry(entry)
 
 
+LIST_FIELDS = [
+    "testable_rules",
+    "compatible_builders",
+    "asset_classes",
+    "timeframes",
+    "known_failure_modes",
+    "addresses_blockers",
+]
+
+
+@pytest.mark.parametrize("field", LIST_FIELDS)
+def test_validate_entry_rejects_list_below_schema_min_items(field):
+    entry = _entry("Volatility targeting", blockers=["drawdown"])
+    entry[field] = []
+
+    with pytest.raises(KnowledgeValidationError, match=field):
+        validate_entry(entry)
+
+
+@pytest.mark.parametrize("field", LIST_FIELDS)
+def test_validate_entry_rejects_list_exceeding_schema_max_items(field):
+    entry = _entry("Volatility targeting", blockers=["drawdown"])
+    entry[field] = [f"item-{index}" for index in range(13)]
+
+    with pytest.raises(KnowledgeValidationError, match=field):
+        validate_entry(entry)
+
+
+@pytest.mark.parametrize(
+    ("field", "maximum"),
+    [
+        ("testable_rules", 300),
+        ("compatible_builders", 100),
+        ("asset_classes", 100),
+        ("timeframes", 50),
+        ("known_failure_modes", 300),
+        ("addresses_blockers", 100),
+    ],
+)
+def test_validate_entry_rejects_list_item_exceeding_schema_length(field, maximum):
+    entry = _entry("Volatility targeting", blockers=["drawdown"])
+    entry[field] = ["x" * (maximum + 1)]
+
+    with pytest.raises(KnowledgeValidationError, match=field):
+        validate_entry(entry)
+
+
+@pytest.mark.parametrize("field", LIST_FIELDS)
+def test_validate_entry_rejects_nested_object_in_string_list(field):
+    entry = _entry("Volatility targeting", blockers=["drawdown"])
+    entry[field] = [{"full_text": "x" * 100_000}]
+
+    with pytest.raises(KnowledgeValidationError, match=field):
+        validate_entry(entry)
+
+
+def test_validate_entry_rejects_many_short_list_items_over_total_text_limit():
+    entry = _entry("Volatility targeting", blockers=["drawdown"])
+    for field in (
+        "testable_rules",
+        "compatible_builders",
+        "asset_classes",
+        "timeframes",
+        "known_failure_modes",
+        "addresses_blockers",
+    ):
+        entry[field] = ["x" * 30 for _ in range(12)]
+
+    with pytest.raises(KnowledgeValidationError, match="total text"):
+        validate_entry(entry)
+
+
+def test_validate_entry_accepts_lists_at_schema_limits():
+    entry = _entry("Volatility targeting", blockers=["drawdown"])
+    entry["compatible_builders"] = ["x" * 100] + [
+        f"builder-{index}" for index in range(11)
+    ]
+
+    validated = validate_entry(entry)
+
+    assert len(validated["compatible_builders"]) == 12
+    assert len(validated["compatible_builders"][0]) == 100
+
+
 @pytest.mark.parametrize(
     "field",
     ["book_id", "source_title", "source_path", "source_sha256"],

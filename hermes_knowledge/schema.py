@@ -13,6 +13,17 @@ MAX_SUMMARY_CHARS = 600
 MAX_HYPOTHESIS_CHARS = 500
 MAX_RULE_CHARS = 300
 MAX_TOTAL_TEXT_CHARS = 2000
+MIN_LIST_ITEMS = 1
+MAX_LIST_ITEMS = 12
+
+LIST_ITEM_MAX_CHARS = {
+    "testable_rules": MAX_RULE_CHARS,
+    "compatible_builders": 100,
+    "asset_classes": 100,
+    "timeframes": 50,
+    "known_failure_modes": 300,
+    "addresses_blockers": 100,
+}
 
 REQUIRED_FIELDS = {
     "book_id",
@@ -47,12 +58,23 @@ def _require_short_text(entry: dict[str, Any], field: str, maximum: int) -> None
         raise KnowledgeValidationError(f"{field} exceeds {maximum} characters")
 
 
-def _require_text_list(entry: dict[str, Any], field: str) -> None:
+def _require_text_list(
+    entry: dict[str, Any], field: str, maximum_item_chars: int
+) -> None:
     value = entry.get(field)
-    if not isinstance(value, list) or not value:
-        raise KnowledgeValidationError(f"{field} must be a non-empty array")
+    if not isinstance(value, list):
+        raise KnowledgeValidationError(f"{field} must be an array")
+    if not MIN_LIST_ITEMS <= len(value) <= MAX_LIST_ITEMS:
+        raise KnowledgeValidationError(
+            f"{field} must contain between {MIN_LIST_ITEMS} and "
+            f"{MAX_LIST_ITEMS} items"
+        )
     if any(not isinstance(item, str) or not item.strip() for item in value):
         raise KnowledgeValidationError(f"{field} must contain non-empty strings")
+    if any(len(item) > maximum_item_chars for item in value):
+        raise KnowledgeValidationError(
+            f"{field} entries may not exceed {maximum_item_chars} characters"
+        )
 
 
 def validate_entry(raw: dict[str, Any]) -> dict[str, Any]:
@@ -100,19 +122,8 @@ def validate_entry(raw: dict[str, Any]) -> dict[str, Any]:
             "book_id must match the first 12 characters of source_sha256"
         )
 
-    for field in (
-        "testable_rules",
-        "compatible_builders",
-        "asset_classes",
-        "timeframes",
-        "known_failure_modes",
-        "addresses_blockers",
-    ):
-        _require_text_list(entry, field)
-    if any(len(rule) > MAX_RULE_CHARS for rule in entry["testable_rules"]):
-        raise KnowledgeValidationError(
-            f"testable_rules entries may not exceed {MAX_RULE_CHARS} characters"
-        )
+    for field, maximum_item_chars in LIST_ITEM_MAX_CHARS.items():
+        _require_text_list(entry, field, maximum_item_chars)
 
     priority = entry.get("priority_score")
     if not isinstance(priority, (int, float)) or isinstance(priority, bool):
