@@ -1,4 +1,8 @@
+import builtins
 from pathlib import Path
+import tomllib
+
+import pytest
 
 from hermes_knowledge.book_selector import SelectedBook
 from hermes_knowledge.books import BookRecord
@@ -112,3 +116,56 @@ def test_passage_limit_above_v1_maximum_is_rejected(tmp_path):
         assert "at most 3" in str(exc)
     else:
         raise AssertionError("expected ValueError")
+
+
+def test_pypdf_is_declared_as_bounded_runtime_dependency():
+    pyproject = tomllib.loads(
+        Path(__file__).parents[1].joinpath("pyproject.toml").read_text(encoding="utf-8")
+    )
+
+    assert "pypdf>=6.0,<7" in pyproject["project"]["dependencies"]
+
+
+def test_pdf_without_sidecar_uses_injected_pdf_reader(tmp_path):
+    selected = _selected(tmp_path)
+    pdf_path = Path(selected.book.source_path)
+    pdf_path.write_bytes(b"%PDF-1.7\n")
+    calls = []
+
+    def fake_pdf_reader(path):
+        calls.append(path)
+        return "Walk-forward robustness improves parameter stability."
+
+    candidates, diagnostics = extract_passages(
+        [selected],
+        "walk_forward_fail",
+        text_dir=tmp_path / "missing-sidecars",
+        pdf_reader=fake_pdf_reader,
+    )
+
+    assert calls == [pdf_path]
+    assert diagnostics == []
+    assert len(candidates) == 1
+
+
+def test_missing_pypdf_reports_pdf_reader_unavailable(tmp_path, monkeypatch):
+    selected = _selected(tmp_path)
+    Path(selected.book.source_path).write_bytes(b"%PDF-1.7\n")
+    original_import = builtins.__import__
+
+    def reject_pypdf(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "pypdf":
+            raise ImportError("blocked for test")
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", reject_pypdf)
+
+    candidates, diagnostics = extract_passages(
+        [selected],
+        "walk_forward_fail",
+        text_dir=tmp_path / "missing-sidecars",
+    )
+
+    assert candidates == []
+    assert [item.code for item in diagnostics] == ["pdf_reader_unavailable"]
+    assert diagnostics[0].message == "PDF extractor dependency is unavailable."

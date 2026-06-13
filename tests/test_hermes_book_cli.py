@@ -184,6 +184,28 @@ def test_extract_reports_bounded_diagnostic_codes(tmp_path, capsys):
     assert "Parameter stability" not in output
 
 
+@pytest.mark.parametrize(
+    ("available", "expected_status", "expected_code"),
+    [
+        (True, "available", 0),
+        (False, "unavailable", 1),
+    ],
+)
+def test_preflight_reports_pdf_extractor_status(
+    monkeypatch, capsys, available, expected_status, expected_code
+):
+    monkeypatch.setattr(
+        "hermes_knowledge.cli.pdf_extractor_status",
+        lambda: (available, "available" if available else "pdf_reader_unavailable"),
+    )
+
+    assert main(["preflight"]) == expected_code
+    output = capsys.readouterr().out
+    assert f"pdf_extractor=pypdf status={expected_status}" in output
+    if not available:
+        assert "diagnostic=pdf_reader_unavailable" in output
+
+
 def test_feedback_cli_updates_overlay_without_editing_extracted_note(tmp_path):
     base = _private_fixture(tmp_path)
     extracted = base / "extracted_notes" / "walk_forward_fail.jsonl"
