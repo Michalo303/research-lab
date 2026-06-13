@@ -2,7 +2,10 @@ import pytest
 
 from hermes_knowledge.book_selector import select_books_for_blocker
 from hermes_knowledge.books import BookRecord
-from hermes_knowledge.blocker_taxonomy import get_blocker_definition
+from hermes_knowledge.blocker_taxonomy import (
+    canonicalize_blocker_id,
+    get_blocker_definition,
+)
 
 
 def _book(title: str, marker: str) -> BookRecord:
@@ -28,6 +31,23 @@ def test_walk_forward_fail_has_weighted_evidence_terms():
 def test_unsupported_blocker_is_rejected():
     with pytest.raises(ValueError, match="unsupported blocker"):
         get_blocker_definition("unknown")
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "insufficient rolling walk-forward robustness",
+        "walk forward robustness below target",
+        "wf pass rate below target",
+        "walk-forward fail",
+    ],
+)
+def test_walk_forward_diagnostics_map_to_canonical_blocker(raw):
+    assert canonicalize_blocker_id(raw) == "walk_forward_fail"
+
+
+def test_unknown_diagnostic_has_no_canonical_blocker():
+    assert canonicalize_blocker_id("provider coverage gap") is None
 
 
 def test_selector_is_blocker_specific_deterministic_and_deduplicated():

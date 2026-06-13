@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+from hermes_knowledge.feedback import apply_feedback
 from hermes_knowledge.runtime import load_book_knowledge_context
 from hermes_knowledge.schema import KnowledgeValidationError, validate_entry
 from hermes_knowledge.prompt import build_hermes_knowledge_prompt
@@ -163,6 +164,8 @@ def test_orchestrator_artifact_logs_only_safe_book_metadata(tmp_path):
         "skipped_note_count": 0,
         "selected_book_ids": ["book-aaaaaaaaaaaa"],
         "selected_note_ids": ["note-1111111111111111"],
+        "canonical_blocker_id": "drawdown",
+        "blocker_diagnostic": "exact",
     }
     artifact_text = outcome["artifact_path"].read_text(encoding="utf-8")
     assert "Dominant blocker: drawdown" in prompts[0]
@@ -198,6 +201,7 @@ def test_orchestrator_adds_selected_note_ids_to_queue_provenance(tmp_path):
             "cost_slippage_stress": "double cost stress",
             "parameter_neighborhood_stability": "test adjacent parameters",
         },
+        "used_note_ids": ["note-1111111111111111"],
     }
     queued = []
 
@@ -220,6 +224,168 @@ def test_orchestrator_adds_selected_note_ids_to_queue_provenance(tmp_path):
     assert queued[0]["used_note_ids"] == ["note-1111111111111111"]
 
 
+def _write_three_attribution_notes(root):
+    notes_dir = root / "extracted_notes"
+    notes_dir.mkdir(parents=True)
+    notes = [
+        _note(
+            note_id=f"note-{marker * 16}",
+            source_passage_id=f"passage-{marker * 16}",
+            concept=f"Context note {marker}",
+            priority_score=90 - index,
+        )
+        for index, marker in enumerate(("1", "2", "3"))
+    ]
+    (notes_dir / "notes.jsonl").write_text(
+        "".join(json.dumps(note) + "\n" for note in notes),
+        encoding="utf-8",
+    )
+    return notes_dir
+
+
+def _attribution_hypothesis(**overrides):
+    hypothesis = {
+        "title": "Attributed conservative trend cap",
+        "family": "LONGTERM",
+        "builder": "long_term_vol_target_cap",
+        "rationale": "Reduce drawdown before seeking return.",
+        "parameters": {
+            "symbol": "SPY",
+            "sma": 200,
+            "vol_window": 63,
+            "target_vol": 0.08,
+            "max_weight": 0.65,
+        },
+        "risk_controls": {
+            "volatility_targeting": "target portfolio volatility",
+            "drawdown_circuit_breakers": "move to cash after drawdown threshold",
+            "cash_defensive_regimes": "hold cash in risk-off regimes",
+            "exposure_caps": "cap gross and single-asset exposure",
+            "correlation_aware_portfolio_risk": "avoid correlated sleeves",
+            "crisis_period_diagnostics": "test crisis windows",
+            "cost_slippage_stress": "double cost stress",
+            "parameter_neighborhood_stability": "test adjacent parameters",
+        },
+    }
+    hypothesis.update(overrides)
+    return hypothesis
+
+
+def test_provider_attribution_is_limited_to_explicit_used_note_subset(tmp_path):
+    index_path = _write_index(tmp_path / "private")
+    notes_dir = _write_three_attribution_notes(tmp_path / "private")
+    report = tmp_path / "reports" / "daily" / "2026-06-12.md"
+    report.parent.mkdir(parents=True)
+    report.write_text("- biggest risk discovered: excessive drawdown\n", encoding="utf-8")
+    queued = []
+
+    def provider(_name, prompt, _env):
+        assert all(f"note-{marker * 16}" in prompt for marker in ("1", "2", "3"))
+        return ProviderResult(
+            "ok",
+            output=json.dumps(
+                {
+                    "hypotheses": [
+                        _attribution_hypothesis(
+                            used_note_ids=["note-2222222222222222"]
+                        )
+                    ]
+                }
+            ),
+        )
+
+    run_hypothesis_generation(
+        tmp_path,
+        env={
+            "HERMES_PROVIDER": "command",
+            "HERMES_BOOK_INDEX_PATH": str(index_path),
+            "HERMES_BOOK_NOTES_DIR": str(notes_dir),
+        },
+        provider_invoker=provider,
+        queue_committer=lambda _path, rows: queued.extend(rows),
+    )
+
+    assert queued[0]["used_note_ids"] == ["note-2222222222222222"]
+    priorities_path = tmp_path / "private" / "feedback" / "priorities.json"
+    apply_feedback(
+        [
+            {
+                "event_id": "event-attribution",
+                "used_note_ids": queued[0]["used_note_ids"],
+                "gate_passed": True,
+            }
+        ],
+        note_to_book={
+            "note-1111111111111111": "book-aaaaaaaaaaaa",
+            "note-2222222222222222": "book-aaaaaaaaaaaa",
+            "note-3333333333333333": "book-aaaaaaaaaaaa",
+        },
+        event_path=tmp_path / "private" / "feedback" / "events.jsonl",
+        priorities_path=priorities_path,
+    )
+    priorities = json.loads(priorities_path.read_text(encoding="utf-8"))
+    assert priorities["notes"] == {"note-2222222222222222": 5.0}
+
+
+def test_missing_provider_attribution_defaults_to_empty_list(tmp_path):
+    index_path = _write_index(tmp_path / "private")
+    notes_dir = _write_three_attribution_notes(tmp_path / "private")
+    report = tmp_path / "reports" / "daily" / "2026-06-12.md"
+    report.parent.mkdir(parents=True)
+    report.write_text("- biggest risk discovered: excessive drawdown\n", encoding="utf-8")
+    queued = []
+
+    run_hypothesis_generation(
+        tmp_path,
+        env={
+            "HERMES_PROVIDER": "command",
+            "HERMES_BOOK_INDEX_PATH": str(index_path),
+            "HERMES_BOOK_NOTES_DIR": str(notes_dir),
+        },
+        provider_invoker=lambda *_: ProviderResult(
+            "ok",
+            output=json.dumps({"hypotheses": [_attribution_hypothesis()]}),
+        ),
+        queue_committer=lambda _path, rows: queued.extend(rows),
+    )
+
+    assert queued[0]["used_note_ids"] == []
+
+
+def test_unknown_provider_note_attribution_rejects_hypothesis(tmp_path):
+    index_path = _write_index(tmp_path / "private")
+    notes_dir = _write_three_attribution_notes(tmp_path / "private")
+    report = tmp_path / "reports" / "daily" / "2026-06-12.md"
+    report.parent.mkdir(parents=True)
+    report.write_text("- biggest risk discovered: excessive drawdown\n", encoding="utf-8")
+    queued = []
+
+    outcome = run_hypothesis_generation(
+        tmp_path,
+        env={
+            "HERMES_PROVIDER": "command",
+            "HERMES_BOOK_INDEX_PATH": str(index_path),
+            "HERMES_BOOK_NOTES_DIR": str(notes_dir),
+        },
+        provider_invoker=lambda *_: ProviderResult(
+            "ok",
+            output=json.dumps(
+                {
+                    "hypotheses": [
+                        _attribution_hypothesis(
+                            used_note_ids=["note-ffffffffffffffff"]
+                        )
+                    ]
+                }
+            ),
+        ),
+        queue_committer=lambda _path, rows: queued.extend(rows),
+    )
+
+    assert queued == []
+    assert "hypothesis_1:unknown_used_note_id" in outcome["rejection_reasons"]
+
+
 def test_runtime_rejects_proposed_notes_directory(tmp_path):
     index_path = _write_index(tmp_path)
     proposed_dir = tmp_path / "proposed_notes"
@@ -234,6 +400,87 @@ def test_runtime_rejects_proposed_notes_directory(tmp_path):
 
     assert context.note_count == 0
     assert context.selected_note_ids == ()
+
+
+def test_runtime_canonicalizes_raw_walk_forward_blocker_without_global_fallback(
+    tmp_path,
+):
+    index_path = _write_index(tmp_path)
+    notes_dir = tmp_path / "extracted_notes"
+    notes_dir.mkdir()
+    walk_forward_note = _note(
+        note_id="note-1111111111111111",
+        source_passage_id="passage-1111111111111111",
+        concept="Parameter stability",
+        addresses_blockers=["walk_forward_fail"],
+        priority_score=10,
+    )
+    unrelated_note = _note(
+        note_id="note-2222222222222222",
+        source_passage_id="passage-2222222222222222",
+        concept="High priority unrelated note",
+        addresses_blockers=["cost_stress"],
+        priority_score=100,
+    )
+    (notes_dir / "notes.jsonl").write_text(
+        json.dumps(walk_forward_note) + "\n" + json.dumps(unrelated_note) + "\n",
+        encoding="utf-8",
+    )
+
+    context = load_book_knowledge_context(
+        index_path,
+        notes_dir,
+        dominant_blocker="insufficient rolling walk-forward robustness",
+        limit=1,
+    )
+
+    assert context.canonical_blocker_id == "walk_forward_fail"
+    assert context.blocker_diagnostic == "canonicalized"
+    assert context.selected_note_ids == ("note-1111111111111111",)
+    assert "High priority unrelated note" not in context.prompt
+
+
+def test_runtime_rejects_unrecognized_blocker_instead_of_global_fallback(tmp_path):
+    index_path = _write_index(tmp_path)
+    notes_dir = _write_note(tmp_path)
+
+    context = load_book_knowledge_context(
+        index_path,
+        notes_dir,
+        dominant_blocker="provider coverage gap",
+    )
+
+    assert context.prompt == ""
+    assert context.canonical_blocker_id == ""
+    assert context.blocker_diagnostic == "unrecognized_blocker"
+
+
+def test_orchestrator_artifact_diagnoses_unrecognized_book_blocker(tmp_path):
+    index_path = _write_index(tmp_path / "private")
+    notes_dir = _write_note(tmp_path / "private")
+    report = tmp_path / "reports" / "daily" / "2026-06-12.md"
+    report.parent.mkdir(parents=True)
+    report.write_text(
+        "- biggest risk discovered: provider coverage gap\n", encoding="utf-8"
+    )
+
+    outcome = run_hypothesis_generation(
+        tmp_path,
+        env={
+            "HERMES_PROVIDER": "command",
+            "HERMES_BOOK_INDEX_PATH": str(index_path),
+            "HERMES_BOOK_NOTES_DIR": str(notes_dir),
+        },
+        provider_invoker=lambda *_: ProviderResult(
+            "ok", output=json.dumps({"hypotheses": []})
+        ),
+    )
+
+    assert outcome["book_knowledge"]["canonical_blocker_id"] == ""
+    assert (
+        outcome["book_knowledge"]["blocker_diagnostic"]
+        == "unrecognized_blocker"
+    )
 
 
 def test_schema_rejects_long_text_and_unknown_fields():

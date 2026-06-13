@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from types import MappingProxyType
 from typing import Mapping
 
@@ -40,6 +41,29 @@ _WALK_FORWARD_FAIL = BlockerDefinition(
 BLOCKERS: Mapping[str, BlockerDefinition] = MappingProxyType(
     {_WALK_FORWARD_FAIL.name: _WALK_FORWARD_FAIL}
 )
+
+
+def canonicalize_blocker_id(raw: str) -> str | None:
+    normalized = re.sub(r"[^a-z0-9]+", " ", str(raw).casefold()).strip()
+    if not normalized:
+        return None
+    tokens = set(normalized.split())
+    walk_forward_phrase = "walk forward" in normalized
+    wf_rate_phrase = "wf pass rate" in normalized
+    if (
+        (walk_forward_phrase and tokens & {"fail", "failed", "below", "insufficient", "robustness"})
+        or (wf_rate_phrase and tokens & {"below", "fail", "failed", "insufficient"})
+    ):
+        return "walk_forward_fail"
+    if "drawdown" in tokens:
+        return "drawdown"
+    if "cost stress" in normalized or "slippage stress" in normalized:
+        return "cost_stress"
+    if normalized in {"walk forward fail", "walk forward robustness"}:
+        return "walk_forward_fail"
+    if normalized in {"drawdown", "cost stress"}:
+        return normalized.replace(" ", "_")
+    return None
 
 
 def get_blocker_definition(blocker: str) -> BlockerDefinition:
