@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+from hermes_knowledge.runtime import load_book_knowledge_context
 from research_lab.hermes.artifacts import read_diagnostic_input, run_artifact_path, write_run_artifact
 from research_lab.hermes.providers import ProviderResult, invoke_provider
 from research_lab.hermes.schema import execution_fingerprint, schema_prompt_text, validate_hypothesis
@@ -37,11 +38,24 @@ def run_hypothesis_generation(
     provider = str(current_env.get("HERMES_PROVIDER", "")).strip().lower() or "not_configured"
     diagnostic = read_diagnostic_input(root)
     input_report_path = _relative(root, diagnostic.path) if diagnostic.path else ""
+    book_context = load_book_knowledge_context(
+        current_env.get(
+            "HERMES_BOOK_INDEX_PATH",
+            "/opt/trading/private/hermes_books/index/book_index.json",
+        ),
+        current_env.get(
+            "HERMES_BOOK_NOTES_DIR",
+            "/opt/trading/private/hermes_books/extracted_notes",
+        ),
+        dominant_blocker=diagnostic.blocker,
+    )
     prompt = build_hermes_prompt(
         root,
         diagnostics_text=diagnostic.text,
         input_report_path=input_report_path,
         schema_text=schema_prompt_text(),
+        dominant_blocker=diagnostic.blocker,
+        book_context=book_context,
     )
     provider_result = provider_invoker(provider, prompt, current_env)
     base = {
@@ -58,6 +72,11 @@ def run_hypothesis_generation(
         "output_queue_path": "registry/hypothesis_queue.jsonl",
         "imported_hypothesis_ids": [],
         "queue_impact": {"state": "unchanged", "planned_append_count": 0, "committed_append_count": 0},
+        "book_knowledge": {
+            "note_count": book_context.note_count,
+            "skipped_note_count": book_context.skipped_note_count,
+            "selected_book_ids": list(book_context.selected_book_ids),
+        },
     }
     if provider_result.status != "ok":
         return _finish(
