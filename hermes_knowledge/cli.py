@@ -30,6 +30,7 @@ from hermes_knowledge.note_store import (
 from hermes_knowledge.passage_extractor import (
     MAX_PASSAGES_PER_BOOK,
     extract_passages,
+    pdf_extractor_status,
 )
 from research_lab.hermes.providers import invoke_provider
 
@@ -153,6 +154,13 @@ def _feedback(args: argparse.Namespace) -> int:
     return 0 if summary.rejected == 0 else 1
 
 
+def _preflight() -> int:
+    available, diagnostic = pdf_extractor_status()
+    status = "available" if available else "unavailable"
+    print(f"pdf_extractor=pypdf status={status} diagnostic={diagnostic}")
+    return 0 if available else 1
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Hermes blocker-first book learning agent.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -186,6 +194,10 @@ def _parser() -> argparse.ArgumentParser:
     feedback = subparsers.add_parser("feedback")
     feedback.add_argument("--base-dir", type=Path, default=DEFAULT_BASE_DIR)
     feedback.add_argument("--input", type=Path, required=True)
+
+    subparsers.add_parser(
+        "preflight", help="Check the optional PDF text extraction dependency."
+    )
     return parser
 
 
@@ -205,6 +217,8 @@ def main(
         return _promote(args)
     if args.command == "feedback":
         return _feedback(args)
+    if args.command == "preflight":
+        return _preflight()
     raise ValueError(f"unsupported command: {args.command}")
 
 

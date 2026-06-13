@@ -45,6 +45,14 @@ class ExtractionDiagnostic:
 PdfReader = Callable[[Path], str]
 
 
+def pdf_extractor_status() -> tuple[bool, str]:
+    try:
+        from pypdf import PdfReader as _Reader  # noqa: F401
+    except ImportError:
+        return False, "pdf_reader_unavailable"
+    return True, "available"
+
+
 def _default_pdf_reader(path: Path) -> str:
     try:
         from pypdf import PdfReader as Reader
@@ -76,7 +84,11 @@ def _read_text(
         return None, "missing_text"
     try:
         return pdf_reader(source), None
-    except (OSError, RuntimeError, ValueError):
+    except RuntimeError as exc:
+        if str(exc) == "pdf_reader_unavailable":
+            return None, "pdf_reader_unavailable"
+        return None, "unreadable_text"
+    except Exception:
         return None, "unreadable_text"
 
 
@@ -162,9 +174,14 @@ def extract_passages(
     for selected in selected_books:
         text, error = _read_text(selected, Path(text_dir), pdf_reader)
         if error:
+            message = (
+                "PDF extractor dependency is unavailable."
+                if error == "pdf_reader_unavailable"
+                else "Book text was unavailable."
+            )
             diagnostics.append(
                 ExtractionDiagnostic(
-                    selected.book.book_id, error, "Book text was unavailable."
+                    selected.book.book_id, error, message
                 )
             )
             continue
