@@ -1,6 +1,6 @@
 import json
 
-from research_lab.runner import _persist_hypothesis_result
+from research_lab.runner import _persist_hypothesis_result, _used_note_ids
 from research_lab.strategies.baselines import queued_daily_symbols, queued_hypothesis_strategies
 
 
@@ -52,7 +52,10 @@ def test_maps_validated_hermes_record_to_exact_whitelisted_builder(tmp_path):
     assert spec.parameters["source_hypothesis_id"] == "HERMES_RUN_001"
     assert spec.parameters["source_hermes_run_id"] == "run-1"
     assert spec.parameters["source_hermes_provider"] == "command"
-    assert spec.parameters["source_used_note_ids"] == ["note-1111111111111111"]
+    assert "source_used_note_ids" not in spec.parameters
+    assert _used_note_ids(tmp_path, "HERMES_RUN_001") == [
+        "note-1111111111111111"
+    ]
 
 
 def test_skips_tampered_hermes_record_before_daily_execution(tmp_path):
@@ -83,8 +86,8 @@ def test_hypothesis_result_preserves_hermes_provenance(tmp_path):
             "source_hypothesis_id": "HERMES_RUN_001",
             "source_hermes_run_id": "run-1",
             "source_hermes_provider": "command",
-            "source_used_note_ids": ["note-1111111111111111"],
         },
+        "used_note_ids": ["note-1111111111111111"],
         "split_metrics": {"unseen": {"cagr": 0.01, "max_drawdown": -0.20}},
     }
 
