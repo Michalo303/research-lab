@@ -31,6 +31,10 @@
     "hypothesis": {"type": "string", "minLength": 1, "maxLength": 500},
     "summary": {"type": "string", "minLength": 1, "maxLength": 600},
     "source_excerpt": {"type": "string", "maxLength": 280},
+    "note_id": {"type": "string", "pattern": "^note-[0-9a-fA-F]{16}$"},
+    "source_location": {"type": "string", "minLength": 1, "maxLength": 100},
+    "source_passage_id": {"type": "string", "pattern": "^passage-[0-9a-fA-F]{16}$"},
+    "implementation_hint": {"type": "string", "minLength": 1, "maxLength": 300},
     "testable_rules": {
       "type": "array",
       "minItems": 1,

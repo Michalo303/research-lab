@@ -9,6 +9,13 @@ from research_lab.hermes.artifacts import (
     read_diagnostic_input,
     write_run_artifact,
 )
+from research_lab.hermes.artifacts import dominant_blocker
+
+
+def test_daily_report_walk_forward_text_is_canonicalized():
+    report = "- biggest risk discovered: insufficient rolling walk-forward robustness\n"
+
+    assert dominant_blocker(report) == "walk_forward_fail"
 
 
 NOW = datetime(2026, 6, 12, 1, 55, tzinfo=timezone.utc)
@@ -26,7 +33,7 @@ def test_prefers_latest_immutable_daily_run_report(tmp_path):
 
     assert diagnostic.path == immutable
     assert "excessive drawdown" in diagnostic.text
-    assert diagnostic.blocker == "excessive drawdown"
+    assert diagnostic.blocker == "drawdown"
 
 
 def test_falls_back_to_latest_daily_report(tmp_path):
@@ -37,7 +44,7 @@ def test_falls_back_to_latest_daily_report(tmp_path):
     diagnostic = read_diagnostic_input(tmp_path)
 
     assert diagnostic.path == daily
-    assert diagnostic.blocker == "Unseen max drawdown exceeds 15%."
+    assert diagnostic.blocker == "drawdown"
 
 
 def test_dominant_blocker_has_safe_fallback():

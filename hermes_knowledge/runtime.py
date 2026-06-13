@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from pathlib import Path
 
 from hermes_knowledge.books import load_book_index
+from hermes_knowledge.blocker_taxonomy import canonicalize_blocker_id
 from hermes_knowledge.prompt import build_hermes_knowledge_prompt
 from hermes_knowledge.retriever import retrieve_for_blocker
 from hermes_knowledge.schema import KnowledgeValidationError, load_knowledge_jsonl
@@ -25,6 +27,25 @@ class BookKnowledgeContext:
     note_count: int = 0
     skipped_note_count: int = 0
     selected_book_ids: tuple[str, ...] = ()
+    selected_note_ids: tuple[str, ...] = ()
+    canonical_blocker_id: str = ""
+    blocker_diagnostic: str = ""
+
+
+def _priority_overlays(notes_dir: Path) -> dict[str, float]:
+    path = notes_dir.parent / "feedback" / "priorities.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        notes = payload.get("notes", {})
+        if not isinstance(notes, dict):
+            return {}
+        return {
+            str(note_id): float(value)
+            for note_id, value in notes.items()
+            if isinstance(value, (int, float)) and not isinstance(value, bool)
+        }
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return {}
 
 
 def load_book_knowledge_context(
@@ -36,9 +57,14 @@ def load_book_knowledge_context(
 ) -> BookKnowledgeContext:
     """Return bounded prompt context, or an empty context on unavailable input."""
     try:
+        canonical_blocker = canonicalize_blocker_id(dominant_blocker)
+        if canonical_blocker is None:
+            return BookKnowledgeContext(blocker_diagnostic="unrecognized_blocker")
         books = load_book_index(book_index_path)
         indexed_hashes = {book.book_id: book.source_sha256 for book in books}
         notes_path = Path(notes_dir)
+        if notes_path.name.casefold() != "extracted_notes":
+            return BookKnowledgeContext()
         if not notes_path.is_dir():
             return BookKnowledgeContext()
         entries = []
@@ -67,12 +93,17 @@ def load_book_knowledge_context(
                 entries.append(entry)
         if not entries:
             return BookKnowledgeContext(skipped_note_count=skipped_note_count)
-        selected = retrieve_for_blocker(entries, dominant_blocker, limit=limit)
+        selected = retrieve_for_blocker(
+            entries,
+            canonical_blocker,
+            limit=limit,
+            note_priority_overlays=_priority_overlays(notes_path),
+        )
         if not selected:
             return BookKnowledgeContext(skipped_note_count=skipped_note_count)
         prompt = build_hermes_knowledge_prompt(
             selected,
-            dominant_blocker=dominant_blocker,
+            dominant_blocker=canonical_blocker,
             limit=len(selected),
         )
         return BookKnowledgeContext(
@@ -81,6 +112,17 @@ def load_book_knowledge_context(
             skipped_note_count=skipped_note_count,
             selected_book_ids=tuple(
                 dict.fromkeys(str(entry["book_id"]) for entry in selected)
+            ),
+            selected_note_ids=tuple(
+                dict.fromkeys(
+                    str(entry["note_id"])
+                    for entry in selected
+                    if entry.get("note_id")
+                )
+            ),
+            canonical_blocker_id=canonical_blocker,
+            blocker_diagnostic=(
+                "exact" if dominant_blocker.strip().casefold() == canonical_blocker else "canonicalized"
             ),
         )
     except (OSError, KeyError, TypeError, ValueError):

@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from hermes_knowledge.blocker_taxonomy import canonicalize_blocker_id
+
 
 MAX_DIAGNOSTIC_CHARS = 20_000
 
@@ -30,12 +32,14 @@ def dominant_blocker(report_text: str) -> str:
     for line in report_text.splitlines():
         match = re.match(r"\s*-\s*biggest risk discovered:\s*(.+)", line, flags=re.IGNORECASE)
         if match:
-            return match.group(1).strip()
+            raw = match.group(1).strip()
+            return canonicalize_blocker_id(raw) or raw
     signals = ("drawdown", "negative unseen", "walk-forward", "provider", "too few trades", "insufficient")
     for line in report_text.splitlines():
         clean = line.strip().removeprefix("-").strip()
         if clean and any(signal in clean.lower() for signal in signals):
-            return clean.split(":", 1)[-1].strip()
+            raw = clean.split(":", 1)[-1].strip()
+            return canonicalize_blocker_id(raw) or raw
     return "no explicit blocker found"
 
 

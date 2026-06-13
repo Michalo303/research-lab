@@ -106,6 +106,9 @@ def run_daily_research(root: Path | None = None) -> list[dict]:
             "hypothesis": spec.hypothesis,
             "rules": spec.rules,
             "parameters": spec.parameters,
+            "used_note_ids": _used_note_ids(
+                config.root, spec.parameters.get("source_hypothesis_id")
+            ),
             "parameter_count": len(spec.parameters),
             "variants_tried": 1,
             "data_manifest": data_bundle.manifest,
@@ -227,6 +230,7 @@ def _persist_hypothesis_result(root: Path, result: dict) -> None:
             "hypothesis_id": hypothesis_id,
             "hermes_run_id": result["parameters"].get("source_hermes_run_id", ""),
             "hermes_provider": result["parameters"].get("source_hermes_provider", ""),
+            "used_note_ids": list(result.get("used_note_ids", [])),
             "strategy_id": result["strategy_id"],
             "tier": result["tier"],
             "tier_reason": result["tier_reason"],
@@ -235,6 +239,31 @@ def _persist_hypothesis_result(root: Path, result: dict) -> None:
             "unseen_max_drawdown": result["split_metrics"]["unseen"]["max_drawdown"],
         },
     )
+
+
+def _used_note_ids(root: Path, hypothesis_id: object) -> list[str]:
+    if not hypothesis_id:
+        return []
+    path = Path(root) / "registry" / "hypothesis_queue.jsonl"
+    if not path.exists():
+        return []
+    for line in reversed(path.read_text(encoding="utf-8").splitlines()):
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if str(item.get("hypothesis_id", "")) != str(hypothesis_id):
+            continue
+        note_ids = item.get("used_note_ids", [])
+        if not isinstance(note_ids, list):
+            return []
+        return [
+            note_id
+            for note_id in note_ids[:5]
+            if isinstance(note_id, str)
+            and re.fullmatch(r"note-[0-9a-fA-F]{16}", note_id)
+        ]
+    return []
 
 
 def _next_sequence(root: Path) -> int:

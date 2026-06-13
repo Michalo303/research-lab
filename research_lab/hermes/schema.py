@@ -4,6 +4,7 @@ import copy
 import hashlib
 import json
 import math
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -50,6 +51,7 @@ ALLOWED_HYPOTHESIS_FIELDS = frozenset(
         "deprioritize_when",
         "promotion_blocks",
         "logged_at",
+        "used_note_ids",
     }
 )
 
@@ -172,7 +174,9 @@ BUILDER_SCHEMAS: dict[str, BuilderSchema] = {
 }
 
 
-def validate_hypothesis(item: Any) -> ValidationResult:
+def validate_hypothesis(
+    item: Any, *, allowed_note_ids: set[str] | frozenset[str] | None = None
+) -> ValidationResult:
     if not isinstance(item, dict):
         return ValidationResult(False, None, ["hypothesis_not_object"])
     reasons: list[str] = []
@@ -213,6 +217,22 @@ def validate_hypothesis(item: Any) -> ValidationResult:
     if not isinstance(tags, list) or any(not isinstance(tag, str) for tag in tags):
         reasons.append("invalid_tags")
         tags = []
+    used_note_ids = item.get("used_note_ids", [])
+    if (
+        not isinstance(used_note_ids, list)
+        or len(used_note_ids) > 5
+        or any(
+            not isinstance(note_id, str)
+            or not re.fullmatch(r"note-[0-9a-fA-F]{16}", note_id)
+            for note_id in used_note_ids
+        )
+    ):
+        reasons.append("invalid_used_note_ids")
+        used_note_ids = []
+    elif allowed_note_ids is not None and any(
+        note_id not in allowed_note_ids for note_id in used_note_ids
+    ):
+        reasons.append("unknown_used_note_id")
     if reasons:
         return ValidationResult(False, None, reasons)
     normalized = {
@@ -224,6 +244,7 @@ def validate_hypothesis(item: Any) -> ValidationResult:
         "risk_controls": copy.deepcopy(risk_controls),
         "tags": [tag.strip() for tag in tags if tag.strip()],
         "source_url": str(item.get("source_url", "")).strip(),
+        "used_note_ids": list(dict.fromkeys(used_note_ids)),
     }
     return ValidationResult(True, normalized, [])
 
@@ -321,6 +342,9 @@ def schema_prompt_text() -> str:
         parameter_text = ", ".join(f"{name}:{rule.kind}" for name, rule in schema.parameters.items())
         lines.append(f"- {builder} ({schema.family}): {parameter_text}")
     lines.append("Unknown builders, unknown parameters, executable code, and values outside the schema are rejected.")
+    lines.append(
+        "Each hypothesis may include used_note_ids containing only note IDs actually used from the provided book context; omit it or use [] when no note was used."
+    )
     return "\n".join(lines)
 
 
