@@ -74,6 +74,7 @@ def run_hypothesis_generation(
         "queue_impact": {"state": "unchanged", "planned_append_count": 0, "committed_append_count": 0},
         "book_knowledge": {
             "note_count": book_context.note_count,
+            "skipped_note_count": book_context.skipped_note_count,
             "selected_book_ids": list(book_context.selected_book_ids),
         },
     }

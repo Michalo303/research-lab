@@ -5,12 +5,24 @@ from __future__ import annotations
 from typing import Any, Iterable
 
 from hermes_knowledge.retriever import retrieve_for_blocker
+from hermes_knowledge.schema import forbidden_prompt_reference_field
 
 
 def build_hermes_knowledge_prompt(
     entries: Iterable[dict[str, Any]], dominant_blocker: str, limit: int = 5
 ) -> str:
-    selected = retrieve_for_blocker(entries, blocker=dominant_blocker, limit=limit)
+    safe_entries = [
+        entry for entry in entries if not forbidden_prompt_reference_field(entry)
+    ]
+    selected = [
+        entry
+        for entry in retrieve_for_blocker(
+            safe_entries, blocker=dominant_blocker, limit=limit
+        )
+        if not forbidden_prompt_reference_field(entry)
+    ]
+    if not selected:
+        return ""
     lines = [
         "Hermes curated book-inspired hypothesis seeds",
         f"Dominant blocker: {dominant_blocker}",

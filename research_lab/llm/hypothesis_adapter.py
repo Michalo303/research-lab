@@ -4,6 +4,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+from hermes_knowledge.schema import contains_forbidden_prompt_reference
 from hermes_knowledge.runtime import (
     DEFAULT_BOOK_INDEX_PATH,
     DEFAULT_BOOK_NOTES_DIR,
@@ -58,14 +59,31 @@ def build_hermes_prompt(
 ) -> str:
     sources = _read_jsonl(root / "registry" / "source_items.jsonl")[-max_sources:]
     leaderboard = _read_csv_text(root / "registry" / "leaderboard.csv")
+    if contains_forbidden_prompt_reference(leaderboard):
+        leaderboard = ""
     source_lines = []
     for source in sources:
-        source_lines.append(
+        source_line = (
             f"- title: {source.get('title', '')}\n"
             f"  source: {source.get('source', '')}\n"
             f"  url: {source.get('url', '')}\n"
             f"  tags: {', '.join(source.get('tags', []))}"
         )
+        if not contains_forbidden_prompt_reference(source_line):
+            source_lines.append(source_line)
+    safe_diagnostics_text = (
+        ""
+        if contains_forbidden_prompt_reference(diagnostics_text)
+        else diagnostics_text
+    )
+    safe_input_report_path = (
+        ""
+        if contains_forbidden_prompt_reference(input_report_path)
+        else input_report_path
+    )
+    safe_schema_text = (
+        "" if contains_forbidden_prompt_reference(schema_text) else schema_text
+    )
     selected_book_context = book_context or load_book_knowledge_context(
         book_index_path,
         book_notes_dir,
@@ -82,13 +100,13 @@ def build_hermes_prompt(
             "Recent research sources:",
             "\n".join(source_lines) or "- none",
             "",
-            f"Latest diagnostic report: {input_report_path or 'not available'}",
-            diagnostics_text[:12000] or "No daily diagnostics are available.",
+            f"Latest diagnostic report: {safe_input_report_path or 'not available'}",
+            safe_diagnostics_text[:12000] or "No daily diagnostics are available.",
             "",
             "Required risk-management controls to consider in every hypothesis:",
             "\n".join(f"- {key}: {value}" for key, value in RISK_CONTROL_GUIDANCE.items()),
             "",
-            schema_text,
+            safe_schema_text,
             "",
             "Return one JSON object with a hypotheses array containing 5-15 structured hypotheses.",
             "Each hypothesis must contain:",
@@ -108,7 +126,24 @@ def build_hermes_prompt(
             "BOOK-DERIVED RESEARCH CONTEXT",
             selected_book_context.prompt,
         ]
-    return "\n".join(sections)
+    prompt = "\n".join(sections)
+    if contains_forbidden_prompt_reference(prompt):
+        safe_sections = [
+            HERMES_SYSTEM_CONTRACT,
+            "",
+            "Required risk-management controls to consider in every hypothesis:",
+            "\n".join(
+                f"- {key}: {value}"
+                for key, value in RISK_CONTROL_GUIDANCE.items()
+            ),
+            "",
+            safe_schema_text,
+            "",
+            "Return one JSON object with a hypotheses array containing 5-15 structured hypotheses.",
+            "Do not return markdown fences, Python, shell commands, or executable code.",
+        ]
+        return "\n".join(safe_sections)
+    return prompt
 
 
 def write_hermes_prompt(root: Path) -> Path:

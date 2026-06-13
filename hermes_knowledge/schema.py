@@ -45,9 +45,50 @@ REQUIRED_FIELDS = {
 OPTIONAL_FIELDS = {"source_excerpt"}
 ALLOWED_FIELDS = REQUIRED_FIELDS | OPTIONAL_FIELDS
 
+FORBIDDEN_PROMPT_MARKERS = (
+    "/opt/trading/private/",
+    "hermes_books/raw",
+    ".pdf",
+    "file://",
+)
+PROMPT_BOUND_FIELDS = (
+    "source_title",
+    "concept",
+    "hypothesis",
+    "summary",
+    "source_excerpt",
+    "testable_rules",
+    "compatible_builders",
+    "asset_classes",
+    "timeframes",
+    "expected_edge",
+    "known_failure_modes",
+    "addresses_blockers",
+    "rationale",
+    "tags",
+    "topics",
+    "source_reference",
+)
+
 
 class KnowledgeValidationError(ValueError):
     pass
+
+
+def contains_forbidden_prompt_reference(value: Any) -> bool:
+    if isinstance(value, str):
+        normalized = value.casefold().replace("\\", "/")
+        return any(marker in normalized for marker in FORBIDDEN_PROMPT_MARKERS)
+    if isinstance(value, (list, tuple)):
+        return any(contains_forbidden_prompt_reference(item) for item in value)
+    return False
+
+
+def forbidden_prompt_reference_field(raw: dict[str, Any]) -> str | None:
+    for field in PROMPT_BOUND_FIELDS:
+        if field in raw and contains_forbidden_prompt_reference(raw[field]):
+            return field
+    return None
 
 
 def _require_short_text(entry: dict[str, Any], field: str, maximum: int) -> None:
@@ -80,6 +121,11 @@ def _require_text_list(
 def validate_entry(raw: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise KnowledgeValidationError("knowledge entry must be an object")
+    forbidden_field = forbidden_prompt_reference_field(raw)
+    if forbidden_field:
+        raise KnowledgeValidationError(
+            f"forbidden reference in {forbidden_field}"
+        )
     missing = sorted(REQUIRED_FIELDS - raw.keys())
     if missing:
         raise KnowledgeValidationError(f"missing required fields: {', '.join(missing)}")

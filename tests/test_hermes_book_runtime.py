@@ -4,6 +4,7 @@ import pytest
 
 from hermes_knowledge.runtime import load_book_knowledge_context
 from hermes_knowledge.schema import KnowledgeValidationError, validate_entry
+from hermes_knowledge.prompt import build_hermes_knowledge_prompt
 from research_lab.hermes.providers import ProviderResult
 from research_lab.hermes.run_hypothesis_generation import run_hypothesis_generation
 from research_lab.llm.hypothesis_adapter import build_hermes_prompt
@@ -153,6 +154,7 @@ def test_orchestrator_artifact_logs_only_safe_book_metadata(tmp_path):
 
     assert outcome["book_knowledge"] == {
         "note_count": 1,
+        "skipped_note_count": 0,
         "selected_book_ids": ["book-aaaaaaaaaaaa"],
     }
     artifact_text = outcome["artifact_path"].read_text(encoding="utf-8")
@@ -167,3 +169,115 @@ def test_schema_rejects_long_text_and_unknown_fields():
 
     with pytest.raises(KnowledgeValidationError, match="unexpected fields"):
         validate_entry(_note(raw_pdf_text="forbidden"))
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("hypothesis", "Read /opt/trading/private/hermes_books/raw/foo.pdf first."),
+        ("testable_rules", ["Read C:\\private\\hermes_books\\raw\\foo.pdf first."]),
+        ("expected_edge", "See file:///opt/trading/private/foo for support."),
+        ("rationale", "Derived from hermes_books/raw/foo.pdf."),
+        ("tags", ["file://private/source"]),
+        ("topics", ["C:\\private\\library\\foo.pdf"]),
+        ("source_reference", "/opt/trading/private/source"),
+    ],
+)
+def test_schema_rejects_forbidden_references_without_echoing_values(field, value):
+    with pytest.raises(KnowledgeValidationError) as exc_info:
+        validate_entry(_note(**{field: value}))
+
+    assert f"forbidden reference in {field}" in str(exc_info.value)
+    assert "foo.pdf" not in str(exc_info.value)
+    assert "/opt/trading/private" not in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("hypothesis", "Read /opt/trading/private/hermes_books/raw/foo.pdf first."),
+        ("testable_rules", ["Read hermes_books/raw/foo.pdf first."]),
+        ("expected_edge", "See file://private/foo.pdf for support."),
+    ],
+)
+def test_prompt_guard_skips_entire_note_with_forbidden_reference(field, value):
+    unsafe = _note(**{field: value})
+    safe = _note(
+        source_sha256="b" * 64,
+        book_id="book-bbbbbbbbbbbb",
+        concept="Safe volatility cap",
+    )
+
+    prompt = build_hermes_knowledge_prompt(
+        [unsafe, safe], dominant_blocker="drawdown", limit=5
+    )
+
+    assert "Safe volatility cap" in prompt
+    assert "Volatility targeting" not in prompt
+    for marker in (
+        "/opt/trading/private/",
+        "hermes_books/raw",
+        ".pdf",
+        "file://",
+    ):
+        assert marker not in prompt.casefold()
+
+
+def test_runtime_skips_forbidden_note_and_counts_it_safely(tmp_path):
+    index_path = _write_index(tmp_path)
+    notes_dir = tmp_path / "extracted_notes"
+    notes_dir.mkdir()
+    (notes_dir / "unsafe.jsonl").write_text(
+        json.dumps(
+            _note(
+                hypothesis=(
+                    "Read /opt/trading/private/hermes_books/raw/foo.pdf first."
+                )
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    context = load_book_knowledge_context(
+        index_path, notes_dir, dominant_blocker="drawdown"
+    )
+
+    assert context.prompt == ""
+    assert context.note_count == 0
+    assert context.skipped_note_count == 1
+    assert context.selected_book_ids == ()
+
+
+def test_main_prompt_drops_unsafe_dynamic_context(tmp_path):
+    source_items = tmp_path / "registry" / "source_items.jsonl"
+    source_items.parent.mkdir(parents=True)
+    source_items.write_text(
+        json.dumps(
+            {
+                "title": "Unsafe source",
+                "source": "private",
+                "url": "file:///opt/trading/private/hermes_books/raw/foo.pdf",
+                "tags": ["risk"],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    prompt = build_hermes_prompt(
+        tmp_path,
+        diagnostics_text=(
+            "Inspect /opt/trading/private/hermes_books/raw/foo.pdf"
+        ),
+        input_report_path="file:///opt/trading/private/report.pdf",
+    )
+
+    assert "Unsafe source" not in prompt
+    for marker in (
+        "/opt/trading/private/",
+        "hermes_books/raw",
+        ".pdf",
+        "file://",
+    ):
+        assert marker not in prompt.casefold()
