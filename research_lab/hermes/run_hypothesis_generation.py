@@ -76,6 +76,7 @@ def run_hypothesis_generation(
             "note_count": book_context.note_count,
             "skipped_note_count": book_context.skipped_note_count,
             "selected_book_ids": list(book_context.selected_book_ids),
+            "selected_note_ids": list(book_context.selected_note_ids),
         },
     }
     if provider_result.status != "ok":
@@ -110,7 +111,16 @@ def run_hypothesis_generation(
             rejection_reasons.append(f"hypothesis_{index}:duplicate_hypothesis")
             continue
         seen.add(fingerprint)
-        accepted.append(_queue_payload(validation.hypothesis, run_id, provider, index, fingerprint))
+        accepted.append(
+            _queue_payload(
+                validation.hypothesis,
+                run_id,
+                provider,
+                index,
+                fingerprint,
+                used_note_ids=book_context.selected_note_ids,
+            )
+        )
     if not accepted:
         status = "completed_with_rejections" if rejection_reasons else "ok"
         return _finish(
@@ -201,7 +211,13 @@ def _parse_envelope(output: str | None) -> tuple[dict[str, Any] | None, str | No
 
 
 def _queue_payload(
-    hypothesis: dict[str, Any], run_id: str, provider: str, index: int, fingerprint: str
+    hypothesis: dict[str, Any],
+    run_id: str,
+    provider: str,
+    index: int,
+    fingerprint: str,
+    *,
+    used_note_ids: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     family = hypothesis["family"]
     payload = {
@@ -224,6 +240,7 @@ def _queue_payload(
         "llm_generated": True,
         "hermes_run_id": run_id,
         "hermes_provider": provider,
+        "used_note_ids": list(used_note_ids),
     }
     return apply_risk_guidance(payload)
 

@@ -44,7 +44,11 @@ def _entry_text(entry: dict[str, Any]) -> str:
 
 
 def retrieve_for_blocker(
-    entries: Iterable[dict[str, Any]], blocker: str, limit: int = 5
+    entries: Iterable[dict[str, Any]],
+    blocker: str,
+    limit: int = 5,
+    *,
+    note_priority_overlays: dict[str, float] | None = None,
 ) -> list[dict[str, Any]]:
     if limit < 1:
         raise ValueError("limit must be positive")
@@ -59,12 +63,22 @@ def retrieve_for_blocker(
     ]
     candidates = direct_matches or validated
     scored: list[tuple[float, str, dict[str, Any]]] = []
+    overlays = note_priority_overlays or {}
     for entry in candidates:
         blockers = {value.casefold() for value in entry["addresses_blockers"]}
         text = _entry_text(entry)
         blocker_match = 40.0 if normalized_blocker in blockers else 0.0
         preference_match = sum(8.0 for phrase in preferences if phrase in text)
-        score = float(entry["priority_score"]) + blocker_match + preference_match
+        overlay = max(
+            -50.0,
+            min(50.0, float(overlays.get(str(entry.get("note_id", "")), 0.0))),
+        )
+        score = (
+            float(entry["priority_score"])
+            + blocker_match
+            + preference_match
+            + overlay
+        )
         scored.append((score, str(entry["concept"]).casefold(), entry))
     scored.sort(key=lambda item: (-item[0], item[1], item[2]["book_id"]))
     return [item[2] for item in scored[:limit]]

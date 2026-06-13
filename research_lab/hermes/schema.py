@@ -4,6 +4,7 @@ import copy
 import hashlib
 import json
 import math
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -50,6 +51,7 @@ ALLOWED_HYPOTHESIS_FIELDS = frozenset(
         "deprioritize_when",
         "promotion_blocks",
         "logged_at",
+        "used_note_ids",
     }
 )
 
@@ -213,6 +215,18 @@ def validate_hypothesis(item: Any) -> ValidationResult:
     if not isinstance(tags, list) or any(not isinstance(tag, str) for tag in tags):
         reasons.append("invalid_tags")
         tags = []
+    used_note_ids = item.get("used_note_ids", [])
+    if (
+        not isinstance(used_note_ids, list)
+        or len(used_note_ids) > 5
+        or any(
+            not isinstance(note_id, str)
+            or not re.fullmatch(r"note-[0-9a-fA-F]{16}", note_id)
+            for note_id in used_note_ids
+        )
+    ):
+        reasons.append("invalid_used_note_ids")
+        used_note_ids = []
     if reasons:
         return ValidationResult(False, None, reasons)
     normalized = {
@@ -224,6 +238,7 @@ def validate_hypothesis(item: Any) -> ValidationResult:
         "risk_controls": copy.deepcopy(risk_controls),
         "tags": [tag.strip() for tag in tags if tag.strip()],
         "source_url": str(item.get("source_url", "")).strip(),
+        "used_note_ids": list(dict.fromkeys(used_note_ids)),
     }
     return ValidationResult(True, normalized, [])
 

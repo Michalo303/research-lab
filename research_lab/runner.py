@@ -106,6 +106,7 @@ def run_daily_research(root: Path | None = None) -> list[dict]:
             "hypothesis": spec.hypothesis,
             "rules": spec.rules,
             "parameters": spec.parameters,
+            "used_note_ids": list(spec.parameters.get("source_used_note_ids", [])),
             "parameter_count": len(spec.parameters),
             "variants_tried": 1,
             "data_manifest": data_bundle.manifest,
@@ -227,6 +228,9 @@ def _persist_hypothesis_result(root: Path, result: dict) -> None:
             "hypothesis_id": hypothesis_id,
             "hermes_run_id": result["parameters"].get("source_hermes_run_id", ""),
             "hermes_provider": result["parameters"].get("source_hermes_provider", ""),
+            "used_note_ids": list(
+                result["parameters"].get("source_used_note_ids", [])
+            ),
             "strategy_id": result["strategy_id"],
             "tier": result["tier"],
             "tier_reason": result["tier_reason"],

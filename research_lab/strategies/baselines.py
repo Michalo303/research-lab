@@ -805,6 +805,7 @@ def _validated_hermes_spec(item: dict[str, Any]) -> StrategySpec | None:
         "source_title": str(item.get("source_title", "hermes")),
         "source_hermes_run_id": str(item.get("hermes_run_id", "")),
         "source_hermes_provider": str(item.get("hermes_provider", "")),
+        "source_used_note_ids": list(item.get("used_note_ids", [])),
     }
     return StrategySpec(
         family=hypothesis["family"],

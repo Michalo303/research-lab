@@ -40,6 +40,7 @@ def build_hermes_knowledge_prompt(
                 f"Expected edge: {entry['expected_edge']}",
                 (
                     "Knowledge provenance: "
+                    f"note_id={entry.get('note_id', 'legacy')}; "
                     f"book_id={entry['book_id']}; "
                     f"title={entry['source_title']}; "
                     f"sha256={entry['source_sha256']}"

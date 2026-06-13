@@ -51,6 +51,10 @@ def _note(**overrides):
         "known_failure_modes": ["Fast reversals may cause underexposure."],
         "addresses_blockers": ["drawdown"],
         "priority_score": 90,
+        "note_id": "note-1111111111111111",
+        "source_location": "page:10",
+        "source_passage_id": "passage-1111111111111111",
+        "implementation_hint": "Lower exposure as realized volatility rises.",
     }
     entry.update(overrides)
     return entry
@@ -86,6 +90,7 @@ def test_prompt_includes_valid_book_context_and_safe_metadata(tmp_path):
     assert "Volatility targeting" in prompt
     assert context.note_count == 1
     assert context.selected_book_ids == ("book-aaaaaaaaaaaa",)
+    assert context.selected_note_ids == ("note-1111111111111111",)
     assert "/opt/trading/private/hermes_books/raw/secret-book.pdf" not in prompt
     assert "short phrase" not in prompt
 
@@ -127,6 +132,7 @@ def test_runtime_ignores_unreviewed_zero_priority_skeletons(tmp_path):
     assert context.prompt == ""
     assert context.note_count == 0
     assert context.selected_book_ids == ()
+    assert context.selected_note_ids == ()
 
 
 def test_orchestrator_artifact_logs_only_safe_book_metadata(tmp_path):
@@ -156,11 +162,78 @@ def test_orchestrator_artifact_logs_only_safe_book_metadata(tmp_path):
         "note_count": 1,
         "skipped_note_count": 0,
         "selected_book_ids": ["book-aaaaaaaaaaaa"],
+        "selected_note_ids": ["note-1111111111111111"],
     }
     artifact_text = outcome["artifact_path"].read_text(encoding="utf-8")
     assert "Dominant blocker: drawdown" in prompts[0]
     assert "/opt/trading/private/hermes_books/raw" not in artifact_text
     assert "short phrase" not in artifact_text
+
+
+def test_orchestrator_adds_selected_note_ids_to_queue_provenance(tmp_path):
+    index_path = _write_index(tmp_path / "private")
+    notes_dir = _write_note(tmp_path / "private")
+    report = tmp_path / "reports" / "daily" / "2026-06-12.md"
+    report.parent.mkdir(parents=True)
+    report.write_text("- biggest risk discovered: drawdown\n", encoding="utf-8")
+    hypothesis = {
+        "title": "Conservative trend cap",
+        "family": "LONGTERM",
+        "builder": "long_term_vol_target_cap",
+        "rationale": "Reduce drawdown before seeking return.",
+        "parameters": {
+            "symbol": "SPY",
+            "sma": 200,
+            "vol_window": 63,
+            "target_vol": 0.08,
+            "max_weight": 0.65,
+        },
+        "risk_controls": {
+            "volatility_targeting": "target portfolio volatility",
+            "drawdown_circuit_breakers": "move to cash after drawdown threshold",
+            "cash_defensive_regimes": "hold cash in risk-off regimes",
+            "exposure_caps": "cap gross and single-asset exposure",
+            "correlation_aware_portfolio_risk": "avoid correlated sleeves",
+            "crisis_period_diagnostics": "test crisis windows",
+            "cost_slippage_stress": "double cost stress",
+            "parameter_neighborhood_stability": "test adjacent parameters",
+        },
+    }
+    queued = []
+
+    outcome = run_hypothesis_generation(
+        tmp_path,
+        env={
+            "HERMES_PROVIDER": "command",
+            "HERMES_BOOK_INDEX_PATH": str(index_path),
+            "HERMES_BOOK_NOTES_DIR": str(notes_dir),
+        },
+        provider_invoker=lambda *_: ProviderResult(
+            "ok", output=json.dumps({"hypotheses": [hypothesis]})
+        ),
+        queue_committer=lambda _path, rows: queued.extend(rows),
+    )
+
+    assert outcome["book_knowledge"]["selected_note_ids"] == [
+        "note-1111111111111111"
+    ]
+    assert queued[0]["used_note_ids"] == ["note-1111111111111111"]
+
+
+def test_runtime_rejects_proposed_notes_directory(tmp_path):
+    index_path = _write_index(tmp_path)
+    proposed_dir = tmp_path / "proposed_notes"
+    proposed_dir.mkdir()
+    (proposed_dir / "notes.jsonl").write_text(
+        json.dumps(_note()) + "\n", encoding="utf-8"
+    )
+
+    context = load_book_knowledge_context(
+        index_path, proposed_dir, dominant_blocker="drawdown"
+    )
+
+    assert context.note_count == 0
+    assert context.selected_note_ids == ()
 
 
 def test_schema_rejects_long_text_and_unknown_fields():
@@ -247,6 +320,7 @@ def test_runtime_skips_forbidden_note_and_counts_it_safely(tmp_path):
     assert context.note_count == 0
     assert context.skipped_note_count == 1
     assert context.selected_book_ids == ()
+    assert context.selected_note_ids == ()
 
 
 def test_main_prompt_drops_unsafe_dynamic_context(tmp_path):
