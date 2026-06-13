@@ -369,7 +369,7 @@ def test_hermes_prompt_contains_only_retrieved_entries_and_provenance():
     assert "Parameter stability" in prompt
     assert "Intraday scalping" not in prompt
     assert "book-aaaaaaaaaaaa" in prompt
-    assert "/private/raw/example.pdf" in prompt
+    assert "/private/raw/example.pdf" not in prompt
     assert "aaaaaaaaaaaa" in prompt
     assert "knowledge provenance" in prompt.lower()
 

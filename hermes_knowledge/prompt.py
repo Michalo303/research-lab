@@ -30,7 +30,6 @@ def build_hermes_knowledge_prompt(
                     "Knowledge provenance: "
                     f"book_id={entry['book_id']}; "
                     f"title={entry['source_title']}; "
-                    f"path={entry['source_path']}; "
                     f"sha256={entry['source_sha256']}"
                 ),
             ]

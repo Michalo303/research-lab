@@ -4,6 +4,12 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+from hermes_knowledge.runtime import (
+    DEFAULT_BOOK_INDEX_PATH,
+    DEFAULT_BOOK_NOTES_DIR,
+    BookKnowledgeContext,
+    load_book_knowledge_context,
+)
 from research_lab.registry import append_jsonl
 from research_lab.risk_management import RISK_CONTROL_GUIDANCE, apply_risk_guidance
 
@@ -45,6 +51,10 @@ def build_hermes_prompt(
     diagnostics_text: str = "",
     input_report_path: str = "",
     schema_text: str = "",
+    dominant_blocker: str = "no explicit blocker found",
+    book_index_path: str | Path = DEFAULT_BOOK_INDEX_PATH,
+    book_notes_dir: str | Path = DEFAULT_BOOK_NOTES_DIR,
+    book_context: BookKnowledgeContext | None = None,
 ) -> str:
     sources = _read_jsonl(root / "registry" / "source_items.jsonl")[-max_sources:]
     leaderboard = _read_csv_text(root / "registry" / "leaderboard.csv")
@@ -56,8 +66,12 @@ def build_hermes_prompt(
             f"  url: {source.get('url', '')}\n"
             f"  tags: {', '.join(source.get('tags', []))}"
         )
-    return "\n".join(
-        [
+    selected_book_context = book_context or load_book_knowledge_context(
+        book_index_path,
+        book_notes_dir,
+        dominant_blocker=dominant_blocker,
+    )
+    sections = [
             HERMES_SYSTEM_CONTRACT,
             "",
             "Current leaderboard:",
@@ -88,7 +102,13 @@ def build_hermes_prompt(
             ),
             "Do not return markdown fences, Python, shell commands, or executable code.",
         ]
-    )
+    if selected_book_context.prompt:
+        sections[1:1] = [
+            "",
+            "BOOK-DERIVED RESEARCH CONTEXT",
+            selected_book_context.prompt,
+        ]
+    return "\n".join(sections)
 
 
 def write_hermes_prompt(root: Path) -> Path:
