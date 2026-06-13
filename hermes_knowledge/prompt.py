@@ -28,6 +28,7 @@ def build_hermes_knowledge_prompt(
         f"Dominant blocker: {dominant_blocker}",
         "Use only the entries below. Treat them as hypotheses to test, not facts.",
         "Preserve knowledge provenance in every proposed experiment.",
+        "For each hypothesis, set used_note_ids to only the note IDs actually used; use [] when none were used.",
     ]
     for entry in selected:
         rules = "; ".join(entry["testable_rules"])
@@ -40,6 +41,7 @@ def build_hermes_knowledge_prompt(
                 f"Expected edge: {entry['expected_edge']}",
                 (
                     "Knowledge provenance: "
+                    f"note_id={entry.get('note_id', 'legacy')}; "
                     f"book_id={entry['book_id']}; "
                     f"title={entry['source_title']}; "
                     f"sha256={entry['source_sha256']}"

@@ -45,5 +45,9 @@ deploy*.zip
 # Private Hermes library and curated notes must remain outside git.
 **/hermes_books/raw/
 **/hermes_books/index/
+**/hermes_books/text/
+**/hermes_books/passage_candidates/
+**/hermes_books/proposed_notes/
 **/hermes_books/extracted_notes/
+**/hermes_books/feedback/
 **/hermes_books/**/*.pdf

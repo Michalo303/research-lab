@@ -42,7 +42,13 @@ REQUIRED_FIELDS = {
     "addresses_blockers",
     "priority_score",
 }
-OPTIONAL_FIELDS = {"source_excerpt"}
+OPTIONAL_FIELDS = {
+    "source_excerpt",
+    "note_id",
+    "source_location",
+    "source_passage_id",
+    "implementation_hint",
+}
 ALLOWED_FIELDS = REQUIRED_FIELDS | OPTIONAL_FIELDS
 
 FORBIDDEN_PROMPT_MARKERS = (
@@ -68,6 +74,8 @@ PROMPT_BOUND_FIELDS = (
     "tags",
     "topics",
     "source_reference",
+    "source_location",
+    "implementation_hint",
 )
 
 
@@ -147,6 +155,26 @@ def validate_entry(raw: dict[str, Any]) -> dict[str, Any]:
     ):
         _require_short_text(entry, field, maximum)
 
+    for field, maximum in (
+        ("note_id", 64),
+        ("source_location", 100),
+        ("source_passage_id", 64),
+        ("implementation_hint", 300),
+    ):
+        if field in entry:
+            _require_short_text(entry, field, maximum)
+
+    if "note_id" in entry and not re.fullmatch(
+        r"note-[0-9a-fA-F]{16}", entry["note_id"]
+    ):
+        raise KnowledgeValidationError("note_id must use note- followed by 16 hash characters")
+    if "source_passage_id" in entry and not re.fullmatch(
+        r"passage-[0-9a-fA-F]{16}", entry["source_passage_id"]
+    ):
+        raise KnowledgeValidationError(
+            "source_passage_id must use passage- followed by 16 hash characters"
+        )
+
     if not re.fullmatch(r"book-[0-9a-fA-F]{12}", entry["book_id"]):
         raise KnowledgeValidationError(
             "book_id must use book- followed by 12 hash characters"
@@ -196,6 +224,43 @@ def validate_entry(raw: dict[str, Any]) -> dict[str, Any]:
             f"total text exceeds {MAX_TOTAL_TEXT_CHARS} characters"
         )
     return entry
+
+
+def validate_proposed_note(raw: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise KnowledgeValidationError("proposed note must be an object")
+    allowed = {"status", "source_passage_id", "entry"}
+    unexpected = sorted(raw.keys() - allowed)
+    if unexpected:
+        raise KnowledgeValidationError(
+            f"unexpected proposed note fields: {', '.join(unexpected)}"
+        )
+    if raw.get("status") != "proposed":
+        raise KnowledgeValidationError("proposed note status must be proposed")
+    source_passage_id = raw.get("source_passage_id")
+    if not isinstance(source_passage_id, str) or not re.fullmatch(
+        r"passage-[0-9a-fA-F]{16}", source_passage_id
+    ):
+        raise KnowledgeValidationError("source_passage_id is required")
+    entry = validate_entry(raw.get("entry"))
+    required_provenance = {
+        "note_id",
+        "source_location",
+        "source_passage_id",
+        "implementation_hint",
+    }
+    missing = sorted(required_provenance - entry.keys())
+    if missing:
+        raise KnowledgeValidationError(
+            f"missing proposed note provenance: {', '.join(missing)}"
+        )
+    if entry["source_passage_id"] != source_passage_id:
+        raise KnowledgeValidationError("source_passage_id does not match entry")
+    return {
+        "status": "proposed",
+        "source_passage_id": source_passage_id,
+        "entry": entry,
+    }
 
 
 def load_knowledge_jsonl(path: str | Path) -> list[dict[str, Any]]:
