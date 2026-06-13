@@ -31,6 +31,8 @@ REQUIRED_FIELDS = {
     "addresses_blockers",
     "priority_score",
 }
+OPTIONAL_FIELDS = {"source_excerpt"}
+ALLOWED_FIELDS = REQUIRED_FIELDS | OPTIONAL_FIELDS
 
 
 class KnowledgeValidationError(ValueError):
@@ -59,6 +61,11 @@ def validate_entry(raw: dict[str, Any]) -> dict[str, Any]:
     missing = sorted(REQUIRED_FIELDS - raw.keys())
     if missing:
         raise KnowledgeValidationError(f"missing required fields: {', '.join(missing)}")
+    unexpected = sorted(raw.keys() - ALLOWED_FIELDS)
+    if unexpected:
+        raise KnowledgeValidationError(
+            f"unexpected fields: {', '.join(unexpected)}"
+        )
 
     entry = dict(raw)
     for field, maximum in (

@@ -142,9 +142,17 @@ def test_validate_entry_rejects_long_summary():
 
 def test_validate_entry_rejects_full_text_split_across_list_items():
     entry = _entry("Volatility targeting", blockers=["drawdown"])
-    entry["known_failure_modes"] = ["x" * 300 for _ in range(15)]
+    entry["known_failure_modes"] = ["x" * 280 for _ in range(7)]
 
     with pytest.raises(KnowledgeValidationError, match="total text"):
+        validate_entry(entry)
+
+
+def test_validate_entry_rejects_nested_full_text_payload():
+    entry = _entry("Volatility targeting", blockers=["drawdown"])
+    entry["full_text"] = {"chapter": "x" * 100_000}
+
+    with pytest.raises(KnowledgeValidationError, match="unexpected fields: full_text"):
         validate_entry(entry)
 
 
