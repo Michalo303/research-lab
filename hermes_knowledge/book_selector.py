@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 import re
 from typing import Iterable, Mapping
 
@@ -19,6 +20,29 @@ class SelectedBook:
     score: float
     matched_terms: tuple[str, ...]
     reasons: tuple[str, ...]
+
+
+def load_text_previews(
+    books: Iterable[BookRecord], text_dir: str | Path, *, max_chars: int = 20_000
+) -> dict[str, str]:
+    if not 1 <= max_chars <= 20_000:
+        raise ValueError("max_chars must be between 1 and 20000")
+    root = Path(text_dir)
+    previews: dict[str, str] = {}
+    for book in books:
+        paths = (
+            root / f"{book.book_id}.txt",
+            root / f"{Path(book.source_path).stem}.txt",
+        )
+        path = next((candidate for candidate in paths if candidate.is_file()), None)
+        if path is None:
+            continue
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                previews[book.book_id] = handle.read(max_chars)
+        except (OSError, UnicodeError):
+            continue
+    return previews
 
 
 def _normalize(value: str) -> str:

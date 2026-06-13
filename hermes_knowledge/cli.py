@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import os
 import json
 from pathlib import Path
 from typing import Mapping
 
-from hermes_knowledge.book_selector import MAX_BOOKS, select_books_for_blocker
+from hermes_knowledge.book_selector import (
+    MAX_BOOKS,
+    load_text_previews,
+    select_books_for_blocker,
+)
 from hermes_knowledge.books import load_book_index
 from hermes_knowledge.feedback import (
     apply_feedback,
@@ -64,10 +69,12 @@ def _extract(
     index_path, text_dir, candidate_path, proposed_path, _ = _paths(args)
     books = load_book_index(index_path)
     overlays = load_priority_overlays(Path(args.base_dir) / "feedback" / "priorities.json")
+    previews = load_text_previews(books, text_dir)
     selected = select_books_for_blocker(
         books,
         args.blocker,
         limit=args.limit_books,
+        text_previews=previews,
         book_priority_overlays=overlays["books"],
     )
     candidates, extraction_diagnostics = extract_passages(
@@ -84,6 +91,12 @@ def _extract(
     )
     candidate_result = write_passage_candidates(candidate_path, candidates)
     proposal_result = write_proposed_notes(proposed_path, proposals)
+    diagnostic_counts = Counter(
+        item.code for item in [*extraction_diagnostics, *generation_diagnostics]
+    )
+    diagnostic_summary = ",".join(
+        f"{code}:{count}" for code, count in sorted(diagnostic_counts.items())
+    ) or "none"
     print(
         " ".join(
             [
@@ -92,6 +105,7 @@ def _extract(
                 f"proposed={proposal_result.written}",
                 f"duplicates={candidate_result.duplicates + proposal_result.duplicates}",
                 f"skipped={len(extraction_diagnostics) + len(generation_diagnostics)}",
+                f"diagnostics={diagnostic_summary}",
             ]
         )
     )

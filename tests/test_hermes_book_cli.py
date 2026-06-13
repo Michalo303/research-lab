@@ -22,7 +22,7 @@ def _provider_note():
     }
 
 
-def _private_fixture(tmp_path):
+def _private_fixture(tmp_path, *, title="Trading Systems and Methods.pdf"):
     base = tmp_path / "hermes_books"
     index = base / "index" / "book_index.json"
     text = base / "text" / "book-aaaaaaaaaaaa.txt"
@@ -33,7 +33,7 @@ def _private_fixture(tmp_path):
             {
                 "books": [
                     {
-                        "name": "Trading Systems and Methods.pdf",
+                        "name": title,
                         "path": str(base / "raw" / "book.pdf"),
                         "size_bytes": 100,
                         "sha256": "a" * 64,
@@ -136,6 +136,52 @@ def test_extract_rejects_limits_above_v1_maximum(tmp_path, extra):
         )
 
     assert not (base / "extracted_notes").exists()
+
+
+def test_extract_uses_bounded_sidecar_preview_for_opaque_book_title(tmp_path):
+    base = _private_fixture(tmp_path, title="Collected Essays.pdf")
+
+    assert (
+        main(
+            [
+                "extract",
+                "--base-dir",
+                str(base),
+                "--blocker",
+                "walk_forward_fail",
+            ],
+            env={"HERMES_PROVIDER": "command"},
+            provider_invoker=lambda *_: ProviderResult(
+                "ok", output=json.dumps(_provider_note())
+            ),
+        )
+        == 0
+    )
+
+    assert (base / "proposed_notes" / "walk_forward_fail.jsonl").exists()
+
+
+def test_extract_reports_bounded_diagnostic_codes(tmp_path, capsys):
+    base = _private_fixture(tmp_path)
+
+    assert (
+        main(
+            [
+                "extract",
+                "--base-dir",
+                str(base),
+                "--blocker",
+                "walk_forward_fail",
+            ],
+            env={"HERMES_PROVIDER": "command"},
+            provider_invoker=lambda *_: ProviderResult("provider_error"),
+        )
+        == 0
+    )
+
+    output = capsys.readouterr().out
+    assert "diagnostics=provider_error:1" in output
+    assert "Parameter stability" not in output
 
 
 def test_feedback_cli_updates_overlay_without_editing_extracted_note(tmp_path):
