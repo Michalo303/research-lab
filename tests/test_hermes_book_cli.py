@@ -136,3 +136,68 @@ def test_extract_rejects_limits_above_v1_maximum(tmp_path, extra):
         )
 
     assert not (base / "extracted_notes").exists()
+
+
+def test_feedback_cli_updates_overlay_without_editing_extracted_note(tmp_path):
+    base = _private_fixture(tmp_path)
+    extracted = base / "extracted_notes" / "walk_forward_fail.jsonl"
+    extracted.parent.mkdir(parents=True)
+    entry = {
+        "book_id": "book-aaaaaaaaaaaa",
+        "source_title": "Trading Systems and Methods",
+        "source_path": "private-book:book-aaaaaaaaaaaa",
+        "source_sha256": "a" * 64,
+        "concept": "Parameter stability",
+        "hypothesis": "Stable regions improve walk-forward reliability.",
+        "summary": "Prefer broad stable regions.",
+        "source_excerpt": "Short evidence.",
+        "testable_rules": ["Penalize unstable adjacent values."],
+        "compatible_builders": ["active_momentum_rotation"],
+        "asset_classes": ["ETF"],
+        "timeframes": ["1D"],
+        "expected_edge": "Improve walk-forward pass rate.",
+        "known_failure_modes": ["Regimes can change."],
+        "addresses_blockers": ["walk_forward_fail"],
+        "priority_score": 70,
+        "note_id": "note-1111111111111111",
+        "source_location": "page:10",
+        "source_passage_id": "passage-1111111111111111",
+        "implementation_hint": "Measure adjacent dispersion.",
+    }
+    extracted.write_text(json.dumps(entry) + "\n", encoding="utf-8")
+    before = extracted.read_bytes()
+    feedback_input = tmp_path / "feedback.jsonl"
+    feedback_input.write_text(
+        json.dumps(
+            {
+                "event_id": "run-1",
+                "used_note_ids": ["note-1111111111111111"],
+                "baseline_wf_pass_rate": 0.42,
+                "wf_pass_rate": 0.58,
+                "baseline_max_drawdown": 0.22,
+                "max_drawdown": 0.13,
+                "gate_passed": False,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert (
+        main(
+            [
+                "feedback",
+                "--base-dir",
+                str(base),
+                "--input",
+                str(feedback_input),
+            ]
+        )
+        == 0
+    )
+
+    assert extracted.read_bytes() == before
+    priorities = json.loads(
+        (base / "feedback" / "priorities.json").read_text(encoding="utf-8")
+    )
+    assert priorities["notes"]["note-1111111111111111"] == pytest.approx(4.1)

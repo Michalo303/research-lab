@@ -4,11 +4,17 @@ from __future__ import annotations
 
 import argparse
 import os
+import json
 from pathlib import Path
 from typing import Mapping
 
 from hermes_knowledge.book_selector import MAX_BOOKS, select_books_for_blocker
 from hermes_knowledge.books import load_book_index
+from hermes_knowledge.feedback import (
+    apply_feedback,
+    load_priority_overlays,
+    note_book_map,
+)
 from hermes_knowledge.note_generator import ProviderInvoker, generate_proposed_notes
 from hermes_knowledge.note_store import (
     promote_note,
@@ -57,8 +63,12 @@ def _extract(
 ) -> int:
     index_path, text_dir, candidate_path, proposed_path, _ = _paths(args)
     books = load_book_index(index_path)
+    overlays = load_priority_overlays(Path(args.base_dir) / "feedback" / "priorities.json")
     selected = select_books_for_blocker(
-        books, args.blocker, limit=args.limit_books
+        books,
+        args.blocker,
+        limit=args.limit_books,
+        book_priority_overlays=overlays["books"],
     )
     candidates, extraction_diagnostics = extract_passages(
         selected,
@@ -109,6 +119,26 @@ def _promote(args: argparse.Namespace) -> int:
     return 0
 
 
+def _feedback(args: argparse.Namespace) -> int:
+    base = Path(args.base_dir)
+    events = [
+        json.loads(line)
+        for line in Path(args.input).read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    summary = apply_feedback(
+        events,
+        note_to_book=note_book_map(base / "extracted_notes"),
+        event_path=base / "feedback" / "note_feedback.jsonl",
+        priorities_path=base / "feedback" / "priorities.json",
+    )
+    print(
+        f"accepted={summary.accepted} rejected={summary.rejected} "
+        f"duplicates={summary.duplicates}"
+    )
+    return 0 if summary.rejected == 0 else 1
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Hermes blocker-first book learning agent.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -138,6 +168,10 @@ def _parser() -> argparse.ArgumentParser:
     promote.add_argument("--book-index", type=Path)
     promote.add_argument("--blocker", required=True)
     promote.add_argument("--note-id", required=True)
+
+    feedback = subparsers.add_parser("feedback")
+    feedback.add_argument("--base-dir", type=Path, default=DEFAULT_BASE_DIR)
+    feedback.add_argument("--input", type=Path, required=True)
     return parser
 
 
@@ -155,6 +189,8 @@ def main(
         return _validate(args)
     if args.command == "promote":
         return _promote(args)
+    if args.command == "feedback":
+        return _feedback(args)
     raise ValueError(f"unsupported command: {args.command}")
 
 
