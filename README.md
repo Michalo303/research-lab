@@ -45,6 +45,13 @@ The decision CLI:
 - does not promote notes or strategies
 - does not modify registries or runtime artifacts beyond the requested output file
 
+Deterministic orchestration input builder:
+
+- `python scripts/build_orchestration_input.py --root . --output tmp/orchestrator_input.json`
+- `python scripts/run_orchestration_decision.py --input tmp/orchestrator_input.json --output tmp/orchestrator_decision.json`
+
+The input builder is read-only. It reads existing registry and deployment-gate artifacts when present, writes only the requested structured input JSON, does not run daily research or deployment gate, does not call Hermes or any LLM, does not execute workers, and does not modify registries, reports, notes, strategies, or runtime artifacts.
+
 The runner creates:
 
 - data manifests in `data/manifests/`
