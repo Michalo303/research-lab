@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
+import re
 from typing import Any, Callable, Iterable, Mapping
 
 from hermes_knowledge.passage_extractor import PassageCandidate
@@ -28,12 +29,153 @@ PROVIDER_FIELDS = {
     "priority_score",
 }
 
+ASSET_CLASS_TERMS = {
+    "equities": ("equity", "equities", "stock", "stocks"),
+    "futures": ("future", "futures"),
+    "fx": ("fx", "forex", "foreign exchange"),
+    "etf": ("etf", "etfs", "exchange traded fund", "exchange traded funds"),
+    "crypto": ("crypto", "cryptocurrency", "bitcoin", "ethereum"),
+}
+
+FAILURE_MODE_STOPWORDS = {
+    "a",
+    "after",
+    "an",
+    "and",
+    "are",
+    "as",
+    "be",
+    "can",
+    "cause",
+    "caused",
+    "causes",
+    "could",
+    "during",
+    "for",
+    "from",
+    "in",
+    "is",
+    "may",
+    "might",
+    "mode",
+    "of",
+    "on",
+    "or",
+    "risk",
+    "still",
+    "strategy",
+    "system",
+    "the",
+    "to",
+    "when",
+    "with",
+    "without",
+}
+
 
 @dataclass(frozen=True)
 class NoteGenerationDiagnostic:
     passage_id: str
     code: str
     message: str
+
+
+class GroundingValidationError(ValueError):
+    pass
+
+
+def _normalize(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", str(value).casefold()).strip()
+
+
+def _contains_any(text: str, phrases: Iterable[str]) -> bool:
+    return any(_normalize(phrase) in text for phrase in phrases)
+
+
+def _claims_positive_expectancy(value: str) -> bool:
+    normalized = _normalize(value)
+    return _contains_any(
+        normalized,
+        ("positive expectancy", "positive expectation"),
+    )
+
+
+def _claims_walk_forward_failure(value: str) -> bool:
+    normalized = _normalize(value)
+    if "walk forward" not in normalized and "wf pass rate" not in normalized:
+        return False
+    return _contains_any(
+        normalized,
+        ("fail", "failed", "failure", "below", "insufficient", "blocked"),
+    )
+
+
+def _asset_class_supported(asset_class: str, evidence: str) -> bool:
+    normalized_class = _normalize(asset_class)
+    if normalized_class == "unknown":
+        return True
+    terms = ASSET_CLASS_TERMS.get(normalized_class, (normalized_class,))
+    return _contains_any(evidence, terms)
+
+
+def _failure_mode_supported(failure_mode: str, evidence: str) -> bool:
+    normalized = _normalize(failure_mode)
+    if normalized == "generic risk unknown":
+        return True
+    terms = {
+        token
+        for token in normalized.split()
+        if len(token) >= 3 and token not in FAILURE_MODE_STOPWORDS
+    }
+    return bool(terms) and all(term in evidence.split() for term in terms)
+
+
+def _ground_provider_note(
+    candidate: PassageCandidate, provider_note: dict[str, Any]
+) -> dict[str, Any]:
+    evidence = _normalize(candidate.text)
+    for field in ("hypothesis", "summary"):
+        value = provider_note.get(field)
+        if not isinstance(value, str):
+            continue
+        if _claims_walk_forward_failure(value) and not _claims_walk_forward_failure(
+            evidence
+        ):
+            raise GroundingValidationError(f"unsupported walk-forward claim in {field}")
+        if _claims_positive_expectancy(value) and not _claims_positive_expectancy(
+            evidence
+        ):
+            raise GroundingValidationError(
+                f"unsupported positive-expectancy claim in {field}"
+            )
+
+    grounded = dict(provider_note)
+    asset_classes = provider_note.get("asset_classes")
+    if isinstance(asset_classes, list):
+        supported_assets = [
+            value
+            for value in asset_classes
+            if isinstance(value, str) and _asset_class_supported(value, evidence)
+        ]
+        grounded["asset_classes"] = supported_assets or ["unknown"]
+
+    expected_edge = provider_note.get("expected_edge")
+    if (
+        isinstance(expected_edge, str)
+        and _claims_positive_expectancy(expected_edge)
+        and not _claims_positive_expectancy(evidence)
+    ):
+        grounded["expected_edge"] = "unknown"
+
+    failure_modes = provider_note.get("known_failure_modes")
+    if isinstance(failure_modes, list):
+        supported_modes = [
+            value
+            for value in failure_modes
+            if isinstance(value, str) and _failure_mode_supported(value, evidence)
+        ]
+        grounded["known_failure_modes"] = supported_modes or ["generic_risk:unknown"]
+    return grounded
 
 
 def _prompt(candidate: PassageCandidate) -> str:
@@ -44,6 +186,12 @@ def _prompt(candidate: PassageCandidate) -> str:
             ", ".join(sorted(PROVIDER_FIELDS)),
             "The note must be concise, testable, and must not relax validation gates.",
             "Do not return executable code, leverage expansion, private paths, or generic advice.",
+            "Ground every claim only in the Evidence text below, not the blocker, title, book metadata, or general knowledge.",
+            "Do not claim positive expectancy unless the passage explicitly supports it; otherwise use expected_edge=unknown.",
+            "Do not infer asset classes unless the passage names them; otherwise use asset_classes=[\"unknown\"].",
+            "Do not claim walk-forward failure unless the passage explicitly states or directly supports it.",
+            "Do not add regime or volatility failure modes unless the passage supports them.",
+            "For unsupported failure modes use known_failure_modes=[\"generic_risk:unknown\"].",
             f"Blocker: {candidate.blocker}",
             f"Book ID: {candidate.book_id}",
             f"Book title: {candidate.source_title}",
@@ -147,7 +295,16 @@ def generate_proposed_notes(
             )
             continue
         try:
-            proposals.append(_proposal(candidate, provider_note))
+            grounded_note = _ground_provider_note(candidate, provider_note)
+            proposals.append(_proposal(candidate, grounded_note))
+        except GroundingValidationError:
+            diagnostics.append(
+                NoteGenerationDiagnostic(
+                    candidate.passage_id,
+                    "grounding_violation",
+                    "Provider note made a material claim unsupported by the passage.",
+                )
+            )
         except (KnowledgeValidationError, KeyError, TypeError, ValueError):
             diagnostics.append(
                 NoteGenerationDiagnostic(

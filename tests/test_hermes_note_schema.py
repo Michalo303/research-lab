@@ -12,16 +12,22 @@ from hermes_knowledge.schema import (
 from research_lab.hermes.providers import ProviderResult
 
 
-def _passage(marker: str = "1") -> PassageCandidate:
+def _passage(
+    marker: str = "1",
+    *,
+    text: str = "Broad stable parameter regions can be more robust than sharp optima.",
+    source_title: str = "Trading Systems and Methods",
+    blocker: str = "walk_forward_fail",
+) -> PassageCandidate:
     return PassageCandidate(
         passage_id=f"passage-{marker * 16}",
         book_id="book-aaaaaaaaaaaa",
-        source_title="Trading Systems and Methods",
+        source_title=source_title,
         source_sha256="a" * 64,
-        blocker="walk_forward_fail",
+        blocker=blocker,
         location="page:214",
         matched_terms=("parameter stability", "robustness"),
-        text="Broad stable parameter regions can be more robust than sharp optima.",
+        text=text,
         extraction_reason="Matched blocker terms.",
     )
 
@@ -123,3 +129,123 @@ def test_generation_skips_only_failed_passage():
 def test_proposed_note_requires_generation_provenance():
     with pytest.raises(KnowledgeValidationError, match="source_passage_id"):
         validate_proposed_note({"status": "proposed", "entry": {}})
+
+
+MA_EVIDENCE = (
+    "Open long when the market close is above the moving average and close the "
+    "position when it falls below the moving average. Choose the moving-average "
+    "length logically rather than optimizing it, because optimization is data fitting."
+)
+
+
+def _generate_grounded(provider_note, *, passage=None):
+    prompts = []
+
+    def fake_provider(provider, prompt, env):
+        prompts.append(prompt)
+        return ProviderResult("ok", output=json.dumps(provider_note))
+
+    proposals, diagnostics = generate_proposed_notes(
+        [passage or _passage(text=MA_EVIDENCE)],
+        provider="command",
+        env={},
+        provider_invoker=fake_provider,
+    )
+    return proposals, diagnostics, prompts
+
+
+def test_grounding_normalizes_unsupported_sensitive_fields_for_ma_excerpt():
+    provider_note = _provider_note(
+        concept="Fixed moving-average rule",
+        hypothesis="Use a fixed moving-average rule and avoid parameter optimization.",
+        summary="The passage describes a fixed moving-average rule and rejects optimization as data fitting.",
+        testable_rules=["Use one fixed moving-average length selected before testing."],
+        asset_classes=["equities", "futures", "FX"],
+        timeframes=["not_specified_in_evidence"],
+        expected_edge="The system has positive expectancy across markets.",
+        known_failure_modes=[
+            "walk_forward_fail",
+            "edge collapses after a volatility regime shift",
+        ],
+        implementation_hint="Keep the moving-average length fixed and do not optimize it.",
+    )
+
+    proposals, diagnostics, prompts = _generate_grounded(provider_note)
+
+    assert diagnostics == []
+    assert len(proposals) == 1
+    entry = proposals[0]["entry"]
+    assert entry["asset_classes"] == ["unknown"]
+    assert entry["expected_edge"] == "unknown"
+    assert entry["known_failure_modes"] == ["generic_risk:unknown"]
+    assert entry["concept"] == "Fixed moving-average rule"
+    assert entry["implementation_hint"] == (
+        "Keep the moving-average length fixed and do not optimize it."
+    )
+    assert entry["testable_rules"] == [
+        "Use one fixed moving-average length selected before testing."
+    ]
+    prompt = prompts[0]
+    assert "Do not claim positive expectancy" in prompt
+    assert "Do not infer asset classes" in prompt
+    assert "Do not claim walk-forward failure" in prompt
+    assert "Do not add regime or volatility failure modes" in prompt
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {
+            "hypothesis": "This system failed walk-forward validation.",
+            "summary": "Use a fixed moving-average rule.",
+        },
+        {
+            "hypothesis": "Use a fixed moving-average rule.",
+            "summary": "The system has positive expectancy.",
+        },
+    ],
+)
+def test_unsupported_material_claim_rejects_proposed_note(overrides):
+    provider_note = _provider_note(
+        concept="Fixed moving-average rule",
+        testable_rules=["Use one fixed moving-average length selected before testing."],
+        asset_classes=["unknown"],
+        timeframes=["not_specified_in_evidence"],
+        expected_edge="unknown",
+        known_failure_modes=["generic_risk:unknown"],
+        implementation_hint="Keep the moving-average length fixed.",
+        **overrides,
+    )
+
+    proposals, diagnostics, _ = _generate_grounded(provider_note)
+
+    assert proposals == []
+    assert [item.code for item in diagnostics] == ["grounding_violation"]
+
+
+def test_grounding_uses_only_evidence_not_title_or_blocker_metadata():
+    passage = _passage(
+        text=MA_EVIDENCE,
+        source_title="Equities Futures FX Walk-Forward Failure Handbook",
+        blocker="walk_forward_fail",
+    )
+    provider_note = _provider_note(
+        concept="Fixed moving-average rule",
+        hypothesis="Use a fixed moving-average rule and avoid parameter optimization.",
+        summary="The passage describes a fixed moving-average rule and rejects optimization as data fitting.",
+        testable_rules=["Use one fixed moving-average length selected before testing."],
+        asset_classes=["equities", "futures", "FX"],
+        timeframes=["not_specified_in_evidence"],
+        expected_edge="unknown",
+        known_failure_modes=["walk_forward_fail"],
+        implementation_hint="Keep the moving-average length fixed.",
+    )
+
+    proposals, diagnostics, _ = _generate_grounded(provider_note, passage=passage)
+
+    assert diagnostics == []
+    assert len(proposals) == 1
+    assert proposals[0]["entry"]["asset_classes"] == ["unknown"]
+    assert proposals[0]["entry"]["known_failure_modes"] == [
+        "generic_risk:unknown"
+    ]
