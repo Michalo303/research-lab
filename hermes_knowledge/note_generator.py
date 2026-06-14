@@ -72,10 +72,11 @@ FAILURE_MODE_STOPWORDS = {
     "without",
 }
 
-POSITIVE_CLAIM_PATTERNS = (
-    r"\bprofit(?:able|ability)\b",
+PROFITABILITY_POSITIVE_PATTERNS = (
+    r"\bprofitability\b",
+    r"\bprofitable\b",
     r"\bgenerat(?:e|es|ed|ing) profits?\b",
-    r"\bmak(?:e|es|ing) money\b",
+    r"\b(?:make|makes|making|made) money\b",
     r"\bpositive expect(?:ancy|ation)\b",
     r"\bpositive expected returns?\b",
     r"\bpositive returns?\b",
@@ -86,22 +87,75 @@ POSITIVE_CLAIM_PATTERNS = (
     r"\boutperform(?:s|ed|ing|ance)?\b",
 )
 
-WALK_FORWARD_CLAIM_PATTERNS = (
-    r"\bwalk forward\b",
-    r"\bwalkforward\b",
+PROFITABILITY_NEGATIVE_PATTERNS = (
+    r"\bnot profitable\b",
+    r"\bunprofitable\b",
+    r"\blost money\b",
+    r"\blos(?:e|es|ing) money\b",
+    r"\bnegative expect(?:ancy|ation)\b",
+    r"\bnegative expected returns?\b",
+    r"\bnegative returns?\b",
+    r"\bno edge\b",
+    r"\bwithout (?:an )?edge\b",
+    r"\bfailed to make money\b",
+    r"\bdid not make money\b",
+    r"\bdidn t make money\b",
 )
 
-OUT_OF_SAMPLE_CLAIM_PATTERNS = (
-    r"\bout of sample\b",
-    r"\boos\b",
+WALK_FORWARD_FAILED_PATTERNS = (
+    r"\bwalk ?forward\b.*\b(?:fail(?:s|ed|ure)?|poor|weak|insufficient)\b",
+    r"\b(?:fail(?:s|ed|ure)?|poor|weak|insufficient)\b.*\bwalk ?forward\b",
+    r"\bwalk ?forward robustness below target\b",
 )
 
-ROBUSTNESS_CLAIM_PATTERNS = (
-    r"\brobust\b",
-    r"\brobustness\b",
-    r"\bgeneralizes?\b",
-    r"\bgeneralization\b",
+WALK_FORWARD_PASSED_PATTERNS = (
+    r"\bwalk ?forward\b.*\b(?:pass(?:es|ed)?|validat(?:e|es|ed)|robust(?:ness)?|stable|reliab(?:le|ility))\b",
+    r"\b(?:pass(?:es|ed)?|validat(?:e|es|ed)|robust(?:ness)?|stable|reliab(?:le|ility))\b.*\bwalk ?forward\b",
 )
+
+OOS_FAILED_PATTERNS = (
+    r"\b(?:out of sample|oos)\b.*\b(?:fail(?:s|ed|ure)?|poor|weak)\b",
+    r"\b(?:fail(?:s|ed|ure)?|poor|weak)\b.*\b(?:out of sample|oos)\b",
+)
+
+OOS_PASSED_PATTERNS = (
+    r"\b(?:out of sample|oos)\b.*\b(?:pass(?:es|ed)?|validat(?:e|es|ed)|robust|strong|stable)\b",
+    r"\b(?:pass(?:es|ed)?|validat(?:e|es|ed)|robust|strong|stable)\b.*\b(?:out of sample|oos)\b",
+)
+
+GENERALIZATION_PATTERNS = (
+    r"\bgeneraliz(?:e|es|ed|ation)\b",
+    r"\bworks? on (?:unseen|new) markets\b",
+    r"\b(?:future|unseen) data\b",
+    r"\b(?:new|unseen) markets\b",
+)
+
+GENERALIZATION_EVIDENCE_PATTERNS = GENERALIZATION_PATTERNS + (
+    r"\b(?:tested|validated) on unseen\b",
+    r"\btested out of sample\b",
+)
+
+IN_SAMPLE_ROBUSTNESS_PATTERNS = (
+    r"\b(?:robust|stable|parameter stable) (?:in|within) (?:the )?(?:original )?sample\b",
+    r"\bin sample (?:robustness|stability)\b",
+)
+
+OOS_ROBUSTNESS_PATTERNS = (
+    r"\b(?:robust|stable) (?:out of sample|oos)\b",
+    r"\b(?:out of sample|oos) (?:robustness|stability)\b",
+)
+
+SENSITIVE_CLAIM_PATTERNS = {
+    "profitability_positive": PROFITABILITY_POSITIVE_PATTERNS,
+    "profitability_negative": PROFITABILITY_NEGATIVE_PATTERNS,
+    "walk_forward_failed": WALK_FORWARD_FAILED_PATTERNS,
+    "walk_forward_passed": WALK_FORWARD_PASSED_PATTERNS,
+    "oos_failed": OOS_FAILED_PATTERNS,
+    "oos_passed": OOS_PASSED_PATTERNS,
+    "generalization_claim": GENERALIZATION_PATTERNS,
+    "in_sample_robustness_claim": IN_SAMPLE_ROBUSTNESS_PATTERNS,
+    "oos_robustness_claim": OOS_ROBUSTNESS_PATTERNS,
+}
 
 
 @dataclass(frozen=True)
@@ -128,21 +182,36 @@ def _matches_any_pattern(value: str, patterns: Iterable[str]) -> bool:
     return any(re.search(pattern, normalized) for pattern in patterns)
 
 
-def _claims_positive_performance(value: str) -> bool:
-    return _matches_any_pattern(value, POSITIVE_CLAIM_PATTERNS)
+def _classify_sensitive_claims(value: str) -> set[str]:
+    claims = {
+        category
+        for category, patterns in SENSITIVE_CLAIM_PATTERNS.items()
+        if _matches_any_pattern(value, patterns)
+    }
+    if "profitability_negative" in claims:
+        claims.discard("profitability_positive")
+    return claims
 
 
-def _unsupported_validation_claim(value: str, evidence: str) -> bool:
-    claim_groups = (
-        WALK_FORWARD_CLAIM_PATTERNS,
-        OUT_OF_SAMPLE_CLAIM_PATTERNS,
-        ROBUSTNESS_CLAIM_PATTERNS,
+def _evidence_claim_support(value: str) -> set[str]:
+    support = _classify_sensitive_claims(value)
+    contradictory_pairs = (
+        ("profitability_positive", "profitability_negative"),
+        ("walk_forward_failed", "walk_forward_passed"),
+        ("oos_failed", "oos_passed"),
     )
-    return any(
-        _matches_any_pattern(value, patterns)
-        and not _matches_any_pattern(evidence, patterns)
-        for patterns in claim_groups
-    )
+    for left, right in contradictory_pairs:
+        if left in support and right in support:
+            support.difference_update((left, right))
+    if _matches_any_pattern(value, GENERALIZATION_EVIDENCE_PATTERNS):
+        support.add("generalization_claim")
+    if "oos_passed" in support:
+        support.add("generalization_claim")
+    return support
+
+
+def _unsupported_sensitive_claim(value: str, evidence_support: set[str]) -> bool:
+    return not _classify_sensitive_claims(value).issubset(evidence_support)
 
 
 def _asset_class_supported(asset_class: str, evidence: str) -> bool:
@@ -153,10 +222,15 @@ def _asset_class_supported(asset_class: str, evidence: str) -> bool:
     return _contains_any(evidence, terms)
 
 
-def _failure_mode_supported(failure_mode: str, evidence: str) -> bool:
+def _failure_mode_supported(
+    failure_mode: str, evidence: str, evidence_support: set[str]
+) -> bool:
     normalized = _normalize(failure_mode)
     if normalized == "generic risk unknown":
         return True
+    sensitive_claims = _classify_sensitive_claims(failure_mode)
+    if sensitive_claims:
+        return sensitive_claims.issubset(evidence_support)
     terms = {
         token
         for token in normalized.split()
@@ -169,19 +243,14 @@ def _ground_provider_note(
     candidate: PassageCandidate, provider_note: dict[str, Any]
 ) -> dict[str, Any]:
     evidence = _normalize(candidate.text)
+    evidence_support = _evidence_claim_support(evidence)
     for field in ("hypothesis", "summary"):
         value = provider_note.get(field)
         if not isinstance(value, str):
             continue
-        if _unsupported_validation_claim(value, evidence):
+        if _unsupported_sensitive_claim(value, evidence_support):
             raise GroundingValidationError(
-                f"unsupported validation robustness claim in {field}"
-            )
-        if _claims_positive_performance(value) and not _claims_positive_performance(
-            evidence
-        ):
-            raise GroundingValidationError(
-                f"unsupported positive-expectancy claim in {field}"
+                f"unsupported sensitive claim in {field}"
             )
 
     grounded = dict(provider_note)
@@ -197,8 +266,8 @@ def _ground_provider_note(
     expected_edge = provider_note.get("expected_edge")
     if (
         isinstance(expected_edge, str)
-        and _claims_positive_performance(expected_edge)
-        and not _claims_positive_performance(evidence)
+        and "profitability_positive" in _classify_sensitive_claims(expected_edge)
+        and "profitability_positive" not in evidence_support
     ):
         grounded["expected_edge"] = "unknown"
 
@@ -207,7 +276,8 @@ def _ground_provider_note(
         supported_modes = [
             value
             for value in failure_modes
-            if isinstance(value, str) and _failure_mode_supported(value, evidence)
+            if isinstance(value, str)
+            and _failure_mode_supported(value, evidence, evidence_support)
         ]
         grounded["known_failure_modes"] = supported_modes or ["generic_risk:unknown"]
     return grounded
@@ -222,6 +292,7 @@ def _prompt(candidate: PassageCandidate) -> str:
             "The note must be concise, testable, and must not relax validation gates.",
             "Do not return executable code, leverage expansion, private paths, or generic advice.",
             "Ground every claim only in the Evidence text below, not the blocker, title, book metadata, or general knowledge.",
+            "Sensitive performance and validation claims require explicit Evidence support of the same claim type and polarity.",
             "Do not claim positive expectancy unless the passage explicitly supports it; otherwise use expected_edge=unknown.",
             "Do not infer asset classes unless the passage names them; otherwise use asset_classes=[\"unknown\"].",
             "Do not claim walk-forward failure unless the passage explicitly states or directly supports it.",

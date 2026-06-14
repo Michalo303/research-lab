@@ -193,6 +193,7 @@ def test_grounding_normalizes_unsupported_sensitive_fields_for_ma_excerpt():
     assert "Do not infer asset classes" in prompt
     assert "Do not claim walk-forward failure" in prompt
     assert "Do not add regime or volatility failure modes" in prompt
+    assert "same claim type and polarity" in prompt
 
 
 @pytest.mark.parametrize(
@@ -258,6 +259,7 @@ def test_grounding_uses_only_evidence_not_title_or_blocker_metadata():
     ("field", "claim"),
     [
         ("hypothesis", "The fixed moving-average strategy is profitable."),
+        ("hypothesis", "The fixed moving-average strategy made money."),
         ("summary", "The strategy has positive edge."),
         ("hypothesis", "The strategy has poor walk-forward robustness."),
         ("summary", "The strategy has weak walk-forward robustness."),
@@ -340,3 +342,205 @@ def test_sensitive_claim_is_allowed_when_passage_directly_supports_it(evidence, 
 
     assert diagnostics == []
     assert len(proposals) == 1
+
+
+@pytest.mark.parametrize(
+    ("evidence", "claim"),
+    [
+        ("The system was not profitable.", "The system was profitable."),
+        ("The strategy lost money.", "The strategy should generate profits."),
+        (
+            "The system was not profitable but had stable parameters.",
+            "The system was profitable.",
+        ),
+        (
+            "Walk-forward validation passed.",
+            "Walk-forward validation failed.",
+        ),
+        (
+            "Walk-forward validation failed.",
+            "Walk-forward validation passed.",
+        ),
+        (
+            "The system passed out-of-sample validation.",
+            "The system failed out-of-sample validation.",
+        ),
+        (
+            "The system failed out-of-sample validation.",
+            "The system was robust out-of-sample.",
+        ),
+        (
+            "The model was robust in the original sample.",
+            "The model generalizes to unseen markets.",
+        ),
+        (
+            "The model was robust in sample.",
+            "The model is robust out-of-sample.",
+        ),
+    ],
+)
+def test_contradictory_or_wrong_scope_sensitive_claim_is_rejected(evidence, claim):
+    provider_note = _provider_note(
+        concept="Fixed moving-average rule",
+        hypothesis=claim,
+        summary="Use a fixed moving-average rule.",
+        testable_rules=["Use one fixed moving-average length selected before testing."],
+        asset_classes=["unknown"],
+        timeframes=["not_specified_in_evidence"],
+        expected_edge="unknown",
+        known_failure_modes=["generic_risk:unknown"],
+        implementation_hint="Keep the moving-average length fixed.",
+    )
+
+    proposals, diagnostics, _ = _generate_grounded(
+        provider_note,
+        passage=_passage(text=evidence),
+    )
+
+    assert proposals == []
+    assert [item.code for item in diagnostics] == ["grounding_violation"]
+
+
+def test_negative_profitability_evidence_normalizes_positive_expected_edge():
+    provider_note = _provider_note(
+        concept="Fixed moving-average rule",
+        hypothesis="Use a fixed moving-average rule.",
+        summary="The strategy lost money in the cited test.",
+        testable_rules=["Use one fixed moving-average length selected before testing."],
+        asset_classes=["unknown"],
+        timeframes=["not_specified_in_evidence"],
+        expected_edge="The strategy should generate profits.",
+        known_failure_modes=["lost money"],
+        implementation_hint="Keep the moving-average length fixed.",
+    )
+
+    proposals, diagnostics, _ = _generate_grounded(
+        provider_note,
+        passage=_passage(text="The strategy lost money."),
+    )
+
+    assert diagnostics == []
+    assert proposals[0]["entry"]["expected_edge"] == "unknown"
+
+
+@pytest.mark.parametrize(
+    ("evidence", "claim"),
+    [
+        ("The system was profitable.", "The system was profitable."),
+        ("The system was not profitable.", "The system was not profitable."),
+        (
+            "Walk-forward validation failed.",
+            "Walk-forward validation failed.",
+        ),
+        (
+            "The system was robust out-of-sample.",
+            "The system was robust out-of-sample.",
+        ),
+        (
+            "The model was tested on unseen markets.",
+            "The model generalizes to unseen markets.",
+        ),
+        (
+            "The model was tested out-of-sample.",
+            "The model generalizes to unseen markets.",
+        ),
+    ],
+)
+def test_same_category_and_polarity_sensitive_claim_is_allowed(evidence, claim):
+    provider_note = _provider_note(
+        concept="Fixed moving-average rule",
+        hypothesis=claim,
+        summary="Use a fixed moving-average rule.",
+        testable_rules=["Use one fixed moving-average length selected before testing."],
+        asset_classes=["unknown"],
+        timeframes=["not_specified_in_evidence"],
+        expected_edge="unknown",
+        known_failure_modes=["generic_risk:unknown"],
+        implementation_hint="Keep the moving-average length fixed.",
+    )
+
+    proposals, diagnostics, _ = _generate_grounded(
+        provider_note,
+        passage=_passage(text=evidence),
+    )
+
+    assert diagnostics == []
+    assert len(proposals) == 1
+
+
+def test_sensitive_claim_does_not_use_title_or_blocker_as_evidence():
+    passage = _passage(
+        text=(
+            "This section describes a moving-average rule and avoiding optimization."
+        ),
+        source_title="Profitable Futures Walk-Forward Handbook",
+        blocker="walk_forward_fail",
+    )
+    provider_note = _provider_note(
+        concept="Fixed moving-average rule",
+        hypothesis="The system is profitable and walk-forward robust.",
+        summary="Use a fixed moving-average rule.",
+        testable_rules=["Use one fixed moving-average length selected before testing."],
+        asset_classes=["unknown"],
+        timeframes=["not_specified_in_evidence"],
+        expected_edge="unknown",
+        known_failure_modes=["generic_risk:unknown"],
+        implementation_hint="Keep the moving-average length fixed.",
+    )
+
+    proposals, diagnostics, _ = _generate_grounded(provider_note, passage=passage)
+
+    assert proposals == []
+    assert [item.code for item in diagnostics] == ["grounding_violation"]
+
+
+def test_unsupported_sensitive_failure_modes_are_removed_without_blocker_support():
+    provider_note = _provider_note(
+        concept="Fixed moving-average rule",
+        hypothesis="Use a fixed moving-average rule.",
+        summary="Avoid optimizing the moving-average length.",
+        testable_rules=["Use one fixed moving-average length selected before testing."],
+        asset_classes=["unknown"],
+        timeframes=["not_specified_in_evidence"],
+        expected_edge="unknown",
+        known_failure_modes=["walk_forward_fail", "failed out-of-sample"],
+        implementation_hint="Keep the moving-average length fixed.",
+    )
+
+    proposals, diagnostics, _ = _generate_grounded(provider_note)
+
+    assert diagnostics == []
+    assert proposals[0]["entry"]["known_failure_modes"] == [
+        "generic_risk:unknown"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("evidence", "expected_failure_modes"),
+    [
+        ("Walk-forward validation passed.", ["generic_risk:unknown"]),
+        ("Walk-forward validation failed.", ["walk_forward_fail"]),
+    ],
+)
+def test_sensitive_failure_mode_requires_matching_evidence_polarity(
+    evidence, expected_failure_modes
+):
+    provider_note = _provider_note(
+        concept="Fixed moving-average rule",
+        hypothesis="Use a fixed moving-average rule.",
+        summary="Keep the moving-average length fixed.",
+        testable_rules=["Use one fixed moving-average length selected before testing."],
+        asset_classes=["unknown"],
+        timeframes=["not_specified_in_evidence"],
+        expected_edge="unknown",
+        known_failure_modes=["walk_forward_fail"],
+        implementation_hint="Keep the moving-average length fixed.",
+    )
+
+    proposals, diagnostics, _ = _generate_grounded(
+        provider_note,
+        passage=_passage(text=evidence),
+    )
+
+    assert diagnostics == []
+    assert proposals[0]["entry"]["known_failure_modes"] == expected_failure_modes
