@@ -28,6 +28,23 @@ Deterministic runner:
 - `python scripts/run_self_improvement.py`
 - `python scripts/run_research_orchestrator.py`
 
+Deterministic orchestration decision CLI:
+
+- `python scripts/run_orchestration_decision.py --input tmp/orchestrator_input.json --output tmp/orchestrator_decision.json`
+
+The decision CLI:
+
+- reads structured JSON input only
+- writes one `orchestration_decision_v1` JSON file
+- does not execute workers
+- does not call Hermes
+- does not call LLM providers
+- does not run backtests
+- does not run daily research
+- does not run deployment gate
+- does not promote notes or strategies
+- does not modify registries or runtime artifacts beyond the requested output file
+
 The runner creates:
 
 - data manifests in `data/manifests/`
