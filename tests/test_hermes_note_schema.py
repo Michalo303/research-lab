@@ -15,7 +15,10 @@ from research_lab.hermes.providers import ProviderResult
 def _passage(
     marker: str = "1",
     *,
-    text: str = "Broad stable parameter regions can be more robust than sharp optima.",
+    text: str = (
+        "Broad stable parameter regions can improve walk-forward robustness "
+        "relative to sharp optima."
+    ),
     source_title: str = "Trading Systems and Methods",
     blocker: str = "walk_forward_fail",
 ) -> PassageCandidate:
@@ -249,3 +252,91 @@ def test_grounding_uses_only_evidence_not_title_or_blocker_metadata():
     assert proposals[0]["entry"]["known_failure_modes"] == [
         "generic_risk:unknown"
     ]
+
+
+@pytest.mark.parametrize(
+    ("field", "claim"),
+    [
+        ("hypothesis", "The fixed moving-average strategy is profitable."),
+        ("summary", "The strategy has positive edge."),
+        ("hypothesis", "The strategy has poor walk-forward robustness."),
+        ("summary", "The strategy has weak walk-forward robustness."),
+        ("hypothesis", "The strategy fails out-of-sample."),
+        ("summary", "The strategy has robust out-of-sample performance."),
+    ],
+)
+def test_sensitive_claim_synonyms_require_direct_evidence(field, claim):
+    overrides = {
+        "hypothesis": "Use a fixed moving-average rule.",
+        "summary": "Keep the moving-average length fixed.",
+        field: claim,
+    }
+    provider_note = _provider_note(
+        concept="Fixed moving-average rule",
+        testable_rules=["Use one fixed moving-average length selected before testing."],
+        asset_classes=["unknown"],
+        timeframes=["not_specified_in_evidence"],
+        expected_edge="unknown",
+        known_failure_modes=["generic_risk:unknown"],
+        implementation_hint="Keep the moving-average length fixed.",
+        **overrides,
+    )
+
+    proposals, diagnostics, _ = _generate_grounded(provider_note)
+
+    assert proposals == []
+    assert [item.code for item in diagnostics] == ["grounding_violation"]
+
+
+def test_unsupported_profit_claim_in_expected_edge_is_normalized():
+    provider_note = _provider_note(
+        concept="Fixed moving-average rule",
+        hypothesis="Use a fixed moving-average rule.",
+        summary="Keep the moving-average length fixed.",
+        testable_rules=["Use one fixed moving-average length selected before testing."],
+        asset_classes=["unknown"],
+        timeframes=["not_specified_in_evidence"],
+        expected_edge="The strategy should generate profits.",
+        known_failure_modes=["generic_risk:unknown"],
+        implementation_hint="Keep the moving-average length fixed.",
+    )
+
+    proposals, diagnostics, _ = _generate_grounded(provider_note)
+
+    assert diagnostics == []
+    assert proposals[0]["entry"]["expected_edge"] == "unknown"
+
+
+@pytest.mark.parametrize(
+    ("evidence", "claim"),
+    [
+        (
+            "The fixed moving-average system was profitable in the reported test.",
+            "The fixed moving-average system was profitable.",
+        ),
+        (
+            "Walk-forward validation failed for the fixed moving-average rule.",
+            "Walk-forward validation failed for the fixed moving-average rule.",
+        ),
+    ],
+)
+def test_sensitive_claim_is_allowed_when_passage_directly_supports_it(evidence, claim):
+    provider_note = _provider_note(
+        concept="Fixed moving-average rule",
+        hypothesis=claim,
+        summary="Use a fixed moving-average rule.",
+        testable_rules=["Use one fixed moving-average length selected before testing."],
+        asset_classes=["unknown"],
+        timeframes=["not_specified_in_evidence"],
+        expected_edge="unknown",
+        known_failure_modes=["generic_risk:unknown"],
+        implementation_hint="Keep the moving-average length fixed.",
+    )
+
+    proposals, diagnostics, _ = _generate_grounded(
+        provider_note,
+        passage=_passage(text=evidence),
+    )
+
+    assert diagnostics == []
+    assert len(proposals) == 1

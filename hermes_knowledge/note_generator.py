@@ -72,6 +72,37 @@ FAILURE_MODE_STOPWORDS = {
     "without",
 }
 
+POSITIVE_CLAIM_PATTERNS = (
+    r"\bprofit(?:able|ability)\b",
+    r"\bgenerat(?:e|es|ed|ing) profits?\b",
+    r"\bmak(?:e|es|ing) money\b",
+    r"\bpositive expect(?:ancy|ation)\b",
+    r"\bpositive expected returns?\b",
+    r"\bpositive returns?\b",
+    r"\bpositive edge\b",
+    r"\bhas an edge\b",
+    r"\bmarket edge\b",
+    r"\balpha\b",
+    r"\boutperform(?:s|ed|ing|ance)?\b",
+)
+
+WALK_FORWARD_CLAIM_PATTERNS = (
+    r"\bwalk forward\b",
+    r"\bwalkforward\b",
+)
+
+OUT_OF_SAMPLE_CLAIM_PATTERNS = (
+    r"\bout of sample\b",
+    r"\boos\b",
+)
+
+ROBUSTNESS_CLAIM_PATTERNS = (
+    r"\brobust\b",
+    r"\brobustness\b",
+    r"\bgeneralizes?\b",
+    r"\bgeneralization\b",
+)
+
 
 @dataclass(frozen=True)
 class NoteGenerationDiagnostic:
@@ -92,21 +123,25 @@ def _contains_any(text: str, phrases: Iterable[str]) -> bool:
     return any(_normalize(phrase) in text for phrase in phrases)
 
 
-def _claims_positive_expectancy(value: str) -> bool:
+def _matches_any_pattern(value: str, patterns: Iterable[str]) -> bool:
     normalized = _normalize(value)
-    return _contains_any(
-        normalized,
-        ("positive expectancy", "positive expectation"),
+    return any(re.search(pattern, normalized) for pattern in patterns)
+
+
+def _claims_positive_performance(value: str) -> bool:
+    return _matches_any_pattern(value, POSITIVE_CLAIM_PATTERNS)
+
+
+def _unsupported_validation_claim(value: str, evidence: str) -> bool:
+    claim_groups = (
+        WALK_FORWARD_CLAIM_PATTERNS,
+        OUT_OF_SAMPLE_CLAIM_PATTERNS,
+        ROBUSTNESS_CLAIM_PATTERNS,
     )
-
-
-def _claims_walk_forward_failure(value: str) -> bool:
-    normalized = _normalize(value)
-    if "walk forward" not in normalized and "wf pass rate" not in normalized:
-        return False
-    return _contains_any(
-        normalized,
-        ("fail", "failed", "failure", "below", "insufficient", "blocked"),
+    return any(
+        _matches_any_pattern(value, patterns)
+        and not _matches_any_pattern(evidence, patterns)
+        for patterns in claim_groups
     )
 
 
@@ -138,11 +173,11 @@ def _ground_provider_note(
         value = provider_note.get(field)
         if not isinstance(value, str):
             continue
-        if _claims_walk_forward_failure(value) and not _claims_walk_forward_failure(
-            evidence
-        ):
-            raise GroundingValidationError(f"unsupported walk-forward claim in {field}")
-        if _claims_positive_expectancy(value) and not _claims_positive_expectancy(
+        if _unsupported_validation_claim(value, evidence):
+            raise GroundingValidationError(
+                f"unsupported validation robustness claim in {field}"
+            )
+        if _claims_positive_performance(value) and not _claims_positive_performance(
             evidence
         ):
             raise GroundingValidationError(
@@ -162,8 +197,8 @@ def _ground_provider_note(
     expected_edge = provider_note.get("expected_edge")
     if (
         isinstance(expected_edge, str)
-        and _claims_positive_expectancy(expected_edge)
-        and not _claims_positive_expectancy(evidence)
+        and _claims_positive_performance(expected_edge)
+        and not _claims_positive_performance(evidence)
     ):
         grounded["expected_edge"] = "unknown"
 
