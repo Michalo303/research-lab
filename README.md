@@ -52,6 +52,12 @@ Deterministic orchestration input builder:
 
 The input builder is read-only. It reads existing registry and deployment-gate artifacts when present, writes only the requested structured input JSON, does not run daily research or deployment gate, does not call Hermes or any LLM, does not execute workers, and does not modify registries, reports, notes, strategies, or runtime artifacts.
 
+Deterministic book extraction request builder:
+
+- `python scripts/build_book_extraction_request.py --decision tmp/orchestrator_decision.json --output tmp/book_extraction_request.json`
+
+The request builder reads an existing `orchestration_decision_v1` JSON and writes only the requested `book_extraction_request_v1` JSON. It does not execute the book extraction worker, call Hermes or any LLM provider, parse PDFs or books, write or promote proposed notes, promote strategies, run backtests, daily research, or deployment gate, or modify registries, reports, strategies, or runtime artifacts.
+
 The runner creates:
 
 - data manifests in `data/manifests/`
