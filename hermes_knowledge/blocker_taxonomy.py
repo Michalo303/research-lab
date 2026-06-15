@@ -38,8 +38,33 @@ _WALK_FORWARD_FAIL = BlockerDefinition(
     ),
 )
 
+_DRAWDOWN_FAIL = BlockerDefinition(
+    name="drawdown_fail",
+    term_weights=MappingProxyType(
+        {
+            "drawdown control": 18.0,
+            "drawdown": 14.0,
+            "risk management": 16.0,
+            "money management": 14.0,
+            "volatility targeting": 15.0,
+            "defensive allocation": 14.0,
+            "position sizing": 13.0,
+            "crisis protection": 12.0,
+            "portfolio risk": 12.0,
+            "regime aware risk control": 11.0,
+            "risk control": 10.0,
+            "capital preservation": 10.0,
+            "hedge": 8.0,
+            "tail risk": 8.0,
+        }
+    ),
+)
+
 BLOCKERS: Mapping[str, BlockerDefinition] = MappingProxyType(
-    {_WALK_FORWARD_FAIL.name: _WALK_FORWARD_FAIL}
+    {
+        _WALK_FORWARD_FAIL.name: _WALK_FORWARD_FAIL,
+        _DRAWDOWN_FAIL.name: _DRAWDOWN_FAIL,
+    }
 )
 
 
@@ -56,7 +81,7 @@ def canonicalize_blocker_id(raw: str) -> str | None:
     ):
         return "walk_forward_fail"
     if "drawdown" in tokens:
-        return "drawdown"
+        return "drawdown_fail"
     if "cost stress" in normalized or "slippage stress" in normalized:
         return "cost_stress"
     if normalized in {"walk forward fail", "walk forward robustness"}:
