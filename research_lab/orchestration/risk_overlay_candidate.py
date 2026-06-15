@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 
@@ -98,7 +99,7 @@ def _source_notes(notes: Any) -> list[dict[str, Any]]:
             continue
         retained.append(
             {
-                "note_id": _text(item.get("note_id")),
+                "note_id": _source_note_id(item),
                 "book_id": _text(item.get("book_id")),
                 "book_title": _text(item.get("book_title")),
                 "page_start": _int_or_none(item.get("page_start")),
@@ -111,6 +112,28 @@ def _source_notes(notes: Any) -> list[dict[str, Any]]:
             }
         )
     return retained
+
+
+def _source_note_id(item: dict[str, Any]) -> str:
+    note_id = _text(item.get("note_id"))
+    if note_id:
+        return note_id
+
+    fallback_id = _text(item.get("id"))
+    if fallback_id:
+        return fallback_id
+
+    payload = "|".join(
+        [
+            TARGET_BLOCKER,
+            _text(item.get("book_id")),
+            str(_int_or_none(item.get("page_start"))),
+            str(_int_or_none(item.get("page_end"))),
+            _text(item.get("extracted_claim")),
+        ]
+    )
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return f"note-{digest[:16]}"
 
 
 def _text(value: Any) -> str:
