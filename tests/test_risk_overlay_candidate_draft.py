@@ -134,10 +134,51 @@ def test_builder_keeps_only_drawdown_fail_source_notes():
     assert [item["note_id"] for item in draft["source"]["source_notes"]] == ["note-1111111111111111"]
 
 
+def test_preserves_existing_note_id():
+    draft = build_risk_overlay_candidate_draft([_note("note-1111111111111111")])
+
+    assert draft["source"]["source_notes"][0]["note_id"] == "note-1111111111111111"
+
+
+def test_uses_id_when_note_id_is_missing():
+    note = _note("")
+    note["id"] = "note-from-id-field"
+
+    draft = build_risk_overlay_candidate_draft([note])
+
+    assert draft["source"]["source_notes"][0]["note_id"] == "note-from-id-field"
+
+
+def test_generates_deterministic_fallback_when_note_id_and_id_are_missing():
+    note = _note("")
+
+    first = build_risk_overlay_candidate_draft([note])
+    second = build_risk_overlay_candidate_draft([note])
+
+    note_id = first["source"]["source_notes"][0]["note_id"]
+    assert note_id
+    assert note_id.startswith("note-")
+    assert len(note_id) == 21
+    assert second["source"]["source_notes"][0]["note_id"] == note_id
+
+
+def test_different_extracted_claim_produces_different_fallback_note_id():
+    first_note = _note("")
+    second_note = _note("")
+    second_note["extracted_claim"] = "A different claim should produce a different fallback note id."
+
+    first = build_risk_overlay_candidate_draft([first_note])
+    second = build_risk_overlay_candidate_draft([second_note])
+
+    assert first["source"]["source_notes"][0]["note_id"] != second["source"]["source_notes"][0]["note_id"]
+
+
 def test_cli_writes_only_requested_output_file(tmp_path):
     notes_path = tmp_path / "notes.jsonl"
     output_path = tmp_path / "out" / "risk_overlay_candidate_draft.json"
-    notes_path.write_text(json.dumps(_note("note-1111111111111111")) + "\n", encoding="utf-8")
+    note = _note("")
+    note["id"] = "cli-note-id"
+    notes_path.write_text(json.dumps(note) + "\n", encoding="utf-8")
 
     result = subprocess.run(
         [sys.executable, str(SCRIPT_PATH), "--notes", str(notes_path), "--output", str(output_path)],
@@ -149,7 +190,9 @@ def test_cli_writes_only_requested_output_file(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert output_path.exists()
-    assert json.loads(output_path.read_text(encoding="utf-8"))["version"] == "candidate_experiment_draft_v1"
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert payload["version"] == "candidate_experiment_draft_v1"
+    assert payload["source"]["source_notes"][0]["note_id"] == "cli-note-id"
     files = sorted(path.relative_to(tmp_path).as_posix() for path in tmp_path.rglob("*") if path.is_file())
     assert files == ["notes.jsonl", "out/risk_overlay_candidate_draft.json"]
 
