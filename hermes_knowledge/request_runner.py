@@ -29,15 +29,12 @@ REQUEST_VERSION = "book_extraction_request_v1"
 REQUEST_TYPE = "extract_book_notes_for_blocker"
 REQUESTED_WORKER = "hermes_book_extraction"
 SUPPORTED_BLOCKER = "drawdown_fail"
-REQUIRED_PROVIDER_FIELDS = (
+REQUIRED_NOTE_TEXT_FIELDS = (
     "extracted_claim",
     "trading_hypothesis",
     "why_relevant_to_blocker",
     "implementation_hint",
-    "risk_controls",
     "validation_hint",
-    "source_excerpt",
-    "confidence",
 )
 SOURCE_ROOT = Path(__file__).resolve().parents[1]
 UNSAFE_NOTE_MARKERS = (
@@ -123,47 +120,73 @@ def run_book_extraction_request(
         if len(notes) >= max_notes:
             break
         result = provider_invoker(provider_name, _prompt(candidate), current_env)
-        if result.status != "ok" or not result.output:
+        if not result.output:
+            message = result.message or "provider did not return usable output"
+            normalized_message = message.casefold()
+            code = (
+                "provider_empty_content"
+                if result.status == "ok"
+                or "empty content" in normalized_message
+                or "empty output" in normalized_message
+                else result.status or "provider_error"
+            )
             errors.append(
-                {
-                    "book_id": candidate.book_id,
-                    "code": result.status or "provider_error",
-                    "message": result.message or "provider did not return usable output",
-                }
+                _candidate_diagnostic(candidate, code=code, message=message)
+            )
+            continue
+        if result.status != "ok":
+            errors.append(
+                _candidate_diagnostic(
+                    candidate,
+                    code=result.status or "provider_error",
+                    message=result.message or "provider did not return usable output",
+                )
             )
             continue
         try:
-            payload = json.loads(result.output)
-        except json.JSONDecodeError:
+            provider_notes = _parse_provider_notes(result.output)
+        except (json.JSONDecodeError, TypeError, ValueError):
             errors.append(
-                {
-                    "book_id": candidate.book_id,
-                    "code": "invalid_json",
-                    "message": "provider output was not valid JSON",
-                }
+                _candidate_diagnostic(
+                    candidate,
+                    code="invalid_json",
+                    message="provider output did not contain a supported JSON note payload",
+                )
             )
             continue
-        try:
-            note = _build_note(candidate, payload, blocker=blocker)
-        except UnsafeNoteError as exc:
-            errors.append(
-                {
-                    "book_id": candidate.book_id,
-                    "code": "unsafe_note_content",
-                    "message": str(exc),
-                }
+        for payload in provider_notes:
+            if len(notes) >= max_notes:
+                break
+            try:
+                note, normalizations = _build_note(candidate, payload, blocker=blocker)
+            except UnsafeNoteError as exc:
+                errors.append(
+                    _candidate_diagnostic(
+                        candidate,
+                        code="unsafe_note_content",
+                        message=str(exc),
+                    )
+                )
+                continue
+            except (TypeError, ValueError) as exc:
+                errors.append(
+                    _candidate_diagnostic(
+                        candidate,
+                        code="invalid_note",
+                        message=str(exc),
+                    )
+                )
+                continue
+            errors.extend(
+                _candidate_diagnostic(
+                    candidate,
+                    code="note_normalized",
+                    message=item["reason"],
+                    **item,
+                )
+                for item in normalizations
             )
-            continue
-        except (TypeError, ValueError) as exc:
-            errors.append(
-                {
-                    "book_id": candidate.book_id,
-                    "code": "invalid_note",
-                    "message": str(exc),
-                }
-            )
-            continue
-        notes.append(note)
+            notes.append(note)
 
     output_path = Path(output_jsonl)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -427,34 +450,106 @@ def _read_pdf_text(path: Path, *, max_pages: int) -> tuple[str, int]:
 def _prompt(candidate: PassageCandidate) -> str:
     return "\n".join(
         [
-            "Return exactly one JSON object and no prose.",
-            "Allowed fields:",
-            ", ".join(REQUIRED_PROVIDER_FIELDS),
-            "Ground every claim only in the source excerpt below.",
-            "Do not generate strategy code.",
-            "Do not invent unsupported claims.",
-            "Keep source_excerpt short and confidence conservative.",
+            "Return only valid JSON: no markdown, no prose, and no code fences.",
+            "Use exactly this shape:",
+            '{"notes": [{"extracted_claim": "...", "trading_hypothesis": "...", '
+            '"why_relevant_to_blocker": "...", "implementation_hint": "...", '
+            '"risk_controls": ["..."], "validation_hint": "...", "confidence": "low"}]}',
+            "confidence must be exactly low, medium, or high.",
+            "risk_controls must be a non-empty array of strings.",
+            "Return {\"notes\": []} if the passage is not useful.",
+            "Ground every claim only in the passage; do not invent book claims.",
+            "Do not return Python, strategy code, promotion instructions, backtest execution instructions, or registry write instructions.",
             f"Blocker: {candidate.blocker}",
             f"Book title: {candidate.source_title}",
             f"Location: {candidate.location}",
             f"Matched terms: {', '.join(candidate.matched_terms)}",
-            f"Source excerpt: {candidate.text}",
+            f"Passage: {candidate.text}",
         ]
     )
 
 
-def _build_note(candidate: PassageCandidate, payload: Any, *, blocker: str) -> dict[str, Any]:
+def _parse_provider_notes(output: str) -> list[Any]:
+    payload = _load_first_json_value(output)
+    if isinstance(payload, dict) and "notes" in payload:
+        notes = payload["notes"]
+        if not isinstance(notes, list):
+            raise ValueError("provider notes wrapper must contain a list")
+        return notes
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        return [payload]
+    raise ValueError("provider output must contain a JSON object or array")
+
+
+def _load_first_json_value(output: str) -> Any:
+    text = str(output or "").strip()
+    if not text:
+        raise ValueError("provider output was empty")
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    fenced = re.search(r"```(?:json)?\s*(.*?)```", text, flags=re.IGNORECASE | re.DOTALL)
+    if fenced:
+        try:
+            return json.loads(fenced.group(1).strip())
+        except json.JSONDecodeError:
+            pass
+
+    for candidate_json in _balanced_json_values(text):
+        try:
+            return json.loads(candidate_json)
+        except json.JSONDecodeError:
+            continue
+    raise ValueError("provider output did not contain valid JSON")
+
+
+def _balanced_json_values(text: str):
+    matching = {"{": "}", "[": "]"}
+    for start, char in enumerate(text):
+        if char not in matching:
+            continue
+        stack: list[str] = []
+        in_string = False
+        escaped = False
+        for end in range(start, len(text)):
+            current = text[end]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif current == "\\":
+                    escaped = True
+                elif current == '"':
+                    in_string = False
+                continue
+            if current == '"':
+                in_string = True
+                continue
+            if current in matching:
+                stack.append(matching[current])
+                continue
+            if current in "}]":
+                if not stack or current != stack.pop():
+                    break
+                if not stack:
+                    yield text[start : end + 1]
+                    break
+
+
+def _build_note(
+    candidate: PassageCandidate, payload: Any, *, blocker: str
+) -> tuple[dict[str, Any], list[dict[str, str]]]:
     if not isinstance(payload, dict):
         raise TypeError("provider output must be a JSON object")
-    missing = [field for field in REQUIRED_PROVIDER_FIELDS if field not in payload]
+    missing = [field for field in REQUIRED_NOTE_TEXT_FIELDS if field not in payload]
     if missing:
         raise ValueError(f"missing provider fields: {', '.join(missing)}")
-    confidence = str(payload["confidence"]).strip().lower()
-    if confidence not in {"low", "medium", "high"}:
-        raise ValueError("confidence must be low, medium, or high")
-    risk_controls = payload["risk_controls"]
-    if not isinstance(risk_controls, list) or not risk_controls or any(not isinstance(item, str) or not item.strip() for item in risk_controls):
-        raise ValueError("risk_controls must be a non-empty list of strings")
+    confidence, confidence_event = _normalize_confidence(payload.get("confidence"))
+    risk_controls, risk_event = _normalize_risk_controls(payload.get("risk_controls"))
+    normalizations = [item for item in (confidence_event, risk_event) if item is not None]
     page_start, page_end = _page_range(candidate.location)
     note = {
         "version": "extracted_book_note_v1",
@@ -485,7 +580,106 @@ def _build_note(candidate: PassageCandidate, payload: Any, *, blocker: str) -> d
     ):
         if _contains_unsafe_note_content(str(note[field])):
             raise UnsafeNoteError(f"unsafe note content detected in {field}")
-    return note
+    for risk_control in note["risk_controls"]:
+        if _contains_unsafe_note_content(str(risk_control)):
+            raise UnsafeNoteError("unsafe note content detected in risk_controls")
+    return note, normalizations
+
+
+def _normalize_confidence(value: Any) -> tuple[str, dict[str, str] | None]:
+    aliases = {
+        "moderate": "medium",
+        "med": "medium",
+        "mid": "medium",
+        "average": "medium",
+        "strong": "high",
+        "weak": "low",
+    }
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        number = float(value)
+        if 0 <= number < 0.34:
+            normalized = "low"
+        elif 0.34 <= number < 0.67:
+            normalized = "medium"
+        elif 0.67 <= number <= 1:
+            normalized = "high"
+        else:
+            normalized = "low"
+            return normalized, _normalization_event(
+                "confidence", value, normalized, "confidence_normalized_to_low"
+            )
+        return normalized, _normalization_event(
+            "confidence", value, normalized, "confidence_normalized"
+        )
+
+    original = str(value or "").strip().casefold()
+    if original in {"low", "medium", "high"}:
+        return original, None
+    if original in aliases:
+        normalized = aliases[original]
+        return normalized, _normalization_event(
+            "confidence", value, normalized, "confidence_normalized"
+        )
+    return "low", _normalization_event(
+        "confidence", value, "low", "confidence_normalized_to_low"
+    )
+
+
+def _normalize_risk_controls(value: Any) -> tuple[list[str], dict[str, str] | None]:
+    default = ["manual review required before any implementation"]
+    if value is None or value == "" or value == []:
+        return default, _normalization_event(
+            "risk_controls", value, default, "risk_controls_defaulted"
+        )
+    if isinstance(value, str):
+        if not value.strip():
+            return default, _normalization_event(
+                "risk_controls", value, default, "risk_controls_defaulted"
+            )
+        normalized = [value.strip()]
+        return normalized, _normalization_event(
+            "risk_controls", value, normalized, "risk_controls_string_to_list"
+        )
+    if isinstance(value, list):
+        if any(not isinstance(item, str) or not item.strip() for item in value):
+            raise ValueError("risk_controls must contain only non-empty strings")
+        return [item.strip() for item in value], None
+    raise ValueError("risk_controls must be a string or list of strings")
+
+
+def _normalization_event(
+    field: str, original: Any, normalized: Any, reason: str
+) -> dict[str, str]:
+    return {
+        "field": field,
+        "original_value": _short_debug_value(original),
+        "normalized_value": (
+            normalized[:80] if isinstance(normalized, str) else _short_debug_value(normalized)
+        ),
+        "reason": reason,
+    }
+
+
+def _short_debug_value(value: Any) -> str:
+    try:
+        text = json.dumps(value, ensure_ascii=True, sort_keys=True)
+    except (TypeError, ValueError):
+        text = str(value)
+    return text[:80]
+
+
+def _candidate_diagnostic(
+    candidate: PassageCandidate, *, code: str, message: str, **details: str
+) -> dict[str, Any]:
+    page_start, page_end = _page_range(candidate.location)
+    return {
+        "book_id": candidate.book_id,
+        "page_start": page_start,
+        "page_end": page_end,
+        "code": code,
+        "message": message,
+        **details,
+    }
 
 
 def _short_text(value: Any, maximum: int, field: str) -> str:

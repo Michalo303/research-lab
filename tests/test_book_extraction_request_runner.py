@@ -95,18 +95,21 @@ def _write_request(tmp_path: Path, **overrides: object) -> Path:
 
 
 def _provider_payload(index: int) -> str:
-    return json.dumps(
-        {
-            "extracted_claim": f"Risk overlay claim {index}",
-            "trading_hypothesis": f"Trading hypothesis {index}",
-            "why_relevant_to_blocker": "This passage addresses drawdown containment.",
-            "implementation_hint": "Add a volatility target and cash filter.",
-            "risk_controls": ["volatility target", "cash filter"],
-            "validation_hint": "Check unseen max drawdown and crisis periods.",
-            "source_excerpt": "ignored by local validator",
-            "confidence": "medium",
-        }
-    )
+    return json.dumps(_provider_note(index))
+
+
+def _provider_note(index: int, **overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "extracted_claim": f"Risk overlay claim {index}",
+        "trading_hypothesis": f"Trading hypothesis {index}",
+        "why_relevant_to_blocker": "This passage addresses drawdown containment.",
+        "implementation_hint": "Add a volatility target and cash filter.",
+        "risk_controls": ["volatility target", "cash filter"],
+        "validation_hint": "Check unseen max drawdown and crisis periods.",
+        "confidence": "medium",
+    }
+    payload.update(overrides)
+    return payload
 
 
 def _fake_ok_provider(calls: list[tuple[str, str]] | None = None):
@@ -121,6 +124,49 @@ def _fake_ok_provider(calls: list[tuple[str, str]] | None = None):
         return Result()
 
     return fake_provider
+
+
+def _run_provider_output(tmp_path: Path, output: str | None, *, status: str = "ok"):
+    books_root = tmp_path / "hermes_books"
+    index_path = _write_index(
+        books_root,
+        [
+            _book(
+                books_root,
+                "a",
+                "Risk Management for Trend Following.pdf",
+                "Drawdown control with volatility targeting and risk management.",
+            )
+        ],
+    )
+    request_path = _write_request(tmp_path)
+
+    def fake_provider(provider: str, prompt: str, env):
+        class Result:
+            pass
+
+        result = Result()
+        result.status = status
+        result.output = output
+        result.message = "OpenAI-compatible provider returned empty content" if output is None else ""
+        return result
+
+    output_jsonl = tmp_path / "notes.jsonl"
+    notes_written, audit = run_book_extraction_request(
+        request_path=request_path,
+        book_index_path=index_path,
+        books_root=books_root,
+        output_jsonl=output_jsonl,
+        audit_json=tmp_path / "audit.json",
+        provider_invoker=fake_provider,
+        env={"HERMES_PROVIDER": "command"},
+    )
+    rows = [
+        json.loads(line)
+        for line in output_jsonl.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    return notes_written, rows, audit
 
 
 def test_valid_drawdown_request_produces_notes_and_audit(tmp_path):
@@ -177,6 +223,168 @@ def test_valid_drawdown_request_produces_notes_and_audit(tmp_path):
         "service_restart_allowed": False,
         "broker_calls_allowed": False,
     }
+
+
+def test_provider_prompt_requires_strict_notes_json(tmp_path):
+    calls: list[tuple[str, str]] = []
+    books_root = tmp_path / "hermes_books"
+    index_path = _write_index(
+        books_root,
+        [
+            _book(
+                books_root,
+                "a",
+                "Risk Management for Trend Following.pdf",
+                "Drawdown control with volatility targeting and risk management.",
+            )
+        ],
+    )
+
+    run_book_extraction_request(
+        request_path=_write_request(tmp_path),
+        book_index_path=index_path,
+        books_root=books_root,
+        output_jsonl=tmp_path / "notes.jsonl",
+        audit_json=tmp_path / "audit.json",
+        provider_invoker=_fake_ok_provider(calls),
+        env={"HERMES_PROVIDER": "command"},
+    )
+
+    prompt = calls[0][1]
+    assert '"notes": [' in prompt
+    assert '"confidence": "low"' in prompt
+    assert '"risk_controls": ["..."]' in prompt
+    assert "Return only valid JSON" in prompt
+    assert "no markdown" in prompt.lower()
+    assert "no code fences" in prompt.lower()
+    assert '{"notes": []}' in prompt
+
+
+@pytest.mark.parametrize(
+    "provider_output",
+    [
+        lambda: json.dumps({"notes": [_provider_note(1)]}),
+        lambda: json.dumps([_provider_note(1)]),
+        lambda: json.dumps(_provider_note(1)),
+        lambda: "```json\n" + json.dumps({"notes": [_provider_note(1)]}) + "\n```",
+        lambda: "Here is the requested result:\n" + json.dumps({"notes": [_provider_note(1)]}) + "\nEnd.",
+    ],
+)
+def test_provider_output_forms_are_accepted(tmp_path, provider_output):
+    notes_written, rows, audit = _run_provider_output(tmp_path, provider_output())
+
+    assert notes_written == 1
+    assert rows[0]["promotion_status"] == "not_promoted"
+    assert audit["errors"] == []
+
+
+def test_non_json_provider_output_is_rejected_safely(tmp_path):
+    notes_written, rows, audit = _run_provider_output(tmp_path, "not JSON at all")
+
+    assert notes_written == 0
+    assert rows == []
+    assert any(error["code"] == "invalid_json" for error in audit["errors"])
+
+
+@pytest.mark.parametrize(
+    ("confidence", "expected"),
+    [
+        ("moderate", "medium"),
+        ("med", "medium"),
+        ("mid", "medium"),
+        ("average", "medium"),
+        ("strong", "high"),
+        ("weak", "low"),
+        (0.8, "high"),
+    ],
+)
+def test_confidence_variations_are_normalized(tmp_path, confidence, expected):
+    output = json.dumps({"notes": [_provider_note(1, confidence=confidence)]})
+    notes_written, rows, audit = _run_provider_output(tmp_path, output)
+
+    assert notes_written == 1
+    assert rows[0]["confidence"] == expected
+    assert any(
+        error["code"] == "note_normalized"
+        and error["field"] == "confidence"
+        and error["normalized_value"] == expected
+        for error in audit["errors"]
+    )
+
+
+def test_unknown_confidence_defaults_to_low_with_warning(tmp_path):
+    output = json.dumps({"notes": [_provider_note(1, confidence="uncertain-ish")]})
+    notes_written, rows, audit = _run_provider_output(tmp_path, output)
+
+    assert notes_written == 1
+    assert rows[0]["confidence"] == "low"
+    assert any(
+        error["code"] == "note_normalized"
+        and error["field"] == "confidence"
+        and error["reason"] == "confidence_normalized_to_low"
+        for error in audit["errors"]
+    )
+
+
+def test_string_risk_controls_becomes_one_item_list(tmp_path):
+    output = json.dumps({"notes": [_provider_note(1, risk_controls="Use a hard exposure cap.")]})
+    notes_written, rows, audit = _run_provider_output(tmp_path, output)
+
+    assert notes_written == 1
+    assert rows[0]["risk_controls"] == ["Use a hard exposure cap."]
+    assert any(
+        error["code"] == "note_normalized"
+        and error["field"] == "risk_controls"
+        for error in audit["errors"]
+    )
+
+
+def test_missing_risk_controls_defaults_with_warning(tmp_path):
+    note = _provider_note(1)
+    note.pop("risk_controls")
+    notes_written, rows, audit = _run_provider_output(tmp_path, json.dumps({"notes": [note]}))
+
+    assert notes_written == 1
+    assert rows[0]["risk_controls"] == ["manual review required before any implementation"]
+    assert any(
+        error["code"] == "note_normalized"
+        and error["field"] == "risk_controls"
+        and error["reason"] == "risk_controls_defaulted"
+        for error in audit["errors"]
+    )
+
+
+def test_real_failure_shape_can_produce_a_safe_note(tmp_path):
+    provider_output = (
+        "```json\n"
+        + json.dumps(
+            {
+                "notes": [
+                    _provider_note(
+                        1,
+                        confidence="moderate",
+                        risk_controls="Require manual drawdown review.",
+                    )
+                ]
+            }
+        )
+        + "\n```"
+    )
+    notes_written, rows, audit = _run_provider_output(tmp_path, provider_output)
+
+    assert notes_written == 1
+    assert rows[0]["confidence"] == "medium"
+    assert rows[0]["risk_controls"] == ["Require manual drawdown review."]
+    assert rows[0]["promotion_status"] == "not_promoted"
+    assert sum(error["code"] == "note_normalized" for error in audit["errors"]) == 2
+
+
+def test_empty_provider_content_is_audited_safely(tmp_path):
+    notes_written, rows, audit = _run_provider_output(tmp_path, None, status="provider_error")
+
+    assert notes_written == 0
+    assert rows == []
+    assert any(error["code"] == "provider_empty_content" for error in audit["errors"])
 
 
 def test_no_request_refuses_and_writes_nothing(tmp_path):
