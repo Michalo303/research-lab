@@ -109,7 +109,7 @@ def test_wrapper_version_and_incompatible_shape():
 
     assert entry["version"] == "hypothesis_queue_entry_candidate_v1"
     assert entry["compatible"] is False
-    assert entry["queue_row"] is None
+    assert entry["queue_row"]["family"] == "RISK_OVERLAY"
     assert entry["source_draft"] == "tmp/risk_overlay_candidate_draft.json"
     assert entry["target_failure_mode"] == "drawdown_fail"
     assert entry["hypothesis_id"]
@@ -122,31 +122,36 @@ def test_source_note_ids_are_preserved():
         "note-1111111111111111",
         "note-2222222222222222",
     ]
+    assert entry["queue_row"]["source_note_ids"] == [
+        "note-1111111111111111",
+        "note-2222222222222222",
+    ]
 
 
-def test_reason_mentions_loader_and_missing_risk_overlay_fields():
+def test_queue_row_preserves_risk_overlay_and_validation_fields():
+    entry = build_risk_overlay_hypothesis_queue_entry(_draft(), source_draft="tmp/risk_overlay_candidate_draft.json")
+
+    queue_row = entry["queue_row"]
+    assert queue_row["target_failure_mode"] == "drawdown_fail"
+    assert queue_row["base_strategy_selection"] == _draft()["base_strategy_selection"]
+    assert queue_row["risk_overlay"]["position_sizing"] == _draft()["risk_overlay"]["position_sizing"]
+    assert (
+        queue_row["risk_overlay"]["portfolio_drawdown_circuit_breaker"]
+        == _draft()["risk_overlay"]["portfolio_drawdown_circuit_breaker"]
+    )
+    assert queue_row["risk_overlay"]["loser_addition_rule"] == _draft()["risk_overlay"]["loser_addition_rule"]
+    assert queue_row["validation_plan"] == _draft()["validation_plan"]
+
+
+def test_reason_mentions_runtime_hook_and_missing_execution_support():
     entry = build_risk_overlay_hypothesis_queue_entry(_draft(), source_draft="tmp/risk_overlay_candidate_draft.json")
 
     reason = entry["reason"]
-    assert "_spec_from_hypothesis()" in reason
-    assert "hard-coded families/builders" in reason
-    assert "fixed-fractional sizing candidates" in reason
-    assert "staged drawdown circuit-breaker thresholds" in reason
-    assert "reentry rule" in reason
-    assert "loser-addition prohibition" in reason
-    assert "full validation plan" in reason
-
-
-def test_required_schema_extension_contains_missing_fields():
-    entry = build_risk_overlay_hypothesis_queue_entry(_draft(), source_draft="tmp/risk_overlay_candidate_draft.json")
-
-    extension = entry["required_schema_extension"]
-    assert "base_strategy_selection" in extension
-    assert "risk_overlay.position_sizing" in extension
-    assert "risk_overlay.portfolio_drawdown_circuit_breaker" in extension
-    assert "risk_overlay.loser_addition_rule" in extension
-    assert "validation_plan" in extension
-    assert "source_note_ids" in extension
+    assert "RISK_OVERLAY" in reason
+    assert "fixed-fractional position sizing" in reason
+    assert "portfolio drawdown circuit breaker" in reason
+    assert "loser-addition rule" in reason
+    assert "base strategy binding" in reason
 
 
 def test_safety_forbids_registry_append_backtest_and_promotion():
@@ -178,7 +183,7 @@ def test_cli_writes_only_requested_output_file(tmp_path):
     payload = json.loads(output_path.read_text(encoding="utf-8"))
     assert payload["version"] == "hypothesis_queue_entry_candidate_v1"
     assert payload["compatible"] is False
-    assert payload["queue_row"] is None
+    assert payload["queue_row"]["family"] == "RISK_OVERLAY"
     files = sorted(path.relative_to(tmp_path).as_posix() for path in tmp_path.rglob("*") if path.is_file())
     assert files == ["out/risk_overlay_hypothesis_queue_entry.json", "risk_overlay_candidate_draft.json"]
 

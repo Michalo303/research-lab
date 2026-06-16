@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import hashlib
 from typing import Any
 
@@ -7,6 +8,8 @@ from typing import Any
 INPUT_VERSION = "candidate_experiment_draft_v1"
 OUTPUT_VERSION = "hypothesis_queue_entry_candidate_v1"
 TARGET_BLOCKER = "drawdown_fail"
+QUEUE_ROW_VERSION = "risk_overlay_hypothesis_queue_row_v1"
+QUEUE_FAMILY = "RISK_OVERLAY"
 
 
 def build_risk_overlay_hypothesis_queue_entry(
@@ -33,6 +36,8 @@ def build_risk_overlay_hypothesis_queue_entry(
     if not note_ids:
         raise ValueError("source.source_notes must contain at least one note_id")
 
+    queue_row = _queue_row(draft, source_draft=source_draft, source_note_ids=note_ids)
+
     return {
         "version": OUTPUT_VERSION,
         "compatible": False,
@@ -40,40 +45,9 @@ def build_risk_overlay_hypothesis_queue_entry(
         "source_draft": source_draft,
         "target_failure_mode": target_failure_mode,
         "source_note_ids": note_ids,
-        "queue_row": None,
-        "reason": (
-            "The existing hypothesis queue schema and _spec_from_hypothesis() loader only map "
-            "hard-coded families/builders and do not natively carry fixed-fractional sizing "
-            "candidates, staged drawdown circuit-breaker thresholds, reentry rule, "
-            "loser-addition prohibition, or full validation plan without dropping critical meaning."
-        ),
-        "required_schema_extension": {
-            "base_strategy_selection": {
-                "type": "object",
-                "required": ["mode", "allowed_to_modify_signals", "allowed_to_modify_entries", "allowed_to_modify_exits"],
-            },
-            "risk_overlay.position_sizing": {
-                "type": "object",
-                "required": ["type", "risk_per_trade_pct_candidates"],
-            },
-            "risk_overlay.portfolio_drawdown_circuit_breaker": {
-                "type": "object",
-                "required": ["type", "thresholds", "reentry_rule"],
-            },
-            "risk_overlay.loser_addition_rule": {
-                "type": "object",
-                "required": ["add_to_losers_allowed"],
-            },
-            "validation_plan": {
-                "type": "object",
-                "required": ["primary_metrics", "secondary_metrics", "comparison", "required_gates"],
-            },
-            "source_note_ids": {
-                "type": "array",
-                "required": True,
-                "description": "Stable provenance link to extracted source notes used by the draft.",
-            },
-        },
+        "queue_row": queue_row,
+        "reason": _runtime_unsupported_reason(),
+        "required_runtime_hook": _required_runtime_hook(),
         "safety": _locked_safety(),
     }
 
@@ -103,6 +77,65 @@ def _hypothesis_id(draft: dict[str, Any], source_note_ids: list[str]) -> str:
     )
     digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
     return f"RISK_OVERLAY_{digest[:16].upper()}"
+
+
+def _queue_row(
+    draft: dict[str, Any],
+    *,
+    source_draft: str,
+    source_note_ids: list[str],
+) -> dict[str, Any]:
+    row = {
+        "queue_row_version": QUEUE_ROW_VERSION,
+        "hypothesis_id": _hypothesis_id(draft, source_note_ids),
+        "family": QUEUE_FAMILY,
+        "title": "Risk overlay hypothesis candidate",
+        "rationale": str(draft.get("hypothesis") or "").strip(),
+        "source_title": "risk_overlay_candidate_draft",
+        "source_draft": source_draft,
+        "target_failure_mode": TARGET_BLOCKER,
+        "source_note_ids": list(source_note_ids),
+        "base_strategy_selection": deepcopy(draft.get("base_strategy_selection") or {}),
+        "risk_overlay": deepcopy(draft.get("risk_overlay") or {}),
+        "validation_plan": deepcopy(draft.get("validation_plan") or {}),
+        "safety": _locked_safety(),
+    }
+    base_strategy = draft.get("base_strategy")
+    if isinstance(base_strategy, dict):
+        row["base_strategy"] = deepcopy(base_strategy)
+    return row
+
+
+def _runtime_unsupported_reason() -> str:
+    return (
+        "RISK_OVERLAY queue rows can now preserve the full hypothesis payload, but the current runtime "
+        "does not have a safe overlay execution hook for fixed-fractional position sizing, portfolio "
+        "drawdown circuit breaker thresholds with reentry rule enforcement, loser-addition rule "
+        "enforcement, or base strategy binding without dropping meaning."
+    )
+
+
+def _required_runtime_hook() -> dict[str, Any]:
+    return {
+        "type": "risk_overlay_execution_adapter_v1",
+        "requires_base_strategy_binding": True,
+        "preserve_base_signals_entries_exits": True,
+        "required_fields": [
+            "source_note_ids",
+            "base_strategy_selection",
+            "risk_overlay.position_sizing",
+            "risk_overlay.portfolio_drawdown_circuit_breaker",
+            "risk_overlay.loser_addition_rule",
+            "validation_plan",
+        ],
+        "missing_capabilities": [
+            "fixed_fractional_position_sizing",
+            "portfolio_drawdown_circuit_breaker",
+            "reentry_rule_enforcement",
+            "loser_addition_rule_enforcement",
+            "validation_plan_passthrough",
+        ],
+    }
 
 
 def _locked_safety() -> dict[str, bool]:
