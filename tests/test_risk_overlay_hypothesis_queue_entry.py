@@ -108,6 +108,9 @@ def test_wrapper_version_and_incompatible_shape():
     entry = build_risk_overlay_hypothesis_queue_entry(_draft(), source_draft="tmp/risk_overlay_candidate_draft.json")
 
     assert entry["version"] == "hypothesis_queue_entry_candidate_v1"
+    assert entry["non_lossy_schema_row"] is True
+    assert entry["runtime_supported"] is False
+    assert entry["appendable_to_registry"] is False
     assert entry["compatible"] is False
     assert entry["queue_row"]["family"] == "RISK_OVERLAY"
     assert entry["source_draft"] == "tmp/risk_overlay_candidate_draft.json"
@@ -148,6 +151,10 @@ def test_reason_mentions_runtime_hook_and_missing_execution_support():
 
     reason = entry["reason"]
     assert "RISK_OVERLAY" in reason
+    assert "representable without loss" in reason
+    assert "review material" in reason
+    assert "not appendable" in reason
+    assert "not executable" in reason
     assert "fixed-fractional position sizing" in reason
     assert "portfolio drawdown circuit breaker" in reason
     assert "loser-addition rule" in reason
@@ -182,10 +189,21 @@ def test_cli_writes_only_requested_output_file(tmp_path):
     assert output_path.exists()
     payload = json.loads(output_path.read_text(encoding="utf-8"))
     assert payload["version"] == "hypothesis_queue_entry_candidate_v1"
+    assert payload["non_lossy_schema_row"] is True
+    assert payload["runtime_supported"] is False
+    assert payload["appendable_to_registry"] is False
     assert payload["compatible"] is False
     assert payload["queue_row"]["family"] == "RISK_OVERLAY"
     files = sorted(path.relative_to(tmp_path).as_posix() for path in tmp_path.rglob("*") if path.is_file())
     assert files == ["out/risk_overlay_hypothesis_queue_entry.json", "risk_overlay_candidate_draft.json"]
+
+
+def test_required_runtime_hook_remains_present_on_non_appendable_review_row():
+    entry = build_risk_overlay_hypothesis_queue_entry(_draft(), source_draft="tmp/risk_overlay_candidate_draft.json")
+
+    assert entry["queue_row"] is not None
+    assert entry["required_runtime_hook"]["type"] == "risk_overlay_execution_adapter_v1"
+    assert entry["appendable_to_registry"] is False
 
 
 def test_module_and_cli_do_not_import_provider_pdf_backtest_or_registry_modules():

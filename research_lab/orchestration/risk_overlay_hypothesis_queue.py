@@ -40,6 +40,9 @@ def build_risk_overlay_hypothesis_queue_entry(
 
     return {
         "version": OUTPUT_VERSION,
+        "non_lossy_schema_row": True,
+        "runtime_supported": False,
+        "appendable_to_registry": False,
         "compatible": False,
         "hypothesis_id": _hypothesis_id(draft, note_ids),
         "source_draft": source_draft,
@@ -108,10 +111,12 @@ def _queue_row(
 
 def _runtime_unsupported_reason() -> str:
     return (
-        "RISK_OVERLAY queue rows can now preserve the full hypothesis payload, but the current runtime "
-        "does not have a safe overlay execution hook for fixed-fractional position sizing, portfolio "
-        "drawdown circuit breaker thresholds with reentry rule enforcement, loser-addition rule "
-        "enforcement, or base strategy binding without dropping meaning."
+        "RISK_OVERLAY queue rows are representable without loss as review material, but they are not "
+        "appendable to the current runtime queue and are not executable until "
+        "risk_overlay_execution_adapter_v1 exists. The current runtime does not have a safe overlay "
+        "execution hook for fixed-fractional position sizing, portfolio drawdown circuit breaker "
+        "thresholds with reentry rule enforcement, loser-addition rule enforcement, or base strategy "
+        "binding without dropping meaning."
     )
 
 
