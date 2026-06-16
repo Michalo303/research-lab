@@ -32,6 +32,96 @@ Protected/unrelated untracked paths known to exist locally:
 - `scripts/snapshot_real_eod.py`
 - `tests/fixtures/ohlcv_real/`
 
+## Claude Code Primary Agent Mode
+
+### Current agent policy
+
+- Claude Code is the primary implementation, refactoring, review, and PR-preparation agent.
+- Codex is currently unavailable and should not be assumed available.
+- Roo Code is not part of the active workflow.
+
+### Default Claude autonomy
+
+After the user gives a coding task, Claude Code is allowed to proceed without step-by-step approval through:
+
+- repository inspection
+- relevant file discovery
+- design of the implementation approach
+- implementation
+- refactoring inside the task scope
+- adding or updating tests
+- running targeted validation
+- fixing failures discovered by targeted validation
+- formatting / whitespace fixes
+- git diff checks
+- committing
+- pushing
+- opening a PR
+
+Claude Code does not need to ask for approval for every file read, every edit, or every test command when those actions are part of the approved task.
+
+### Scope discipline
+
+Claude Code should use its own engineering judgment, but must keep changes relevant to the user's task.
+
+If the implementation naturally requires additional files, Claude may modify them when they are directly necessary for the task and should report them clearly.
+
+Claude should avoid unrelated cleanup, broad rewrites, style churn, or opportunistic refactors unless they are necessary for the task.
+
+### Stop-and-ask actions
+
+Claude Code must stop and ask before:
+
+- deployment
+- strategy promotion
+- production registry mutation
+- daily research run
+- production backtest run
+- service restart
+- systemd modification
+- `.env` or secrets modification
+- deletion of runtime data, reports, logs, cache, registry, or leaderboards
+- broker/trading execution changes
+- provider credential/configuration changes
+- destructive git operations such as `git reset --hard`, `git clean`, force push, branch deletion, or deleting untracked files
+- large repository-wide rewrites unrelated to the task
+
+### Protected local untracked paths
+
+These local untracked paths are known and must not be deleted or cleaned:
+
+- `logs/`
+- `scripts/snapshot_real_eod.py`
+- `tests/fixtures/ohlcv_real/`
+
+They may appear in `git status` and should normally be ignored.
+
+### Normal coding workflow
+
+For normal tasks, Claude Code should:
+
+- create a task branch
+- implement autonomously
+- add/update tests
+- run targeted tests
+- run `git diff --check`
+- inspect `git status` and changed files
+- commit
+- push
+- open PR
+- report exact changed files, validation results, branch, commit SHA, and PR URL
+
+### Review workflow
+
+For review-only tasks, Claude Code should not edit files unless the user asks for fixes.
+It should return approve/request changes with concrete findings.
+
+### Merge and Hetzner sync
+
+Merge is allowed only when the user explicitly asks.
+Hetzner sync is allowed only when the user explicitly asks and must use the documented safe sync wrapper.
+Sync does not imply deployment, daily research, promotion, registry append, or production backtest.
+
 ## Git workflow
 
 Before modifying anything:
