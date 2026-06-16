@@ -164,6 +164,8 @@ def _validate_risk_overlay(value: Any) -> None:
     reentry = circuit.get("reentry_rule")
     if not isinstance(reentry, dict) or reentry.get("type") != "equity_recovery":
         raise ValueError("equity_recovery reentry_rule is required")
+    recovery_from_peak = reentry.get("recovery_from_peak_pct", 0.0)
+    recovery_from_peak = _bounded_real_number(recovery_from_peak, "recovery_from_peak_pct", minimum=0.0, maximum=100.0)
     cooldown = reentry.get("cooldown_days")
     if isinstance(cooldown, bool) or not isinstance(cooldown, int) or cooldown < 0:
         raise ValueError("cooldown_days must be a non-negative integer")
@@ -322,6 +324,17 @@ def _finite_float(value: Any, field: str) -> float:
         raise ValueError(f"{field} must be numeric") from exc
     if not pd.notna(number):
         raise ValueError(f"{field} must be finite")
+    return number
+
+
+def _bounded_real_number(value: Any, field: str, *, minimum: float, maximum: float) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{field} must be a real number")
+    number = float(value)
+    if not pd.notna(number):
+        raise ValueError(f"{field} must be finite")
+    if number < minimum or number > maximum:
+        raise ValueError(f"{field} must be within [{minimum:g}, {maximum:g}]")
     return number
 
 
