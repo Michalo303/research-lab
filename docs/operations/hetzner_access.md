@@ -61,6 +61,12 @@ systemctl show research-lab-sync.service -p LoadState -p ActiveState -p SubState
 
 ## Manual Safe Sync
 
+For local preflight and future Hetzner sync preparation on Windows, use native
+Git Bash at `/c/Users/lojka/trading/research-lab` with `/mingw64/bin/git`.
+Do not use WSL Git through `/mnt/c/...` for this checkout, because it has shown
+false tracked-diff noise in `backtests/` and `reports/` due to Git view and
+line-ending mismatch.
+
 Only run manual sync when all of these are true:
 
 - the server checkout is on `main`;
