@@ -713,6 +713,8 @@ def _spec_from_hypothesis(item: dict) -> StrategySpec | None:
     source_title = item.get("source_title", "unknown source")
     hypothesis_id = item.get("hypothesis_id", "")
     source_feedback = _source_feedback_parameters(item)
+    if family == "RISK_OVERLAY":
+        return _unsupported_risk_overlay_spec(item)
     if family == "ROTATION":
         parameter_overrides = _parameter_overrides_from_hypothesis(
             item,
@@ -837,6 +839,11 @@ def _source_feedback_parameters(item: dict[str, Any]) -> dict[str, Any]:
     return passthrough
 
 
+def _unsupported_risk_overlay_spec(item: dict[str, Any]) -> StrategySpec | None:
+    _validate_risk_overlay_queue_row(item)
+    raise ValueError(_risk_overlay_runtime_error())
+
+
 def _risk_overlay_execution_parameters(item: dict[str, Any]) -> dict[str, Any]:
     if not item.get("risk_overlay_changed"):
         return {}
@@ -848,6 +855,64 @@ def _parameter_overrides_from_hypothesis(item: dict[str, Any], allowed: set[str]
     if not isinstance(parameters, dict):
         return {}
     return {key: parameters[key] for key in allowed if key in parameters}
+
+
+def _validate_risk_overlay_queue_row(item: dict[str, Any]) -> None:
+    source_note_ids = item.get("source_note_ids")
+    if not isinstance(source_note_ids, list) or not all(str(note_id).strip() for note_id in source_note_ids):
+        raise ValueError("RISK_OVERLAY queue rows require non-empty source_note_ids provenance.")
+
+    base_strategy_selection = item.get("base_strategy_selection")
+    if not isinstance(base_strategy_selection, dict):
+        raise ValueError("RISK_OVERLAY queue rows require base_strategy_selection.")
+    if any(base_strategy_selection.get(key) is not False for key in ("allowed_to_modify_signals", "allowed_to_modify_entries", "allowed_to_modify_exits")):
+        raise ValueError("RISK_OVERLAY queue rows must preserve base signals, entries, and exits.")
+
+    base_strategy = item.get("base_strategy")
+    if not isinstance(base_strategy, dict):
+        raise ValueError("RISK_OVERLAY queue rows require explicit base strategy binding via base_strategy.")
+    for key in ("family", "asset_class", "timeframe", "short_name", "builder", "parameters", "rules"):
+        if key not in base_strategy:
+            raise ValueError(f"RISK_OVERLAY queue rows require base strategy binding field base_strategy.{key}.")
+    if not isinstance(base_strategy.get("parameters"), dict):
+        raise ValueError("RISK_OVERLAY queue rows require base strategy binding field base_strategy.parameters.")
+
+    risk_overlay = item.get("risk_overlay")
+    if not isinstance(risk_overlay, dict):
+        raise ValueError("RISK_OVERLAY queue rows require risk_overlay.")
+
+    position_sizing = risk_overlay.get("position_sizing")
+    if not isinstance(position_sizing, dict) or not isinstance(position_sizing.get("risk_per_trade_pct_candidates"), list):
+        raise ValueError("RISK_OVERLAY queue rows require risk_overlay.position_sizing.risk_per_trade_pct_candidates.")
+
+    circuit_breaker = risk_overlay.get("portfolio_drawdown_circuit_breaker")
+    if not isinstance(circuit_breaker, dict):
+        raise ValueError("RISK_OVERLAY queue rows require risk_overlay.portfolio_drawdown_circuit_breaker.")
+    if not isinstance(circuit_breaker.get("thresholds"), list):
+        raise ValueError("RISK_OVERLAY queue rows require risk_overlay.portfolio_drawdown_circuit_breaker.thresholds.")
+    if not isinstance(circuit_breaker.get("reentry_rule"), dict):
+        raise ValueError("RISK_OVERLAY queue rows require risk_overlay.portfolio_drawdown_circuit_breaker.reentry_rule.")
+
+    loser_addition_rule = risk_overlay.get("loser_addition_rule")
+    if not isinstance(loser_addition_rule, dict) or "add_to_losers_allowed" not in loser_addition_rule:
+        raise ValueError("RISK_OVERLAY queue rows require risk_overlay.loser_addition_rule.add_to_losers_allowed.")
+
+    validation_plan = item.get("validation_plan")
+    if not isinstance(validation_plan, dict):
+        raise ValueError("RISK_OVERLAY queue rows require validation_plan.")
+    for key in ("primary_metrics", "secondary_metrics", "comparison", "required_gates"):
+        if key not in validation_plan:
+            raise ValueError(f"RISK_OVERLAY queue rows require validation_plan.{key}.")
+
+
+def _risk_overlay_runtime_error() -> str:
+    return (
+        "RISK_OVERLAY queue rows are not executable with the current runtime. "
+        "A dedicated overlay execution hook is still required to apply source_note_ids provenance, "
+        "fixed_fractional position sizing, portfolio drawdown circuit breaker thresholds, "
+        "reentry_rule enforcement, add_to_losers_allowed enforcement, and validation_plan "
+        "without changing base signals, entries, or exits."
+    )
 
 
 def _bounded_float(value: Any, *, lower: float, upper: float) -> float:
