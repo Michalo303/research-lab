@@ -1,442 +1,284 @@
 from __future__ import annotations
 
-import builtins
+import ast
 import copy
-import importlib.util
+import hashlib
+import json
+import subprocess
 import sys
-import types
 from pathlib import Path
 
 import pytest
 
+from research_lab.orchestration.risk_overlay_controlled_backtest_v1 import (
+    build_controlled_backtest_request,
+)
+from research_lab.orchestration.risk_overlay_hypothesis_queue import (
+    build_risk_overlay_hypothesis_queue_entry,
+)
+from research_lab.orchestration.risk_overlay_execution_adapter_v1 import (
+    build_risk_overlay_execution_spec,
+)
+
 
 ROOT = Path(__file__).resolve().parents[1]
 MODULE_PATH = ROOT / "research_lab" / "orchestration" / "risk_overlay_controlled_backtest_v1.py"
+SCRIPT_PATH = ROOT / "scripts" / "build_risk_overlay_controlled_backtest_request.py"
 
 
-def _load_module(monkeypatch):
-    fake_pandas = types.ModuleType("pandas")
-    fake_pandas.notna = lambda value: value == value and value not in (float("inf"), float("-inf"))
-    fake_backtest = types.ModuleType("research_lab.backtest")
-
-    def _unexpected_runtime_call(*args, **kwargs):
-        raise AssertionError("test must not call runtime backtest helpers")
-
-    fake_backtest.close_frame = _unexpected_runtime_call
-    fake_backtest.cost_stress = _unexpected_runtime_call
-    fake_backtest.weighted_backtest = _unexpected_runtime_call
-
-    fake_baselines = types.ModuleType("research_lab.strategies.baselines")
-
-    class StrategySpec:
-        def __init__(self, **kwargs):
-            self.__dict__.update(kwargs)
-
-    fake_baselines.StrategySpec = StrategySpec
-    fake_baselines.build_weights = _unexpected_runtime_call
-
-    monkeypatch.setitem(sys.modules, "pandas", fake_pandas)
-    monkeypatch.setitem(sys.modules, "research_lab.backtest", fake_backtest)
-    monkeypatch.setitem(sys.modules, "research_lab.strategies.baselines", fake_baselines)
-
-    spec = importlib.util.spec_from_file_location("risk_overlay_controlled_backtest_v1_under_test", MODULE_PATH)
-    module = importlib.util.module_from_spec(spec)
-    assert spec is not None
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-    return module
-
-
-def _load_module_with_import_guard(monkeypatch):
-    imported_names = []
-    original_import = builtins.__import__
-    banned_prefixes = (
-        "research_lab.runner",
-        "research_lab.deployment_gate",
-        "research_lab.registry",
-        "research_lab.reports",
-        "research_lab.providers",
-        "research_lab.brokers",
-        "research_lab.trading",
-    )
-
-    def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
-        imported_names.append(name)
-        if any(name == prefix or name.startswith(prefix + ".") for prefix in banned_prefixes):
-            raise AssertionError(f"banned import attempted: {name}")
-        return original_import(name, globals, locals, fromlist, level)
-
-    monkeypatch.setattr(builtins, "__import__", guarded_import)
-    module = _load_module(monkeypatch)
-    return module, imported_names
-
-
-def _runtime_module(monkeypatch):
-    fake_pandas = types.ModuleType("pandas")
-    events = {"build_weights_calls": 0, "weighted_backtest_calls": 0, "cost_stress_calls": 0}
-    fake_backtest = types.ModuleType("research_lab.backtest")
-
-    class FakeIndex(list):
-        def mean(self):
-            return sum(self) / len(self) if self else 0.0
-
-    class FakeRow:
-        def __init__(self, data):
-            self._data = dict(data)
-
-        def __mul__(self, other):
-            if isinstance(other, FakeRow):
-                keys = self._data.keys() | other._data.keys()
-                return FakeRow({key: self._data.get(key, 0.0) * other._data.get(key, 0.0) for key in keys})
-            return FakeRow({key: value * other for key, value in self._data.items()})
-
-        __rmul__ = __mul__
-
-        def sum(self):
-            return sum(self._data.values())
-
-        def items(self):
-            return self._data.items()
-
-    class _LocAccessor:
-        def __init__(self, frame):
-            self._frame = frame
-
-        def __getitem__(self, key):
-            return self._frame._rows[key]
-
-    class FakeDataFrame:
-        def __init__(self, rows=None, index=None, columns=None, data=None):
-            if data is not None:
-                index = list(index or [])
-                columns = list(data.keys())
-                rows = []
-                for offset, ts in enumerate(index):
-                    rows.append({column: values[offset] for column, values in data.items()})
-            self.index = list(index or [])
-            self.columns = list(columns or [])
-            self._rows = {
-                ts: FakeRow(
-                    rows[offset]._data
-                    if isinstance(rows[offset], FakeRow)
-                    else rows[offset]
-                    if isinstance(rows[offset], dict)
-                    else dict(zip(self.columns, rows[offset]))
-                )
-                for offset, ts in enumerate(self.index)
-            }
-            self.loc = _LocAccessor(self)
-
-        def __getitem__(self, columns):
-            return FakeDataFrame(
-                rows=[{column: self._rows[ts]._data[column] for column in columns} for ts in self.index],
-                index=self.index,
-                columns=columns,
-            )
-
-        def __mul__(self, other):
-            return FakeDataFrame(
-                rows=[{column: value * other for column, value in self._rows[ts]._data.items()} for ts in self.index],
-                index=self.index,
-                columns=self.columns,
-            )
-
-        __rmul__ = __mul__
-
-        def reindex(self, index):
-            return FakeDataFrame(
-                rows=[self._rows.get(ts, FakeRow({column: 0.0 for column in self.columns}))._data for ts in index],
-                index=index,
-                columns=self.columns,
-            )
-
-        def fillna(self, value):
-            return self
-
-        def clip(self, lower=None, upper=None):
-            rows = []
-            for ts in self.index:
-                row = {}
-                for column, item in self._rows[ts]._data.items():
-                    clipped = item
-                    if lower is not None and clipped < lower:
-                        clipped = lower
-                    if upper is not None and clipped > upper:
-                        clipped = upper
-                    row[column] = clipped
-                rows.append(row)
-            return FakeDataFrame(rows=rows, index=self.index, columns=self.columns)
-
-        def pct_change(self):
-            rows = []
-            previous = None
-            for ts in self.index:
-                current = self._rows[ts]._data
-                if previous is None:
-                    rows.append({column: 0.0 for column in self.columns})
-                else:
-                    rows.append(
-                        {
-                            column: 0.0 if previous[column] == 0 else (current[column] - previous[column]) / previous[column]
-                            for column in self.columns
-                        }
-                    )
-                previous = current
-            return FakeDataFrame(rows=rows, index=self.index, columns=self.columns)
-
-        def iterrows(self):
-            for ts in self.index:
-                yield ts, self._rows[ts]
-
-        def sum(self, axis=0):
-            if axis != 1:
-                raise AssertionError("test fake only supports axis=1")
-            return FakeIndex([sum(self._rows[ts]._data.values()) for ts in self.index])
-
-    def fake_datetime(values):
-        return list(values)
-
-    fake_pandas.notna = lambda value: value == value and value not in (float("inf"), float("-inf"))
-    fake_pandas.DataFrame = FakeDataFrame
-    fake_pandas.to_datetime = fake_datetime
-
-    def close_frame(panel):
-        return panel[["SPY"]]
-
-    def weighted_backtest(close, weights, cost_bps, periods_per_year):
-        events["weighted_backtest_calls"] += 1
-        exposure = float(weights.sum(axis=1).mean())
-        return {
-            "metrics": {
-                "cagr": 0.10 + exposure,
-                "max_drawdown": 0.05 + exposure / 10.0,
-            },
-            "split_metrics": {"train": {"cagr": 0.10 + exposure}},
-            "average_turnover": exposure / 2.0,
-            "average_exposure": exposure,
-        }
-
-    def cost_stress(close, weights, cost_bps, periods_per_year):
-        events["cost_stress_calls"] += 1
-        return {"0_bps": {"net_cagr": float(weights.sum(axis=1).mean())}}
-
-    fake_backtest.close_frame = close_frame
-    fake_backtest.weighted_backtest = weighted_backtest
-    fake_backtest.cost_stress = cost_stress
-
-    fake_baselines = types.ModuleType("research_lab.strategies.baselines")
-
-    class StrategySpec:
-        def __init__(self, **kwargs):
-            self.__dict__.update(kwargs)
-
-    def build_weights(spec, daily_panel, context):
-        events["build_weights_calls"] += 1
-        return fake_pandas.DataFrame(data={"SPY": [1.0, 1.0, 0.5]}, index=daily_panel.index)
-
-    fake_baselines.StrategySpec = StrategySpec
-    fake_baselines.build_weights = build_weights
-
-    monkeypatch.setitem(sys.modules, "pandas", fake_pandas)
-    monkeypatch.setitem(sys.modules, "research_lab.backtest", fake_backtest)
-    monkeypatch.setitem(sys.modules, "research_lab.strategies.baselines", fake_baselines)
-
-    spec = importlib.util.spec_from_file_location("risk_overlay_controlled_backtest_v1_runtime_test", MODULE_PATH)
-    module = importlib.util.module_from_spec(spec)
-    assert spec is not None
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-    return module, events
-
-
-def _artifact() -> dict:
+def _draft() -> dict[str, object]:
     return {
-        "version": "risk_overlay_execution_spec_artifact_v1",
-        "adapter_version": "risk_overlay_execution_adapter_v1",
-        "execution_spec_supported": True,
-        "appendable_to_registry": False,
-        "requires_human_review": True,
-        "source_runtime_supported": False,
-        "execution_spec": {
-            "builder": "risk_overlay_execution_adapter_v1",
+        "version": "candidate_experiment_draft_v1",
+        "source": {
+            "blocker": "drawdown_fail",
+            "source_notes": [
+                {
+                    "note_id": "note-1111111111111111",
+                    "book_id": "book-risk-control-2002",
+                    "book_title": "Money Management Risk Control For Traders (2002)",
+                    "page_start": 44,
+                    "page_end": 46,
+                    "confidence": "medium",
+                    "promotion_status": "not_promoted",
+                    "extracted_claim": "Trading accuracy cannot compensate for poor money management.",
+                    "why_relevant_to_blocker": "Preservation matters more than signal tweaks.",
+                    "risk_controls": ["fixed fractional sizing", "drawdown circuit breaker"],
+                },
+                {
+                    "note_id": "note-2222222222222222",
+                    "book_id": "book-risk-control-2002",
+                    "book_title": "Money Management Risk Control For Traders (2002)",
+                    "page_start": 47,
+                    "page_end": 49,
+                    "confidence": "medium",
+                    "promotion_status": "not_promoted",
+                    "extracted_claim": "Unless a system is 100% accurate, sound risk management must be part of it.",
+                    "why_relevant_to_blocker": "Drawdowns expand when there are no risk controls.",
+                    "risk_controls": ["loss cap", "no adding to losers"],
+                },
+            ],
+        },
+        "hypothesis": (
+            "Fixed-fractional risk sizing plus a portfolio drawdown circuit breaker reduces "
+            "drawdown severity and recovery time while preserving existing signal logic."
+        ),
+        "target_failure_mode": "drawdown_fail",
+        "base_strategy_selection": {
+            "mode": "explicit_base_strategy",
+            "allowed_to_modify_signals": False,
+            "allowed_to_modify_entries": False,
+            "allowed_to_modify_exits": False,
+        },
+        "base_strategy": {
+            "family": "LONGTERM",
+            "asset_class": "ETF",
+            "timeframe": "1D",
+            "short_name": "TREND_VOL_CAP",
+            "builder": "long_term_vol_target_cap",
             "parameters": {
-                "appendable_to_registry": False,
-                "requires_human_review": True,
-                "source_runtime_supported": False,
-                "source_hypothesis_id": "RISK_OVERLAY_TEST",
-                "source_note_ids": ["note-1"],
-                "base_strategy": {
-                    "family": "LONGTERM",
-                    "asset_class": "ETF",
-                    "timeframe": "1D",
-                    "short_name": "TREND_VOL_CAP",
-                    "builder": "long_term_vol_target_cap",
-                    "parameters": {"symbol": "SPY", "sma": 200},
-                    "rules": "Hold SPY above SMA200; otherwise hold cash.",
-                },
-                "base_strategy_selection": {
-                    "allowed_to_modify_signals": False,
-                    "allowed_to_modify_entries": False,
-                    "allowed_to_modify_exits": False,
-                },
-                "risk_overlay": {
-                    "position_sizing": {
-                        "type": "fixed_fractional",
-                        "risk_per_trade_pct_candidates": [0.25, 0.5, 0.75],
-                    },
-                    "portfolio_drawdown_circuit_breaker": {
-                        "type": "staged_derisking",
-                        "thresholds": [
-                            {"drawdown_pct": 5, "gross_exposure_multiplier": 0.75},
-                            {"drawdown_pct": 8, "gross_exposure_multiplier": 0.50},
-                            {"drawdown_pct": 10, "gross_exposure_multiplier": 0.0},
-                        ],
-                        "reentry_rule": {
-                            "type": "equity_recovery",
-                            "recovery_from_peak_pct": 2,
-                            "cooldown_days": 10,
-                        },
-                    },
-                    "loser_addition_rule": {"add_to_losers_allowed": False},
+                "symbol": "SPY",
+                "sma": 200,
+                "vol_window": 63,
+                "target_vol": 0.10,
+                "max_weight": 0.75,
+            },
+            "rules": "Hold SPY above SMA200 with realized-volatility targeting capped at 75% exposure; otherwise hold cash.",
+        },
+        "risk_overlay": {
+            "position_sizing": {
+                "type": "fixed_fractional",
+                "risk_per_trade_pct_candidates": [0.25, 0.5, 0.75, 1.0],
+            },
+            "portfolio_drawdown_circuit_breaker": {
+                "type": "staged_derisking",
+                "thresholds": [
+                    {"drawdown_pct": 5, "gross_exposure_multiplier": 0.75},
+                    {"drawdown_pct": 8, "gross_exposure_multiplier": 0.5},
+                    {"drawdown_pct": 10, "gross_exposure_multiplier": 0.0},
+                ],
+                "reentry_rule": {
+                    "type": "equity_recovery",
+                    "recovery_from_peak_pct": 2,
+                    "cooldown_days": 10,
                 },
             },
+            "loser_addition_rule": {"add_to_losers_allowed": False},
+        },
+        "validation_plan": {
+            "primary_metrics": ["max_drawdown", "drawdown_duration", "recovery_time", "survival_rate"],
+            "secondary_metrics": ["CAGR", "Sharpe", "turnover", "cost_stress"],
+            "comparison": "same signals with and without risk overlay",
+            "required_gates": ["walk_forward", "drawdown", "cost_stress", "stability"],
+        },
+        "safety": {
+            "promotion_allowed": False,
+            "registry_write_allowed": False,
+            "backtest_allowed_in_this_step": False,
+            "strategy_code_modification_allowed": False,
+            "requires_manual_review": True,
         },
     }
 
 
-def _daily_panel(module):
-    return module.pd.DataFrame(
-        data={
-            "SPY": [100.0, 102.0, 101.0],
-            "CLOSE": [100.0, 102.0, 101.0],
-        },
-        index=module.pd.to_datetime(["2024-01-02", "2024-01-03", "2024-01-04"]),
+def _execution_spec_artifact() -> dict[str, object]:
+    entry = build_risk_overlay_hypothesis_queue_entry(
+        _draft(),
+        source_draft="tmp/risk_overlay_candidate_draft.json",
     )
+    queue_row = copy.deepcopy(entry["queue_row"])
+    queue_row["source_notes"] = copy.deepcopy(_draft()["source"]["source_notes"])
+    entry["queue_row"] = queue_row
+    return build_risk_overlay_execution_spec(entry, source_artifact_path="tmp/review_candidate.json")
 
 
-def test_valid_review_artifact_parameters_validate_without_runtime_calls(monkeypatch):
-    module = _load_module(monkeypatch)
-
-    parameters = module._validated_parameters(_artifact())
-
-    assert parameters["appendable_to_registry"] is False
-    assert parameters["requires_human_review"] is True
-    assert parameters["source_runtime_supported"] is False
-    assert parameters["source_hypothesis_id"] == "RISK_OVERLAY_TEST"
+def _canonical_sha256(payload: object) -> str:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
-def test_appendable_to_registry_true_fails_closed(monkeypatch):
-    module = _load_module(monkeypatch)
-    artifact = _artifact()
+def test_valid_execution_spec_converts_to_deterministic_controlled_backtest_request():
+    artifact = _execution_spec_artifact()
+
+    first = build_controlled_backtest_request(artifact, source_execution_spec_path="tmp/execution_spec.json")
+    second = build_controlled_backtest_request(copy.deepcopy(artifact), source_execution_spec_path="tmp/execution_spec.json")
+
+    assert first == second
+    assert first["controlled_backtest_version"] == "risk_overlay_controlled_backtest_v1"
+    assert first["execution_enabled_by_default"] is False
+    assert first["appendable_to_registry"] is False
+    assert first["promotion_allowed"] is False
+    assert first["deployment_allowed"] is False
+    assert first["requires_human_review"] is True
+    assert first["source_execution_spec_hash"] == _canonical_sha256(artifact)
+    assert first["provenance"] == artifact["provenance"]
+    assert first["execution_spec"] == artifact["execution_spec"]
+
+
+def test_missing_provenance_fails_closed():
+    artifact = _execution_spec_artifact()
+    artifact["provenance"] = {}
+
+    with pytest.raises(ValueError, match="provenance"):
+        build_controlled_backtest_request(artifact)
+
+
+def test_wrong_adapter_version_fails_closed():
+    artifact = _execution_spec_artifact()
+    artifact["adapter_version"] = "risk_overlay_execution_adapter_v0"
+
+    with pytest.raises(ValueError, match="adapter_version"):
+        build_controlled_backtest_request(artifact)
+
+
+def test_appendable_to_registry_true_fails_closed():
+    artifact = _execution_spec_artifact()
     artifact["appendable_to_registry"] = True
 
     with pytest.raises(ValueError, match="appendable_to_registry=false"):
-        module._validated_parameters(artifact)
+        build_controlled_backtest_request(artifact)
 
 
-@pytest.mark.parametrize(
-    ("field_name", "mutate"),
-    [
-        (
-            "risk_per_trade_pct_candidates",
-            lambda artifact: artifact["execution_spec"]["parameters"]["risk_overlay"]["position_sizing"].__setitem__(
-                "risk_per_trade_pct_candidates", [True, 0.5]
-            ),
-        ),
-        (
-            "drawdown_pct",
-            lambda artifact: artifact["execution_spec"]["parameters"]["risk_overlay"][
-                "portfolio_drawdown_circuit_breaker"
-            ]["thresholds"][0].__setitem__("drawdown_pct", True),
-        ),
-        (
-            "gross_exposure_multiplier",
-            lambda artifact: artifact["execution_spec"]["parameters"]["risk_overlay"][
-                "portfolio_drawdown_circuit_breaker"
-            ]["thresholds"][0].__setitem__("gross_exposure_multiplier", False),
-        ),
-        (
-            "cooldown_days",
-            lambda artifact: artifact["execution_spec"]["parameters"]["risk_overlay"][
-                "portfolio_drawdown_circuit_breaker"
-            ]["reentry_rule"].__setitem__("cooldown_days", True),
-        ),
-    ],
-)
-def test_boolean_numeric_overlay_fields_fail_closed(monkeypatch, field_name, mutate):
-    module = _load_module(monkeypatch)
-    artifact = copy.deepcopy(_artifact())
-    mutate(artifact)
+def test_requires_human_review_false_fails_closed():
+    artifact = _execution_spec_artifact()
+    artifact["requires_human_review"] = False
 
-    with pytest.raises(ValueError, match=field_name):
-        module._validated_parameters(artifact)
+    with pytest.raises(ValueError, match="requires_human_review=true"):
+        build_controlled_backtest_request(artifact)
 
 
-@pytest.mark.parametrize("value", [True, "1", None, -1, 101])
-def test_recovery_from_peak_pct_malformed_values_fail_closed(monkeypatch, value):
-    module = _load_module(monkeypatch)
-    artifact = copy.deepcopy(_artifact())
-    artifact["execution_spec"]["parameters"]["risk_overlay"]["portfolio_drawdown_circuit_breaker"]["reentry_rule"][
-        "recovery_from_peak_pct"
-    ] = value
+def test_source_runtime_supported_true_fails_closed():
+    artifact = _execution_spec_artifact()
+    artifact["source_runtime_supported"] = True
 
-    with pytest.raises(ValueError, match="recovery_from_peak_pct"):
-        module._validated_parameters(artifact)
+    with pytest.raises(ValueError, match="source_runtime_supported=false"):
+        build_controlled_backtest_request(artifact)
 
 
-@pytest.mark.parametrize("value", [0, 2.5, 100])
-def test_recovery_from_peak_pct_valid_numeric_values_are_accepted(monkeypatch, value):
-    module = _load_module(monkeypatch)
-    artifact = copy.deepcopy(_artifact())
-    artifact["execution_spec"]["parameters"]["risk_overlay"]["portfolio_drawdown_circuit_breaker"]["reentry_rule"][
-        "recovery_from_peak_pct"
-    ] = value
+def test_registry_append_intent_fails_closed():
+    artifact = _execution_spec_artifact()
+    artifact["execution_spec"]["parameters"]["registry_append_intent"] = True
 
-    parameters = module._validated_parameters(artifact)
-
-    assert parameters["risk_overlay"]["portfolio_drawdown_circuit_breaker"]["reentry_rule"]["recovery_from_peak_pct"] == value
+    with pytest.raises(ValueError, match="registry append intent"):
+        build_controlled_backtest_request(artifact)
 
 
-def test_controlled_backtest_run_returns_research_only_deterministic_result(monkeypatch):
-    module, events = _runtime_module(monkeypatch)
-    artifact = copy.deepcopy(_artifact())
-    daily_panel = _daily_panel(module)
+def test_promotion_and_deployment_output_remain_false_even_if_source_mentions_them():
+    artifact = _execution_spec_artifact()
+    artifact["execution_spec"]["parameters"]["promotion_allowed"] = True
+    artifact["execution_spec"]["parameters"]["deployment_allowed"] = True
 
-    first = module.run_risk_overlay_controlled_backtest(artifact, daily_panel)
-    second = module.run_risk_overlay_controlled_backtest(artifact, daily_panel)
+    request = build_controlled_backtest_request(artifact)
 
-    assert first == second
-    assert first["research_only"] is True
-    assert first["production_paths"] == []
-    assert first["file_outputs"] == []
-    assert first["safety"]["registry_write_allowed"] is False
-    assert first["safety"]["promotion_allowed"] is False
-    assert first["safety"]["deployment_allowed"] is False
-    assert first["safety"]["report_write_allowed"] is False
-    assert first["safety"]["leaderboard_write_allowed"] is False
-    assert first["safety"]["daily_research_run_allowed"] is False
-    assert first["safety"]["file_write_allowed"] is False
-    assert len(first["overlay_candidates"]) == 3
-    assert first["overlay_candidates"][0]["risk_per_trade_pct"] == 0.25
-    assert events["build_weights_calls"] == 2
-    assert events["weighted_backtest_calls"] == 8
-    assert events["cost_stress_calls"] == 8
+    assert request["promotion_allowed"] is False
+    assert request["deployment_allowed"] is False
 
 
-def test_module_does_not_import_banned_production_modules(monkeypatch):
-    _, imported_names = _load_module_with_import_guard(monkeypatch)
+def test_no_registry_append_path_is_called(monkeypatch):
+    calls: list[tuple[Path, dict]] = []
 
-    banned_prefixes = (
+    def _unexpected_append(path: Path, payload: dict) -> None:
+        calls.append((path, payload))
+        raise AssertionError("append_jsonl must not be called")
+
+    monkeypatch.setattr("research_lab.registry.append_jsonl", _unexpected_append)
+
+    payload = build_controlled_backtest_request(_execution_spec_artifact())
+
+    assert payload["appendable_to_registry"] is False
+    assert calls == []
+
+
+def test_cli_writes_only_the_explicit_output_path(tmp_path):
+    input_path = tmp_path / "execution_spec.json"
+    output_path = tmp_path / "out" / "controlled_backtest_request.json"
+    input_path.write_text(json.dumps(_execution_spec_artifact(), indent=2) + "\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT_PATH), "--input", str(input_path), "--output", str(output_path)],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert sorted(path.relative_to(tmp_path).as_posix() for path in tmp_path.rglob("*") if path.is_file()) == [
+        "execution_spec.json",
+        "out/controlled_backtest_request.json",
+    ]
+
+
+def test_module_and_cli_do_not_import_provider_pdf_backtest_or_registry_append_modules():
+    forbidden_roots = (
         "research_lab.runner",
         "research_lab.deployment_gate",
+        "research_lab.backtest",
+        "research_lab.walk_forward",
         "research_lab.registry",
         "research_lab.reports",
-        "research_lab.providers",
-        "research_lab.brokers",
-        "research_lab.trading",
+        "research_lab.hermes",
+        "research_lab.llm",
+        "pypdf",
+        "PyPDF2",
+        "fitz",
+        "requests",
+        "aiohttp",
+        "urllib",
+        "http",
+        "socket",
+        "ibapi",
+        "ib_insync",
     )
-    assert not [
-        name
-        for name in imported_names
-        if any(name == prefix or name.startswith(prefix + ".") for prefix in banned_prefixes)
-    ]
+    for path in (MODULE_PATH, SCRIPT_PATH):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        imports: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imports.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imports.add(node.module)
+        for import_name in imports:
+            assert not any(
+                import_name == forbidden_root or import_name.startswith(forbidden_root + ".")
+                for forbidden_root in forbidden_roots
+            ), f"{path.name} imported forbidden module {import_name}"
