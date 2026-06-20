@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from research_lab.orchestration.codex_autonomous_contract import (
     AUDIT_REQUIRED_KEYS,
+    CodexBudgetConfig,
+    CodexExecutionTier,
     CodexLoopAudit,
     CodexLoopConfig,
+    CodexTierDecision,
     DEFAULT_ALLOWED_PATHS,
     DEFAULT_FORBIDDEN_COMMAND_FRAGMENTS,
     DEFAULT_PROTECTED_PATHS,
@@ -133,3 +136,30 @@ def test_result_types_expose_json_friendly_fields():
     assert review.to_dict()["status"] == "REVISE"
     assert validation.to_dict()["success"] is True
     assert git_action.to_dict()["planned_actions"] == ["commit", "push", "pr"]
+
+
+def test_codex_budget_defaults_and_tier_decision_shape():
+    budget = CodexBudgetConfig()
+    decision = CodexTierDecision(
+        requested_tier=CodexExecutionTier.AUTO,
+        selected_tier=CodexExecutionTier.STANDARD,
+        codex_model="codex-default",
+        codex_reasoning="medium",
+        escalation_reason="",
+        high_rounds_used=0,
+        very_high_rounds_used=0,
+        max_high_rounds=budget.max_high_rounds_per_run,
+        max_very_high_rounds=budget.max_very_high_rounds_per_run,
+        budget_blocked=False,
+    )
+
+    assert budget.default_tier is CodexExecutionTier.STANDARD
+    assert budget.default_model == "codex-default"
+    assert budget.high_model == "codex-high"
+    assert budget.very_high_model == "codex-very-high"
+    assert budget.max_codex_calls_per_run == 20
+    assert budget.max_high_rounds_per_run == 6
+    assert budget.max_very_high_rounds_per_run == 1
+    assert budget.allow_very_high is False
+    assert decision.to_dict()["requested_tier"] == "auto"
+    assert decision.to_dict()["selected_tier"] == "standard"

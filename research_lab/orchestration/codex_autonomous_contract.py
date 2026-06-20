@@ -20,6 +20,14 @@ class LoopMode(str, Enum):
     SUPER_AUTO = "super_auto"
 
 
+class CodexExecutionTier(str, Enum):
+    AUTO = "auto"
+    FAST = "fast"
+    STANDARD = "standard"
+    HIGH = "high"
+    VERY_HIGH = "very_high"
+
+
 DEFAULT_ALLOWED_PATHS = [
     ".gitignore",
     "research_lab/",
@@ -113,6 +121,38 @@ class CodexLoopConfig:
 
 
 @dataclass
+class CodexBudgetConfig:
+    max_codex_calls_per_run: int = 20
+    max_high_rounds_per_run: int = 6
+    max_very_high_rounds_per_run: int = 1
+    allow_very_high: bool = False
+    default_tier: CodexExecutionTier = CodexExecutionTier.STANDARD
+    default_model: str = "codex-default"
+    high_model: str = "codex-high"
+    very_high_model: str = "codex-very-high"
+
+
+@dataclass
+class CodexTierDecision:
+    requested_tier: CodexExecutionTier
+    selected_tier: CodexExecutionTier
+    codex_model: str
+    codex_reasoning: str
+    escalation_reason: str
+    high_rounds_used: int
+    very_high_rounds_used: int
+    max_high_rounds: int
+    max_very_high_rounds: int
+    budget_blocked: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload["requested_tier"] = self.requested_tier.value
+        payload["selected_tier"] = self.selected_tier.value
+        return payload
+
+
+@dataclass
 class CodexRoundInput:
     run_id: str
     round_number: int
@@ -130,6 +170,8 @@ class CodexRoundResult:
     summary: str = ""
     patch_digest: str = ""
     meaningful_progress: bool = True
+    executor_failed: bool = False
+    executor_details: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

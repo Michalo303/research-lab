@@ -57,6 +57,25 @@ class CodexAutonomousLoop:
             round_result = self.codex_executor.execute(round_input)
             changed_files = list(round_result.changed_files)
             diff_line_count = round_result.diff_line_count
+            if round_result.executor_failed:
+                self.final_status = LoopStatus.BLOCKED
+                return _build_audit(
+                    config=self.config,
+                    run_id=run_id,
+                    task_file=task_file,
+                    branch=branch,
+                    final_status=self.final_status,
+                    rounds_used=round_number,
+                    no_progress_rounds=no_progress_rounds,
+                    changed_files=changed_files,
+                    diff_line_count=diff_line_count,
+                    tests_requested=tests_requested,
+                    tests_passed=False,
+                    reviewer_verdicts=reviewer_verdicts,
+                    protected_paths_touched=protected_paths_touched,
+                    forbidden_commands_detected=forbidden_commands_detected,
+                    git_result=git_result,
+                )
 
             policy = evaluate_round_policy(
                 self.config,

@@ -10,7 +10,13 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from research_lab.orchestration.codex_autonomous_contract import CodexLoopConfig, LoopMode
+from research_lab.orchestration.codex_autonomous_contract import (
+    CodexBudgetConfig,
+    CodexExecutionTier,
+    CodexLoopConfig,
+    LoopMode,
+)
+from research_lab.orchestration.codex_cli_executor import CodexCliExecutor
 from research_lab.orchestration.codex_autonomous_loop import (
     CodexAutonomousLoop,
     FakeCodexExecutor,
@@ -23,9 +29,23 @@ TASKS_INBOX = ROOT / "tasks" / "inbox"
 RUNS_DIR = ROOT / "codex_runs"
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the local Codex autonomous supervisor skeleton.")
     parser.add_argument("--task-file")
+    parser.add_argument("--executor", choices=["fake", "codex_cli"], default="fake")
+    parser.add_argument("--codex-timeout-seconds", type=int, default=300)
+    parser.add_argument(
+        "--codex-tier",
+        choices=[tier.value for tier in CodexExecutionTier],
+        default=CodexExecutionTier.AUTO.value,
+    )
+    parser.add_argument("--codex-model", default="codex-default")
+    parser.add_argument("--codex-high-model", default="codex-high")
+    parser.add_argument("--codex-very-high-model", default="codex-very-high")
+    parser.add_argument("--allow-very-high", choices=["true", "false"], default="false")
+    parser.add_argument("--max-high-rounds", type=int, default=6)
+    parser.add_argument("--max-very-high-rounds", type=int, default=1)
+    parser.add_argument("--max-codex-calls", type=int, default=20)
     parser.add_argument("--mode", choices=[mode.value for mode in LoopMode], default=LoopMode.DRY_RUN.value)
     parser.add_argument("--max-rounds", type=int)
     parser.add_argument("--max-runtime-minutes", type=int)
@@ -33,7 +53,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-diff-lines", type=int)
     parser.add_argument("--targeted-tests", nargs="*")
     parser.add_argument("--dry-run-external-calls", choices=["true", "false"], default="true")
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def main() -> int:
@@ -45,10 +65,17 @@ def main() -> int:
     task_path, placeholder_used = _resolve_task_file(args.task_file)
     if placeholder_used:
         print("No task file found in tasks/inbox; using placeholder dry-run task.")
+    task_prompt_text = _load_task_prompt_text(task_path, placeholder_used)
 
     loop = CodexAutonomousLoop(
         config=config,
-        codex_executor=FakeCodexExecutor(),
+        codex_executor=_build_executor(
+            args.executor,
+            config,
+            task_prompt_text,
+            args.codex_timeout_seconds,
+            args,
+        ),
         reviewer=FakeReviewer(),
         validation_runner=FakeValidationRunner(),
         git_action=FakeGitAction(),
@@ -81,6 +108,33 @@ def _apply_overrides(config: CodexLoopConfig, args: argparse.Namespace) -> None:
     config.dry_run_external_calls = args.dry_run_external_calls.lower() == "true"
 
 
+def _build_executor(
+    executor_name: str,
+    config: CodexLoopConfig,
+    task_prompt_text: str,
+    codex_timeout_seconds: int,
+    args: argparse.Namespace,
+):
+    if executor_name == "codex_cli":
+        return CodexCliExecutor(
+            repo_root=ROOT,
+            task_prompt_text=task_prompt_text,
+            timeout_seconds=codex_timeout_seconds,
+            dry_run=config.dry_run_external_calls,
+            requested_tier=CodexExecutionTier(args.codex_tier),
+            budget_config=CodexBudgetConfig(
+                max_codex_calls_per_run=args.max_codex_calls,
+                max_high_rounds_per_run=args.max_high_rounds,
+                max_very_high_rounds_per_run=args.max_very_high_rounds,
+                allow_very_high=args.allow_very_high.lower() == "true",
+                default_model=args.codex_model,
+                high_model=args.codex_high_model,
+                very_high_model=args.codex_very_high_model,
+            ),
+        )
+    return FakeCodexExecutor()
+
+
 def _resolve_task_file(task_file: str | None) -> tuple[Path, bool]:
     if task_file:
         return Path(task_file).resolve(), False
@@ -90,6 +144,15 @@ def _resolve_task_file(task_file: str | None) -> tuple[Path, bool]:
         return candidates[0], False
 
     return TASKS_INBOX / "placeholder_dry_run_task.md", True
+
+
+def _load_task_prompt_text(task_path: Path, placeholder_used: bool) -> str:
+    if placeholder_used:
+        return (
+            "Placeholder dry-run task: no inbox task file was present. "
+            "Operate within the repository safety policy and do not use destructive or production actions."
+        )
+    return task_path.read_text(encoding="utf-8")
 
 
 def _build_report(audit: dict[str, object]) -> str:
