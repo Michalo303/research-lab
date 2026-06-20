@@ -130,6 +130,29 @@ class GitHubPrAdapter:
                 result.git_action_blocked_reason = _command_failure_reason("git add", add_result)
                 return result
 
+        staged_index_result = self._run(["git", "diff", "--cached", "--name-only"])
+        if staged_index_result.returncode != 0:
+            result.git_action_blocked_reason = _command_failure_reason(
+                "git diff --cached --name-only",
+                staged_index_result,
+            )
+            return result
+        staged_paths = _parse_name_only_output(staged_index_result.stdout)
+        forbidden_staged_index = [path for path in staged_paths if _is_forbidden_staging_path(path)]
+        if forbidden_staged_index:
+            result.git_action_blocked_reason = f"forbidden staged index path: {forbidden_staged_index[0]}"
+            return result
+        staged_unexpected = [path for path in staged_paths if path not in normalized_files]
+        staged_missing = [path for path in normalized_files if path not in staged_paths]
+        if staged_unexpected or staged_missing:
+            details: list[str] = []
+            if staged_unexpected:
+                details.append("extra: " + ", ".join(staged_unexpected))
+            if staged_missing:
+                details.append("missing: " + ", ".join(staged_missing))
+            result.git_action_blocked_reason = "staged index does not match intended files: " + "; ".join(details)
+            return result
+
         result.commit_attempted = True
         commit_command = ["git", "commit", "-m", self.config.commit_message]
         if self.config.allow_empty_commit:
@@ -254,6 +277,14 @@ def _parse_status_output(output: str) -> tuple[list[str], list[str]]:
             else:
                 tracked_paths.append(normalized)
     return tracked_paths, untracked_paths
+
+
+def _parse_name_only_output(output: str) -> list[str]:
+    return _deduplicate_preserving_order(
+        _normalize_path(line)
+        for line in output.splitlines()
+        if _normalize_path(line)
+    )
 
 
 def _extract_pr_url(stdout: str) -> str | None:
