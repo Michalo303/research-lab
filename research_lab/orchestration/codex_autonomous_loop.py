@@ -9,6 +9,7 @@ from research_lab.orchestration.codex_autonomous_contract import (
     CodexRoundInput,
     CodexRoundResult,
     GitActionInterface,
+    GitActionRequest,
     GitActionResult,
     LoopMode,
     LoopStatus,
@@ -43,6 +44,7 @@ class CodexAutonomousLoop:
         no_progress_rounds = 0
         protected_paths_touched: list[str] = []
         forbidden_commands_detected: list[str] = []
+        disallowed_paths_touched: list[str] = []
         git_result = GitActionResult(branch=branch, merge_blocked=True)
         reviewer_selected_model: str | None = None
         reviewer_selected_tier: str | None = None
@@ -100,6 +102,7 @@ class CodexAutonomousLoop:
                 human_merge_confirmed=False,
             )
             protected_paths_touched = policy.protected_paths_touched
+            disallowed_paths_touched = policy.disallowed_paths_touched
             forbidden_commands_detected = policy.forbidden_commands_detected
             if policy.status == LoopStatus.UNSAFE.value:
                 self.final_status = LoopStatus.UNSAFE
@@ -168,7 +171,21 @@ class CodexAutonomousLoop:
             if review.status is LoopStatus.PASS and validation.success:
                 self.final_status = LoopStatus.PASS
                 if self.config.mode in {LoopMode.AUTO_PR, LoopMode.SUPER_AUTO}:
-                    git_result = self.git_action.plan_after_pass(self.config.mode, branch)
+                    git_result = self.git_action.plan_after_pass(
+                        GitActionRequest(
+                            mode=self.config.mode,
+                            branch=branch,
+                            changed_files=list(changed_files),
+                            diff_line_count=diff_line_count,
+                            reviewer_status=review.status,
+                            validation_success=validation.success,
+                            policy_status=policy.status,
+                            protected_paths_touched=list(protected_paths_touched),
+                            disallowed_paths_touched=list(disallowed_paths_touched),
+                            max_changed_files=self.config.max_changed_files,
+                            max_diff_lines=self.config.max_diff_lines,
+                        )
+                    )
                 break
 
             if review.status is LoopStatus.UNSAFE:
@@ -265,19 +282,21 @@ class FakeGitAction:
     def __init__(self) -> None:
         self.calls: list[str] = []
 
-    def plan_after_pass(self, mode: LoopMode, branch: str) -> GitActionResult:
+    def plan_after_pass(self, request: GitActionRequest) -> GitActionResult:
         self.calls.append("plan")
         return GitActionResult(
+            git_action_provider="fake",
+            git_action_live_enabled=False,
             commit_attempted=True,
             commit_created=False,
-            push_attempted=mode in {LoopMode.AUTO_PR, LoopMode.SUPER_AUTO},
+            push_attempted=request.mode in {LoopMode.AUTO_PR, LoopMode.SUPER_AUTO},
             push_completed=False,
-            pr_attempted=mode in {LoopMode.AUTO_PR, LoopMode.SUPER_AUTO},
+            pr_attempted=request.mode in {LoopMode.AUTO_PR, LoopMode.SUPER_AUTO},
             pr_created=False,
             pr_url=None,
             merge_attempted=False,
             merge_blocked=True,
-            branch=branch,
+            branch=request.branch,
             planned_actions=["commit", "push", "pr"],
         )
 
@@ -326,11 +345,16 @@ def _build_audit(
         forbidden_commands_detected=forbidden_commands_detected,
         commit_attempted=git_result.commit_attempted,
         commit_created=git_result.commit_created,
+        commit_sha=git_result.commit_sha,
         push_attempted=git_result.push_attempted,
         push_completed=git_result.push_completed,
         pr_attempted=git_result.pr_attempted,
         pr_created=git_result.pr_created,
+        pr_number=git_result.pr_number,
         pr_url=git_result.pr_url,
+        pr_title=git_result.pr_title,
+        pr_base_branch=git_result.pr_base_branch,
+        pr_head_branch=git_result.pr_head_branch,
         merge_attempted=git_result.merge_attempted,
         merge_blocked=git_result.merge_blocked,
         deploy_attempted="deploy" in lowered_commands,
@@ -339,6 +363,11 @@ def _build_audit(
         registry_append_attempted="registry append" in lowered_commands,
         dry_run_external_calls=config.dry_run_external_calls,
         final_human_action_required=True,
+        git_action_provider=git_result.git_action_provider,
+        git_action_live_enabled=git_result.git_action_live_enabled,
+        git_action_attempted=git_result.git_action_attempted,
+        git_action_blocked_reason=git_result.git_action_blocked_reason,
+        staged_files=list(git_result.staged_files),
         reviewer_selected_model=reviewer_selected_model,
         reviewer_selected_tier=reviewer_selected_tier,
         reviewer_call_count=reviewer_call_count,

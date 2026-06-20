@@ -257,20 +257,53 @@ class ValidationResult:
 
 @dataclass
 class GitActionResult:
+    git_action_provider: str = "fake"
+    git_action_live_enabled: bool = False
+    git_action_attempted: bool = False
     commit_attempted: bool = False
     commit_created: bool = False
+    commit_sha: str | None = None
     push_attempted: bool = False
     push_completed: bool = False
     pr_attempted: bool = False
     pr_created: bool = False
+    pr_number: int | None = None
     pr_url: str | None = None
+    pr_title: str | None = None
+    pr_base_branch: str | None = None
+    pr_head_branch: str | None = None
     merge_attempted: bool = False
     merge_blocked: bool = True
+    deploy_blocked: bool = True
+    registry_append_blocked: bool = True
+    git_action_blocked_reason: str | None = None
     branch: str | None = None
+    staged_files: list[str] = field(default_factory=list)
     planned_actions: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass
+class GitActionRequest:
+    mode: LoopMode
+    branch: str
+    changed_files: list[str]
+    diff_line_count: int
+    reviewer_status: LoopStatus
+    validation_success: bool
+    policy_status: str
+    protected_paths_touched: list[str] = field(default_factory=list)
+    disallowed_paths_touched: list[str] = field(default_factory=list)
+    max_changed_files: int = 0
+    max_diff_lines: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload["mode"] = self.mode.value
+        payload["reviewer_status"] = self.reviewer_status.value
+        return payload
 
 
 AUDIT_REQUIRED_KEYS = [
@@ -291,13 +324,23 @@ AUDIT_REQUIRED_KEYS = [
     "forbidden_commands_detected",
     "commit_attempted",
     "commit_created",
+    "commit_sha",
     "push_attempted",
     "push_completed",
     "pr_attempted",
     "pr_created",
+    "pr_number",
     "pr_url",
+    "pr_title",
+    "pr_base_branch",
+    "pr_head_branch",
     "merge_attempted",
     "merge_blocked",
+    "git_action_provider",
+    "git_action_live_enabled",
+    "git_action_attempted",
+    "git_action_blocked_reason",
+    "staged_files",
     "deploy_attempted",
     "hertzner_sync_attempted",
     "hertzner_sync_completed",
@@ -333,11 +376,16 @@ class CodexLoopAudit:
     forbidden_commands_detected: list[str]
     commit_attempted: bool
     commit_created: bool
+    commit_sha: str | None
     push_attempted: bool
     push_completed: bool
     pr_attempted: bool
     pr_created: bool
+    pr_number: int | None
     pr_url: str | None
+    pr_title: str | None
+    pr_base_branch: str | None
+    pr_head_branch: str | None
     merge_attempted: bool
     merge_blocked: bool
     deploy_attempted: bool
@@ -346,6 +394,11 @@ class CodexLoopAudit:
     registry_append_attempted: bool
     dry_run_external_calls: bool
     final_human_action_required: bool
+    git_action_provider: str = "fake"
+    git_action_live_enabled: bool = False
+    git_action_attempted: bool = False
+    git_action_blocked_reason: str | None = None
+    staged_files: list[str] = field(default_factory=list)
     reviewer_selected_model: str | None = None
     reviewer_selected_tier: str | None = None
     reviewer_call_count: int = 0
@@ -384,7 +437,7 @@ class ValidationRunnerInterface(Protocol):
 
 
 class GitActionInterface(Protocol):
-    def plan_after_pass(self, mode: LoopMode, branch: str) -> GitActionResult:
+    def plan_after_pass(self, request: GitActionRequest) -> GitActionResult:
         ...
 
 

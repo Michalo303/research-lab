@@ -139,6 +139,67 @@ def test_super_auto_never_merges():
     assert audit["merge_blocked"] is True
 
 
+def test_revise_does_not_trigger_git_action():
+    config = CodexLoopConfig.for_mode(LoopMode.AUTO_PR)
+    config.max_rounds = 1
+
+    status, _, git_action = _run_loop(
+        config,
+        codex_rounds=[_round()],
+        reviewer_verdicts=[ReviewVerdict(status=LoopStatus.REVISE)],
+    )
+
+    assert status is LoopStatus.BLOCKED
+    assert git_action.calls == []
+
+
+def test_blocked_does_not_trigger_git_action():
+    status, _, git_action = _run_loop(
+        CodexLoopConfig.for_mode(LoopMode.AUTO_PR),
+        codex_rounds=[_round()],
+        reviewer_verdicts=[ReviewVerdict(status=LoopStatus.BLOCKED)],
+    )
+
+    assert status is LoopStatus.BLOCKED
+    assert git_action.calls == []
+
+
+def test_unsafe_does_not_trigger_git_action():
+    status, _, git_action = _run_loop(
+        CodexLoopConfig.for_mode(LoopMode.AUTO_PR),
+        codex_rounds=[_round()],
+        reviewer_verdicts=[ReviewVerdict(status=LoopStatus.UNSAFE)],
+    )
+
+    assert status is LoopStatus.UNSAFE
+    assert git_action.calls == []
+
+
+def test_validation_failure_does_not_trigger_git_action():
+    status, audit, git_action = _run_loop(
+        CodexLoopConfig.for_mode(LoopMode.AUTO_PR),
+        codex_rounds=[_round()],
+        reviewer_verdicts=[ReviewVerdict(status=LoopStatus.PASS)],
+        validation_results=[ValidationResult(success=False, failures=["pytest failed"])],
+    )
+
+    assert status is LoopStatus.BLOCKED
+    assert audit["tests_passed"] is False
+    assert git_action.calls == []
+
+
+def test_policy_failure_does_not_trigger_git_action():
+    status, audit, git_action = _run_loop(
+        CodexLoopConfig.for_mode(LoopMode.AUTO_PR),
+        codex_rounds=[_round(changed_files=["reports/daily/2026-06-05.md"])],
+        reviewer_verdicts=[ReviewVerdict(status=LoopStatus.PASS)],
+    )
+
+    assert status is LoopStatus.UNSAFE
+    assert audit["protected_paths_touched"] == ["reports/daily/2026-06-05.md"]
+    assert git_action.calls == []
+
+
 def test_revise_then_pass():
     status, audit, _ = _run_loop(
         CodexLoopConfig.for_mode(LoopMode.DRY_RUN),
