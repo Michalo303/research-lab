@@ -84,12 +84,29 @@ class GitHubPrAdapter:
             result.git_action_blocked_reason = f"forbidden staging path: {forbidden_staged[0]}"
             return result
 
-        tracked_status = self._run(["git", "status", "--short", "--untracked-files=no"])
+        branch_result = self._run(["git", "branch", "--show-current"])
+        if branch_result.returncode != 0:
+            result.git_action_blocked_reason = _command_failure_reason("git branch --show-current", branch_result)
+            return result
+        current_branch = branch_result.stdout.strip()
+        if current_branch != request.branch:
+            result.git_action_blocked_reason = (
+                f"current branch does not match request.branch: {current_branch or '<empty>'} != {request.branch}"
+            )
+            return result
+
+        tracked_status = self._run(["git", "status", "--short", "--untracked-files=all"])
         if tracked_status.returncode != 0:
             result.git_action_blocked_reason = _command_failure_reason("git status", tracked_status)
             return result
 
-        tracked_paths = _parse_status_paths(tracked_status.stdout)
+        tracked_paths, untracked_paths = _parse_status_output(tracked_status.stdout)
+        if untracked_paths:
+            result.git_action_blocked_reason = "untracked files are present: " + ", ".join(untracked_paths)
+            return result
+        if not normalized_files and not self.config.allow_empty_commit:
+            result.git_action_blocked_reason = "changed files are empty and allow_empty_commit is false"
+            return result
         unexpected_tracked = [path for path in tracked_paths if path not in normalized_files]
         if unexpected_tracked:
             result.git_action_blocked_reason = (
@@ -187,8 +204,6 @@ class GitHubPrAdapter:
             return "max_changed_files exceeded"
         if request.max_diff_lines and request.diff_line_count > request.max_diff_lines:
             return "max_diff_lines exceeded"
-        if not request.changed_files and not self.config.allow_empty_commit:
-            return "changed files are empty and allow_empty_commit is false"
         return None
 
     def _run(self, argv: list[str]) -> subprocess.CompletedProcess[str]:
@@ -222,17 +237,23 @@ def _is_forbidden_staging_path(path: str) -> bool:
     return any(pattern.match(normalized) for pattern in FORBIDDEN_STAGING_PATTERNS)
 
 
-def _parse_status_paths(output: str) -> list[str]:
-    paths: list[str] = []
+def _parse_status_output(output: str) -> tuple[list[str], list[str]]:
+    tracked_paths: list[str] = []
+    untracked_paths: list[str] = []
     for line in output.splitlines():
         if len(line) < 4:
             continue
+        status_prefix = line[:2]
         raw_path = line[3:].strip()
         if " -> " in raw_path:
             raw_path = raw_path.split(" -> ", 1)[1]
         if raw_path:
-            paths.append(_normalize_path(raw_path))
-    return paths
+            normalized = _normalize_path(raw_path)
+            if status_prefix == "??":
+                untracked_paths.append(normalized)
+            else:
+                tracked_paths.append(normalized)
+    return tracked_paths, untracked_paths
 
 
 def _extract_pr_url(stdout: str) -> str | None:
