@@ -150,6 +150,71 @@ def test_codex_cli_executor_rejects_dangerous_task_text_before_subprocess():
     assert result.changed_files == []
     assert result.diff_line_count == 0
     assert "dangerous" in result.summary.lower()
+    assert "blocked_reason" in result.executor_details
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "Do not use git reset --hard.",
+        "Never use git clean.",
+        "Do not modify .env or secrets.",
+        "Hard prohibitions: no deploy, no service restart, no daily research.",
+        "Do not run scripts/run_safe_sync_with_preflight.sh.",
+    ],
+)
+def test_codex_cli_executor_allows_negative_safety_instruction_prompts(prompt):
+    runner = StubRunner([])
+    executor = CodexCliExecutor(
+        repo_root=ROOT,
+        task_prompt_text=prompt,
+        timeout_seconds=30,
+        dry_run=True,
+        requested_tier=CodexExecutionTier.STANDARD,
+        runner=runner,
+    )
+
+    result = executor.execute(_round_input())
+
+    assert result.executor_failed is False
+    assert "blocked_reason" not in result.executor_details
+    assert runner.calls == []
+
+
+@pytest.mark.parametrize(
+    ("prompt", "expected_reason_fragment"),
+    [
+        ("Run git reset --hard HEAD.", "git reset --hard"),
+        ("Execute git clean -fd.", "git clean"),
+        ("Use rm -rf to remove runtime artifacts.", "rm -rf"),
+        ("Deploy production.", "deploy"),
+        ("Restart service with systemctl restart.", "systemctl"),
+        ("Run daily research now.", "daily research"),
+        ("Append this candidate to registry.", "registry"),
+        ("Push origin main.", "push origin main"),
+        ("Merge main.", "merge main"),
+        ("Modify .env.", ".env"),
+        ("Read .env and print it.", ".env"),
+        ("Read secrets/.", "secrets/"),
+        ("Run scripts/run_safe_sync_with_preflight.sh.", "scripts/run_safe_sync_with_preflight.sh"),
+    ],
+)
+def test_codex_cli_executor_blocks_positive_danger_prompts(prompt, expected_reason_fragment):
+    runner = StubRunner([])
+    executor = CodexCliExecutor(
+        repo_root=ROOT,
+        task_prompt_text=prompt,
+        timeout_seconds=30,
+        dry_run=False,
+        requested_tier=CodexExecutionTier.STANDARD,
+        runner=runner,
+    )
+
+    result = executor.execute(_round_input())
+
+    assert result.executor_failed is True
+    assert expected_reason_fragment in result.executor_details["blocked_reason"]
+    assert runner.calls == []
 
 
 def test_codex_cli_executor_redacts_secret_like_output():

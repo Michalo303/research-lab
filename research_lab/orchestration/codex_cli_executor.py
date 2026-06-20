@@ -16,21 +16,35 @@ from research_lab.orchestration.codex_autonomous_contract import (
 )
 
 
-EXECUTOR_BLOCKED_TASK_FRAGMENTS = [
-    "git reset --hard",
-    "git clean",
-    "rm -rf",
-    "deploy",
-    "systemctl",
-    "service restart",
-    "daily research",
-    "run_daily",
-    "registry append",
-    "push origin main",
-    "merge main",
-    "scripts/run_safe_sync_with_preflight.sh",
-    ".env",
-    "secrets/",
+NEGATIVE_CONTEXT_MARKERS = [
+    "do not",
+    "don't",
+    "never",
+    "must not",
+    "forbidden",
+    "hard prohibitions",
+    "disallowed",
+    "not allowed",
+    "safety constraints",
+    "no ",
+]
+
+POSITIVE_DANGEROUS_INTENTS: list[tuple[str, tuple[str, ...]]] = [
+    ("git reset --hard", ("run git reset --hard", "execute git reset --hard", "use git reset --hard")),
+    ("git clean", ("run git clean", "execute git clean", "use git clean")),
+    ("rm -rf", ("use rm -rf", "run rm -rf", "delete files with rm -rf")),
+    ("deploy", ("deploy production", "run deploy", "execute deploy")),
+    ("systemctl", ("systemctl restart", "restart service", "service restart")),
+    ("daily research", ("run daily research", "daily research now", "run_daily")),
+    ("registry", ("append this candidate to registry", "append to registry", "registry append")),
+    ("push origin main", ("push origin main",)),
+    ("merge main", ("merge main",)),
+    (".env", ("modify .env", "read .env", "print .env", "open .env")),
+    ("secrets/", ("modify secrets", "read secrets", "print secrets", "read secrets/")),
+    (
+        "scripts/run_safe_sync_with_preflight.sh",
+        ("run scripts/run_safe_sync_with_preflight.sh", "execute scripts/run_safe_sync_with_preflight.sh"),
+    ),
 ]
 
 
@@ -82,13 +96,15 @@ class CodexCliExecutor(CodexExecutorInterface):
                     stderr="",
                     duration_seconds=0.0,
                     apply_budget=False,
+                    blocked_reason=None,
                 ),
             )
-        if self._contains_dangerous_text(prompt):
+        blocked_reason = self._screen_dangerous_intent(prompt)
+        if blocked_reason:
             return CodexRoundResult(
                 changed_files=[],
                 diff_line_count=0,
-                summary="Blocked dangerous task text before Codex CLI execution.",
+                summary=f"Blocked dangerous task intent before Codex CLI execution. {blocked_reason}",
                 meaningful_progress=False,
                 executor_failed=True,
                 executor_details=self._build_executor_details(
@@ -99,6 +115,7 @@ class CodexCliExecutor(CodexExecutorInterface):
                     stderr="",
                     duration_seconds=0.0,
                     apply_budget=False,
+                    blocked_reason=blocked_reason,
                 ),
             )
 
@@ -116,6 +133,7 @@ class CodexCliExecutor(CodexExecutorInterface):
                     stderr="",
                     duration_seconds=0.0,
                     apply_budget=False,
+                    blocked_reason=None,
                 ),
             )
 
@@ -154,6 +172,7 @@ class CodexCliExecutor(CodexExecutorInterface):
                     stderr=stderr,
                     duration_seconds=duration_seconds,
                     apply_budget=True,
+                    blocked_reason=None,
                 ),
             )
         except subprocess.TimeoutExpired as exc:
@@ -176,6 +195,7 @@ class CodexCliExecutor(CodexExecutorInterface):
                     stderr=self._sanitize_text((exc.stderr or "") if isinstance(exc.stderr, str) else ""),
                     duration_seconds=duration_seconds,
                     apply_budget=True,
+                    blocked_reason=None,
                 ),
             )
 
@@ -316,9 +336,23 @@ class CodexCliExecutor(CodexExecutorInterface):
             reasons.append("super_auto round exceeded 5")
         return reasons
 
-    def _contains_dangerous_text(self, prompt: str) -> bool:
-        lowered = prompt.lower()
-        return any(fragment.lower() in lowered for fragment in EXECUTOR_BLOCKED_TASK_FRAGMENTS)
+    def _screen_dangerous_intent(self, prompt: str) -> str | None:
+        lowered = " ".join(prompt.lower().split())
+        for fragment, intents in POSITIVE_DANGEROUS_INTENTS:
+            matched_intent = next((intent for intent in intents if intent in lowered), None)
+            if not matched_intent:
+                continue
+            if self._intent_is_negated(lowered, matched_intent):
+                continue
+            return f"Blocked dangerous intent containing `{fragment}`."
+        return None
+
+    def _intent_is_negated(self, prompt: str, matched_intent: str) -> bool:
+        index = prompt.find(matched_intent)
+        if index == -1:
+            return False
+        context = prompt[max(0, index - 50) : index]
+        return any(marker in context for marker in NEGATIVE_CONTEXT_MARKERS)
 
     def _collect_changed_files(self) -> list[str]:
         completed = self.runner(
@@ -375,10 +409,11 @@ class CodexCliExecutor(CodexExecutorInterface):
         stderr: str,
         duration_seconds: float,
         apply_budget: bool,
+        blocked_reason: str | None,
     ) -> dict[str, object]:
         if apply_budget:
             self._apply_budget_counters(decision)
-        return {
+        details = {
             "command_argv": argv,
             "returncode": returncode,
             "stdout": stdout,
@@ -387,6 +422,9 @@ class CodexCliExecutor(CodexExecutorInterface):
             "tier_decision": decision.to_dict(),
             "reasoning_flag_supported": False,
         }
+        if blocked_reason:
+            details["blocked_reason"] = blocked_reason
+        return details
 
     def _apply_budget_counters(self, decision: CodexTierDecision) -> None:
         if decision.budget_blocked:
