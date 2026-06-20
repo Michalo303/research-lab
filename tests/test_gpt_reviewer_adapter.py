@@ -565,6 +565,25 @@ def test_env_like_values_are_redacted_before_provider_call():
     assert "[REDACTED]" in payload
 
 
+def test_private_key_like_text_is_redacted_before_provider_call():
+    provider = StubReviewerProvider([_provider_json(verdict="PASS")])
+    adapter = GptReviewerAdapter(provider=provider, dry_run=False)
+    round_result = _round_result(
+        details={"stdout": "-----BEGIN PRIVATE KEY-----\nabc123\n-----END PRIVATE KEY-----"}
+    )
+
+    adapter.review_with_context(
+        round_input=_round_input(),
+        round_result=round_result,
+        validation_result=_validation(),
+        policy_summary=_policy_summary(),
+    )
+
+    payload = provider.calls[0]["payload"]
+    assert "BEGIN PRIVATE KEY" not in payload
+    assert "[REDACTED PRIVATE KEY]" in payload
+
+
 def test_long_diff_context_is_truncated_with_audit_note():
     provider = StubReviewerProvider([_provider_json(verdict="PASS")])
     adapter = GptReviewerAdapter(provider=provider, dry_run=False, max_summary_chars=120)

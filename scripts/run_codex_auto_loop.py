@@ -30,9 +30,15 @@ from research_lab.orchestration.gpt_reviewer_adapter import (
     DisabledReviewerProvider,
     GptReviewerAdapter,
 )
+from research_lab.orchestration.openai_reviewer_provider import OpenAICompatibleReviewerProvider
+from research_lab.orchestration.reviewer_provider_config import (
+    ReviewerProviderConfig,
+    reviewer_provider_preflight,
+)
 
 TASKS_INBOX = ROOT / "tasks" / "inbox"
 RUNS_DIR = ROOT / "codex_runs"
+REVIEW_ONLY_MODE = "review_only"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -41,6 +47,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--executor", choices=["fake", "codex_cli"], default="fake")
     parser.add_argument("--codex-timeout-seconds", type=int, default=300)
     parser.add_argument("--reviewer", choices=["fake", "gpt"], default="fake")
+    parser.add_argument("--reviewer-provider", choices=["disabled", "openai-compatible"], default="disabled")
     parser.add_argument(
         "--reviewer-tier",
         choices=[tier.value for tier in ReviewerModelTier],
@@ -48,6 +55,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--reviewer-model", default="gpt-reviewer-high")
     parser.add_argument("--reviewer-very-high-model", default="gpt-reviewer-very-high")
+    parser.add_argument("--reviewer-api-key-env", default="OPENAI_API_KEY")
+    parser.add_argument("--reviewer-base-url")
+    parser.add_argument("--reviewer-timeout-seconds", type=int, default=60)
+    parser.add_argument("--reviewer-max-output-tokens", type=int, default=1200)
+    parser.add_argument("--enable-live-reviewer", choices=["true", "false"], default="false")
     parser.add_argument("--allow-reviewer-very-high", choices=["true", "false"], default="false")
     parser.add_argument("--max-reviewer-calls", type=int, default=20)
     parser.add_argument("--max-reviewer-very-high-calls", type=int, default=1)
@@ -63,7 +75,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-high-rounds", type=int, default=6)
     parser.add_argument("--max-very-high-rounds", type=int, default=1)
     parser.add_argument("--max-codex-calls", type=int, default=20)
-    parser.add_argument("--mode", choices=[mode.value for mode in LoopMode], default=LoopMode.DRY_RUN.value)
+    parser.add_argument(
+        "--mode",
+        choices=[mode.value for mode in LoopMode] + [REVIEW_ONLY_MODE],
+        default=LoopMode.DRY_RUN.value,
+    )
     parser.add_argument("--max-rounds", type=int)
     parser.add_argument("--max-runtime-minutes", type=int)
     parser.add_argument("--max-changed-files", type=int)
@@ -75,7 +91,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    mode = LoopMode(args.mode)
+    mode = LoopMode.DRY_RUN if args.mode == REVIEW_ONLY_MODE else LoopMode(args.mode)
     config = CodexLoopConfig.for_mode(mode)
     _apply_overrides(config, args)
 
@@ -156,13 +172,42 @@ def _build_reviewer(
     args: argparse.Namespace,
     config: CodexLoopConfig,
     task_prompt_text: str,
+    provider_transport=None,
 ):
     if args.reviewer == "gpt":
-        return GptReviewerAdapter(
-            provider=DisabledReviewerProvider(),
+        selected_tier = ReviewerModelTier(args.reviewer_tier)
+        provider_config = ReviewerProviderConfig(
+            api_key_env_var=args.reviewer_api_key_env,
+            base_url=args.reviewer_base_url,
+            model=args.reviewer_very_high_model if selected_tier is ReviewerModelTier.VERY_HIGH else args.reviewer_model,
+            timeout_seconds=args.reviewer_timeout_seconds,
+            max_output_tokens=args.reviewer_max_output_tokens,
+        )
+        live_enabled = args.enable_live_reviewer.lower() == "true"
+        preflight = reviewer_provider_preflight(
+            provider_name=args.reviewer_provider,
+            live_reviewer_enabled=live_enabled,
+            config=provider_config,
+            selected_tier=selected_tier,
+            allow_very_high=args.allow_reviewer_very_high.lower() == "true",
+            max_reviewer_calls=args.max_reviewer_calls,
+            max_very_high_calls=args.max_reviewer_very_high_calls,
+        )
+        if args.reviewer_provider == "openai-compatible" and live_enabled:
+            provider = OpenAICompatibleReviewerProvider(
+                config=provider_config,
+                transport=provider_transport,
+            )
+        else:
+            disabled_reason = "Live GPT reviewer provider is disabled."
+            if args.reviewer_provider != "openai-compatible":
+                disabled_reason = "Reviewer provider is disabled."
+            provider = DisabledReviewerProvider(reason=disabled_reason)
+        reviewer = GptReviewerAdapter(
+            provider=provider,
             dry_run=config.dry_run_external_calls,
             task_text=task_prompt_text,
-            requested_tier=ReviewerModelTier(args.reviewer_tier),
+            requested_tier=selected_tier,
             budget_config=ReviewerBudgetConfig(
                 max_reviewer_calls_per_run=args.max_reviewer_calls,
                 max_very_high_calls_per_run=args.max_reviewer_very_high_calls,
@@ -172,7 +217,20 @@ def _build_reviewer(
                 allow_very_high=args.allow_reviewer_very_high.lower() == "true",
             ),
         )
-    return FakeReviewer()
+        reviewer.reviewer_preflight = preflight
+        return reviewer
+
+    reviewer = FakeReviewer()
+    reviewer.reviewer_preflight = reviewer_provider_preflight(
+        provider_name="disabled",
+        live_reviewer_enabled=False,
+        config=ReviewerProviderConfig(),
+        selected_tier=ReviewerModelTier.HIGH,
+        allow_very_high=False,
+        max_reviewer_calls=0,
+        max_very_high_calls=0,
+    )
+    return reviewer
 
 
 def _resolve_task_file(task_file: str | None) -> tuple[Path, bool]:
@@ -196,6 +254,8 @@ def _load_task_prompt_text(task_path: Path, placeholder_used: bool) -> str:
 
 
 def _build_report(audit: dict[str, object]) -> str:
+    reviewer_preflight = audit.get("reviewer_preflight", {})
+    reviewer_provider_metadata = audit.get("reviewer_provider_metadata", {})
     return (
         "# Codex Autonomous Loop v1 Report\n\n"
         f"- Status: `{audit['final_status']}`\n"
@@ -204,6 +264,10 @@ def _build_report(audit: dict[str, object]) -> str:
         f"- Branch: `{audit['branch']}`\n"
         f"- Rounds used: `{audit['rounds_used']}/{audit['max_rounds']}`\n"
         f"- Tests requested: `{', '.join(audit['tests_requested']) if audit['tests_requested'] else 'none'}`\n"
+        f"- Reviewer provider: `{reviewer_preflight.get('provider_selected', 'disabled')}`\n"
+        f"- Live reviewer enabled: `{reviewer_preflight.get('live_reviewer_enabled', False)}`\n"
+        f"- Reviewer credential present: `{reviewer_preflight.get('api_key_present', False)}`\n"
+        f"- Reviewer live call attempted: `{reviewer_provider_metadata.get('live_call_attempted', False)}`\n"
         f"- Human action required: `{audit['final_human_action_required']}`\n\n"
         "This skeleton is dry-run only.\n"
         "Runtime artifact only; do not commit audit.json or final_report.md outputs.\n"

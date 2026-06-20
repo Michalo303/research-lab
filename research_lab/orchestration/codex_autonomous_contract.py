@@ -309,6 +309,8 @@ AUDIT_REQUIRED_KEYS = [
     "reviewer_call_count",
     "reviewer_budget_blocked",
     "reviewer_redaction_notes",
+    "reviewer_provider_metadata",
+    "reviewer_preflight",
 ]
 
 
@@ -349,6 +351,8 @@ class CodexLoopAudit:
     reviewer_call_count: int = 0
     reviewer_budget_blocked: bool = False
     reviewer_redaction_notes: list[str] = field(default_factory=list)
+    reviewer_provider_metadata: dict[str, Any] = field(default_factory=dict)
+    reviewer_preflight: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
