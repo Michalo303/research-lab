@@ -291,3 +291,25 @@ def test_cli_report_marks_outputs_as_runtime_artifacts_only():
 
     assert "dry-run only" in report
     assert "Runtime artifact only" in report
+
+
+def test_executor_failure_produces_blocked_without_git_actions():
+    failed_round = CodexRoundResult(
+        changed_files=[],
+        diff_line_count=0,
+        proposed_commands=[],
+        summary="executor failed",
+        patch_digest="",
+        meaningful_progress=False,
+        executor_failed=True,
+    )
+
+    status, audit, git_action = _run_loop(
+        CodexLoopConfig.for_mode(LoopMode.DRY_RUN),
+        codex_rounds=[failed_round],
+        reviewer_verdicts=[ReviewVerdict(status=LoopStatus.PASS)],
+    )
+
+    assert status is LoopStatus.BLOCKED
+    assert git_action.calls == []
+    assert audit["rounds_used"] == 1
