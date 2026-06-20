@@ -78,7 +78,7 @@ class GitHubPrAdapter:
             result.git_action_blocked_reason = blocked_reason
             return result
 
-        normalized_files = [_normalize_path(path) for path in request.changed_files]
+        normalized_files = _deduplicate_preserving_order(_normalize_path(path) for path in request.changed_files)
         forbidden_staged = [path for path in normalized_files if _is_forbidden_staging_path(path)]
         if forbidden_staged:
             result.git_action_blocked_reason = f"forbidden staging path: {forbidden_staged[0]}"
@@ -94,6 +94,12 @@ class GitHubPrAdapter:
         if unexpected_tracked:
             result.git_action_blocked_reason = (
                 "tracked working tree contains unexpected paths: " + ", ".join(unexpected_tracked)
+            )
+            return result
+        missing_tracked = [path for path in normalized_files if path not in tracked_paths]
+        if missing_tracked:
+            result.git_action_blocked_reason = (
+                "requested changed files are not present in tracked status: " + ", ".join(missing_tracked)
             )
             return result
 
@@ -251,3 +257,14 @@ def _command_failure_reason(command_name: str, result: subprocess.CompletedProce
     stdout = (result.stdout or "").strip()
     detail = stderr or stdout or f"return code {result.returncode}"
     return f"{command_name} failed: {detail}"
+
+
+def _deduplicate_preserving_order(paths) -> list[str]:
+    deduplicated: list[str] = []
+    seen: set[str] = set()
+    for path in paths:
+        if path in seen:
+            continue
+        seen.add(path)
+        deduplicated.append(path)
+    return deduplicated
