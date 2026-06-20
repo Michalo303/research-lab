@@ -4,6 +4,7 @@ from research_lab.orchestration.codex_autonomous_contract import (
     AUDIT_REQUIRED_KEYS,
     CodexLoopAudit,
     CodexLoopConfig,
+    DEFAULT_ALLOWED_PATHS,
     DEFAULT_FORBIDDEN_COMMAND_FRAGMENTS,
     DEFAULT_PROTECTED_PATHS,
     GitActionResult,
@@ -37,6 +38,14 @@ def test_dry_run_defaults_are_bounded():
 
 
 def test_minimum_protected_paths_and_forbidden_fragments_are_present():
+    assert DEFAULT_ALLOWED_PATHS == [
+        ".gitignore",
+        "research_lab/",
+        "scripts/",
+        "tests/",
+        "tasks/",
+        "codex_runs/",
+    ]
     assert DEFAULT_PROTECTED_PATHS == [
         ".env",
         "secrets/",

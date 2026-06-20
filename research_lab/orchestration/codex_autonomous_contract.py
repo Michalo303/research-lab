@@ -21,6 +21,7 @@ class LoopMode(str, Enum):
 
 
 DEFAULT_ALLOWED_PATHS = [
+    ".gitignore",
     "research_lab/",
     "scripts/",
     "tests/",

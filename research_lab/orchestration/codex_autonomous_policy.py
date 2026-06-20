@@ -8,6 +8,7 @@ from research_lab.orchestration.codex_autonomous_contract import CodexLoopConfig
 @dataclass
 class PolicyEvaluation:
     status: str
+    disallowed_paths_touched: list[str] = field(default_factory=list)
     protected_paths_touched: list[str] = field(default_factory=list)
     forbidden_commands_detected: list[str] = field(default_factory=list)
     changed_file_limit_exceeded: bool = False
@@ -30,6 +31,12 @@ def evaluate_round_policy(
         path
         for path in normalized_files
         if any(_path_matches(path, protected) for protected in config.protected_paths)
+    ]
+    disallowed_paths_touched = [
+        path
+        for path in normalized_files
+        if path not in protected_paths_touched
+        if not any(_path_matches(path, allowed) for allowed in config.allowed_paths)
     ]
 
     forbidden_commands_detected: list[str] = []
@@ -65,11 +72,18 @@ def evaluate_round_policy(
     diff_limit_exceeded = diff_line_count > config.max_diff_lines
 
     status = "PASS"
-    if protected_paths_touched or forbidden_commands_detected or changed_file_limit_exceeded or diff_limit_exceeded:
+    if (
+        protected_paths_touched
+        or disallowed_paths_touched
+        or forbidden_commands_detected
+        or changed_file_limit_exceeded
+        or diff_limit_exceeded
+    ):
         status = "UNSAFE"
 
     return PolicyEvaluation(
         status=status,
+        disallowed_paths_touched=disallowed_paths_touched,
         protected_paths_touched=protected_paths_touched,
         forbidden_commands_detected=sorted(set(forbidden_commands_detected)),
         changed_file_limit_exceeded=changed_file_limit_exceeded,

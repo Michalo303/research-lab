@@ -20,6 +20,42 @@ def test_protected_path_change_is_unsafe():
 
     assert result.status == "UNSAFE"
     assert result.protected_paths_touched == ["reports/daily/2026-06-05.md"]
+    assert result.disallowed_paths_touched == []
+
+
+def test_allowed_paths_are_permitted_for_expected_prefixes_and_exact_paths():
+    for path in (
+        "research_lab/orchestration/codex_autonomous_policy.py",
+        "tests/test_codex_autonomous_policy.py",
+        "scripts/run_codex_auto_loop.py",
+        "tasks/inbox/.gitkeep",
+        "codex_runs/.gitkeep",
+        ".gitignore",
+    ):
+        result = evaluate_round_policy(
+            _config(),
+            changed_files=[path],
+            diff_line_count=1,
+            proposed_commands=[],
+            branch="codex/safe",
+            human_merge_confirmed=False,
+        )
+        assert result.status == "PASS"
+        assert result.disallowed_paths_touched == []
+
+
+def test_file_outside_allowed_paths_is_unsafe():
+    result = evaluate_round_policy(
+        _config(),
+        changed_files=["docs/out_of_scope.md"],
+        diff_line_count=1,
+        proposed_commands=[],
+        branch="codex/safe",
+        human_merge_confirmed=False,
+    )
+
+    assert result.status == "UNSAFE"
+    assert result.disallowed_paths_touched == ["docs/out_of_scope.md"]
 
 
 def test_forbidden_command_is_unsafe():
