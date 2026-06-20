@@ -233,6 +233,298 @@ def test_unsafe_provider_recommendation_maps_to_unsafe():
     assert "unsafe recommendation" in verdict.summary.lower()
 
 
+def test_safety_note_about_env_and_secrets_does_not_become_unsafe():
+    provider = StubReviewerProvider(
+        [
+            _provider_json(
+                verdict="PASS",
+                safety_notes=["Do not modify .env or secrets."],
+            )
+        ]
+    )
+    adapter = GptReviewerAdapter(provider=provider, dry_run=False)
+
+    verdict = adapter.review_with_context(
+        round_input=_round_input(),
+        round_result=_round_result(),
+        validation_result=_validation(),
+        policy_summary=_policy_summary(),
+    )
+
+    assert verdict.status is LoopStatus.PASS
+
+
+def test_safety_note_with_deploy_restart_and_daily_research_does_not_become_unsafe():
+    provider = StubReviewerProvider(
+        [
+            _provider_json(
+                verdict="PASS",
+                safety_notes=["No deploy, no service restart, no daily research."],
+            )
+        ]
+    )
+    adapter = GptReviewerAdapter(provider=provider, dry_run=False)
+
+    verdict = adapter.review_with_context(
+        round_input=_round_input(),
+        round_result=_round_result(),
+        validation_result=_validation(),
+        policy_summary=_policy_summary(),
+    )
+
+    assert verdict.status is LoopStatus.PASS
+
+
+def test_revise_required_change_with_negative_git_reset_instruction_does_not_become_unsafe():
+    provider = StubReviewerProvider(
+        [
+            _provider_json(
+                verdict="REVISE",
+                required_changes=["Add a test. Do not use git reset --hard."],
+            )
+        ]
+    )
+    adapter = GptReviewerAdapter(provider=provider, dry_run=False)
+
+    verdict = adapter.review_with_context(
+        round_input=_round_input(),
+        round_result=_round_result(),
+        validation_result=_validation(),
+        policy_summary=_policy_summary(),
+    )
+
+    assert verdict.status is LoopStatus.REVISE
+
+
+def test_safety_note_about_safe_sync_wrapper_does_not_become_unsafe():
+    provider = StubReviewerProvider(
+        [
+            _provider_json(
+                verdict="REVISE",
+                safety_notes=["Do not run scripts/run_safe_sync_with_preflight.sh."],
+            )
+        ]
+    )
+    adapter = GptReviewerAdapter(provider=provider, dry_run=False)
+
+    verdict = adapter.review_with_context(
+        round_input=_round_input(),
+        round_result=_round_result(),
+        validation_result=_validation(),
+        policy_summary=_policy_summary(),
+    )
+
+    assert verdict.status is LoopStatus.REVISE
+
+
+def test_positive_git_reset_recommendation_still_maps_to_unsafe():
+    provider = StubReviewerProvider(
+        [_provider_json(verdict="REVISE", required_changes=["Run git reset --hard."])]
+    )
+    adapter = GptReviewerAdapter(provider=provider, dry_run=False)
+
+    verdict = adapter.review_with_context(
+        round_input=_round_input(),
+        round_result=_round_result(),
+        validation_result=_validation(),
+        policy_summary=_policy_summary(),
+    )
+
+    assert verdict.status is LoopStatus.UNSAFE
+
+
+def test_positive_git_clean_recommendation_still_maps_to_unsafe():
+    provider = StubReviewerProvider(
+        [_provider_json(verdict="REVISE", required_changes=["Execute git clean -fd."])]
+    )
+    adapter = GptReviewerAdapter(provider=provider, dry_run=False)
+
+    verdict = adapter.review_with_context(
+        round_input=_round_input(),
+        round_result=_round_result(),
+        validation_result=_validation(),
+        policy_summary=_policy_summary(),
+    )
+
+    assert verdict.status is LoopStatus.UNSAFE
+
+
+def test_positive_rm_rf_recommendation_still_maps_to_unsafe():
+    provider = StubReviewerProvider(
+        [_provider_json(verdict="REVISE", required_changes=["Use rm -rf to delete files."])]
+    )
+    adapter = GptReviewerAdapter(provider=provider, dry_run=False)
+
+    verdict = adapter.review_with_context(
+        round_input=_round_input(),
+        round_result=_round_result(),
+        validation_result=_validation(),
+        policy_summary=_policy_summary(),
+    )
+
+    assert verdict.status is LoopStatus.UNSAFE
+
+
+def test_positive_deploy_recommendation_still_maps_to_unsafe():
+    provider = StubReviewerProvider(
+        [_provider_json(verdict="REVISE", required_changes=["Deploy to production."])]
+    )
+    adapter = GptReviewerAdapter(provider=provider, dry_run=False)
+
+    verdict = adapter.review_with_context(
+        round_input=_round_input(),
+        round_result=_round_result(),
+        validation_result=_validation(),
+        policy_summary=_policy_summary(),
+    )
+
+    assert verdict.status is LoopStatus.UNSAFE
+
+
+def test_positive_service_restart_recommendation_still_maps_to_unsafe():
+    provider = StubReviewerProvider(
+        [_provider_json(verdict="REVISE", required_changes=["Restart the service with systemctl restart."])]
+    )
+    adapter = GptReviewerAdapter(provider=provider, dry_run=False)
+
+    verdict = adapter.review_with_context(
+        round_input=_round_input(),
+        round_result=_round_result(),
+        validation_result=_validation(),
+        policy_summary=_policy_summary(),
+    )
+
+    assert verdict.status is LoopStatus.UNSAFE
+
+
+def test_positive_daily_research_recommendation_still_maps_to_unsafe():
+    provider = StubReviewerProvider(
+        [_provider_json(verdict="REVISE", required_changes=["Run daily research now."])]
+    )
+    adapter = GptReviewerAdapter(provider=provider, dry_run=False)
+
+    verdict = adapter.review_with_context(
+        round_input=_round_input(),
+        round_result=_round_result(),
+        validation_result=_validation(),
+        policy_summary=_policy_summary(),
+    )
+
+    assert verdict.status is LoopStatus.UNSAFE
+
+
+def test_positive_registry_append_recommendation_still_maps_to_unsafe():
+    provider = StubReviewerProvider(
+        [_provider_json(verdict="REVISE", required_changes=["Append this to registry."])]
+    )
+    adapter = GptReviewerAdapter(provider=provider, dry_run=False)
+
+    verdict = adapter.review_with_context(
+        round_input=_round_input(),
+        round_result=_round_result(),
+        validation_result=_validation(),
+        policy_summary=_policy_summary(),
+    )
+
+    assert verdict.status is LoopStatus.UNSAFE
+
+
+def test_positive_push_origin_main_recommendation_still_maps_to_unsafe():
+    provider = StubReviewerProvider(
+        [_provider_json(verdict="REVISE", required_changes=["Push origin main."])]
+    )
+    adapter = GptReviewerAdapter(provider=provider, dry_run=False)
+
+    verdict = adapter.review_with_context(
+        round_input=_round_input(),
+        round_result=_round_result(),
+        validation_result=_validation(),
+        policy_summary=_policy_summary(),
+    )
+
+    assert verdict.status is LoopStatus.UNSAFE
+
+
+def test_positive_merge_main_recommendation_still_maps_to_unsafe():
+    provider = StubReviewerProvider(
+        [_provider_json(verdict="REVISE", required_changes=["Merge main."])]
+    )
+    adapter = GptReviewerAdapter(provider=provider, dry_run=False)
+
+    verdict = adapter.review_with_context(
+        round_input=_round_input(),
+        round_result=_round_result(),
+        validation_result=_validation(),
+        policy_summary=_policy_summary(),
+    )
+
+    assert verdict.status is LoopStatus.UNSAFE
+
+
+def test_positive_modify_env_recommendation_still_maps_to_unsafe():
+    provider = StubReviewerProvider(
+        [_provider_json(verdict="REVISE", required_changes=["Modify .env."])]
+    )
+    adapter = GptReviewerAdapter(provider=provider, dry_run=False)
+
+    verdict = adapter.review_with_context(
+        round_input=_round_input(),
+        round_result=_round_result(),
+        validation_result=_validation(),
+        policy_summary=_policy_summary(),
+    )
+
+    assert verdict.status is LoopStatus.UNSAFE
+
+
+def test_positive_read_env_recommendation_still_maps_to_unsafe():
+    provider = StubReviewerProvider(
+        [_provider_json(verdict="REVISE", required_changes=["Read .env and print it."])]
+    )
+    adapter = GptReviewerAdapter(provider=provider, dry_run=False)
+
+    verdict = adapter.review_with_context(
+        round_input=_round_input(),
+        round_result=_round_result(),
+        validation_result=_validation(),
+        policy_summary=_policy_summary(),
+    )
+
+    assert verdict.status is LoopStatus.UNSAFE
+
+
+def test_positive_read_secrets_recommendation_still_maps_to_unsafe():
+    provider = StubReviewerProvider(
+        [_provider_json(verdict="REVISE", required_changes=["Read secrets/."])]
+    )
+    adapter = GptReviewerAdapter(provider=provider, dry_run=False)
+
+    verdict = adapter.review_with_context(
+        round_input=_round_input(),
+        round_result=_round_result(),
+        validation_result=_validation(),
+        policy_summary=_policy_summary(),
+    )
+
+    assert verdict.status is LoopStatus.UNSAFE
+
+
+def test_positive_safe_sync_wrapper_recommendation_still_maps_to_unsafe():
+    provider = StubReviewerProvider(
+        [_provider_json(verdict="REVISE", required_changes=["Run scripts/run_safe_sync_with_preflight.sh."])]
+    )
+    adapter = GptReviewerAdapter(provider=provider, dry_run=False)
+
+    verdict = adapter.review_with_context(
+        round_input=_round_input(),
+        round_result=_round_result(),
+        validation_result=_validation(),
+        policy_summary=_policy_summary(),
+    )
+
+    assert verdict.status is LoopStatus.UNSAFE
+
+
 def test_secret_like_strings_are_redacted_before_provider_call():
     provider = StubReviewerProvider([_provider_json(verdict="PASS")])
     adapter = GptReviewerAdapter(provider=provider, dry_run=False)

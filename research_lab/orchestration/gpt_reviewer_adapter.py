@@ -16,21 +16,38 @@ from research_lab.orchestration.codex_autonomous_contract import (
 )
 
 
-REVIEWER_UNSAFE_FRAGMENTS = [
-    "git reset --hard",
-    "git clean",
-    "rm -rf",
-    "deploy",
-    "systemctl",
-    "service restart",
-    "daily research",
-    "run_daily",
-    "registry append",
-    "push origin main",
-    "merge main",
-    "scripts/run_safe_sync_with_preflight.sh",
-    ".env",
-    "secrets/",
+NEGATIVE_CONTEXT_MARKERS = [
+    "do not",
+    "don't",
+    "never",
+    "must not",
+    "forbidden",
+    "hard prohibitions",
+    "disallowed",
+    "not allowed",
+    "safety note",
+    "safety_notes",
+    "no deploy",
+    "no service restart",
+    "avoid",
+]
+
+POSITIVE_UNSAFE_INTENTS: list[tuple[str, tuple[str, ...]]] = [
+    ("git reset --hard", ("run git reset --hard", "execute git reset --hard", "use git reset --hard")),
+    ("git clean", ("run git clean", "execute git clean", "use git clean")),
+    ("rm -rf", ("use rm -rf", "run rm -rf", "delete files with rm -rf")),
+    ("deploy", ("deploy to production", "deploy production", "run deploy", "execute deploy")),
+    ("systemctl", ("systemctl restart", "restart the service", "restart service", "service restart")),
+    ("daily research", ("run daily research", "daily research now", "run_daily")),
+    ("registry append", ("append this to registry", "append to registry", "registry append")),
+    ("push origin main", ("push origin main",)),
+    ("merge main", ("merge main",)),
+    (".env", ("modify .env", "read .env", "print it", "print .env", "open .env")),
+    ("secrets/", ("modify secrets", "read secrets", "print secrets", "read secrets/")),
+    (
+        "scripts/run_safe_sync_with_preflight.sh",
+        ("run scripts/run_safe_sync_with_preflight.sh", "execute scripts/run_safe_sync_with_preflight.sh"),
+    ),
 ]
 
 RESPONSE_REQUIRED_FIELDS = {
@@ -287,15 +304,13 @@ class GptReviewerAdapter(ReviewerInterface):
         )
         self.last_response = response
 
-        unsafe_text = "\n".join(
-            [response.reason, *response.required_changes, *response.safety_notes]
-        ).lower()
-        if any(fragment in unsafe_text for fragment in REVIEWER_UNSAFE_FRAGMENTS):
+        unsafe_detected, unsafe_reason = self._detect_unsafe_reviewer_output(response)
+        if unsafe_detected:
             unsafe_summary = "Unsafe recommendation detected in GPT reviewer output."
             self.last_response = ReviewerResponse(
                 verdict=LoopStatus.UNSAFE,
                 confidence=response.confidence,
-                reason=unsafe_summary,
+                reason=unsafe_reason or unsafe_summary,
                 required_changes=response.required_changes,
                 safety_notes=response.safety_notes,
                 escalation_recommended=response.escalation_recommended,
@@ -337,6 +352,31 @@ class GptReviewerAdapter(ReviewerInterface):
         if tier is ReviewerModelTier.HIGH:
             return self.budget_config.high_model
         return self.budget_config.default_model
+
+    def _detect_unsafe_reviewer_output(self, response: ReviewerResponse) -> tuple[bool, str]:
+        for text in [response.reason, *response.required_changes, *response.safety_notes]:
+            matched_fragment = self._screen_dangerous_intent(text)
+            if matched_fragment:
+                return True, f"Unsafe recommendation detected in GPT reviewer output: {matched_fragment}"
+        return False, ""
+
+    def _screen_dangerous_intent(self, text: str) -> str | None:
+        lowered = " ".join(text.lower().split())
+        for fragment, intents in POSITIVE_UNSAFE_INTENTS:
+            matched_intent = next((intent for intent in intents if intent in lowered), None)
+            if not matched_intent:
+                continue
+            if self._intent_is_negated(lowered, matched_intent):
+                continue
+            return fragment
+        return None
+
+    def _intent_is_negated(self, text: str, matched_intent: str) -> bool:
+        index = text.find(matched_intent)
+        if index == -1:
+            return False
+        context = text[max(0, index - 80) : index]
+        return any(marker in context for marker in NEGATIVE_CONTEXT_MARKERS)
 
     def _sanitize_payload(self, value: Any) -> Any:
         if isinstance(value, dict):
