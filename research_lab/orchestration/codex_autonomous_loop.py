@@ -49,6 +49,8 @@ class CodexAutonomousLoop:
         reviewer_call_count = 0
         reviewer_budget_blocked = False
         reviewer_redaction_notes: list[str] = []
+        reviewer_provider_metadata: dict[str, object] = {}
+        reviewer_preflight: dict[str, object] = dict(getattr(self.reviewer, "reviewer_preflight", {}) or {})
 
         for round_number in range(1, self.config.max_rounds + 1):
             round_input = CodexRoundInput(
@@ -85,6 +87,8 @@ class CodexAutonomousLoop:
                     reviewer_call_count=reviewer_call_count,
                     reviewer_budget_blocked=reviewer_budget_blocked,
                     reviewer_redaction_notes=reviewer_redaction_notes,
+                    reviewer_provider_metadata=reviewer_provider_metadata,
+                    reviewer_preflight=reviewer_preflight,
                 )
 
             policy = evaluate_round_policy(
@@ -120,6 +124,8 @@ class CodexAutonomousLoop:
                     reviewer_call_count=reviewer_call_count,
                     reviewer_budget_blocked=reviewer_budget_blocked,
                     reviewer_redaction_notes=reviewer_redaction_notes,
+                    reviewer_provider_metadata=reviewer_provider_metadata,
+                    reviewer_preflight=reviewer_preflight,
                 )
 
             validation = self.validation_runner.run_validation(round_input, round_result)
@@ -147,6 +153,8 @@ class CodexAutonomousLoop:
                 reviewer_budget_blocked = reviewer_response.budget_blocked
             reviewer_call_count = getattr(self.reviewer, "call_count", reviewer_call_count)
             reviewer_redaction_notes = list(getattr(self.reviewer, "last_redaction_notes", reviewer_redaction_notes))
+            reviewer_provider_metadata = dict(getattr(self.reviewer, "last_provider_metadata", reviewer_provider_metadata) or {})
+            reviewer_preflight = dict(getattr(self.reviewer, "reviewer_preflight", reviewer_preflight) or {})
 
             if round_result.meaningful_progress:
                 no_progress_rounds = 0
@@ -199,6 +207,8 @@ class CodexAutonomousLoop:
             reviewer_call_count=reviewer_call_count,
             reviewer_budget_blocked=reviewer_budget_blocked,
             reviewer_redaction_notes=reviewer_redaction_notes,
+            reviewer_provider_metadata=reviewer_provider_metadata,
+            reviewer_preflight=reviewer_preflight,
         )
 
 
@@ -217,6 +227,8 @@ class FakeReviewer:
         self.call_count = 0
         self.last_response = None
         self.last_redaction_notes: list[str] = []
+        self.last_provider_metadata: dict[str, object] = {}
+        self.reviewer_preflight: dict[str, object] = {}
 
     def review(
         self,
@@ -292,6 +304,8 @@ def _build_audit(
     reviewer_call_count: int,
     reviewer_budget_blocked: bool,
     reviewer_redaction_notes: list[str],
+    reviewer_provider_metadata: dict[str, object],
+    reviewer_preflight: dict[str, object],
 ) -> CodexLoopAudit:
     lowered_commands = " ".join(forbidden_commands_detected).lower()
     return CodexLoopAudit(
@@ -330,4 +344,6 @@ def _build_audit(
         reviewer_call_count=reviewer_call_count,
         reviewer_budget_blocked=reviewer_budget_blocked,
         reviewer_redaction_notes=reviewer_redaction_notes,
+        reviewer_provider_metadata=reviewer_provider_metadata,
+        reviewer_preflight=reviewer_preflight,
     )

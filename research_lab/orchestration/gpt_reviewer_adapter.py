@@ -107,6 +107,8 @@ class GptReviewerAdapter(ReviewerInterface):
         self.last_request: ReviewerRequest | None = None
         self.last_response: ReviewerResponse | None = None
         self.last_redaction_notes: list[str] = []
+        self.last_provider_metadata: dict[str, object] = {}
+        self.reviewer_preflight: dict[str, object] = {}
 
     def review(
         self,
@@ -161,9 +163,9 @@ class GptReviewerAdapter(ReviewerInterface):
 
         if self.dry_run:
             self.last_response = ReviewerResponse(
-                verdict=LoopStatus.PASS,
+                verdict=LoopStatus.BLOCKED,
                 confidence=0.0,
-                reason="GPT reviewer skipped in dry-run mode.",
+                reason="GPT reviewer live call skipped in dry-run mode.",
                 required_changes=[],
                 safety_notes=[],
                 escalation_recommended=False,
@@ -172,7 +174,14 @@ class GptReviewerAdapter(ReviewerInterface):
                 budget_blocked=False,
                 raw_response_redacted="",
             )
-            return ReviewVerdict(status=LoopStatus.PASS, summary="GPT reviewer skipped in dry-run mode.")
+            self.last_provider_metadata = {
+                "provider_name": self.provider.__class__.__name__,
+                "selected_model": decision["selected_model"],
+                "selected_tier": decision["selected_tier"].value,
+                "live_call_attempted": False,
+                "credential_present": False,
+            }
+            return ReviewVerdict(status=LoopStatus.BLOCKED, summary="GPT reviewer live call skipped in dry-run mode.")
 
         try:
             raw_response = self.provider.review_json(
@@ -181,6 +190,7 @@ class GptReviewerAdapter(ReviewerInterface):
                 selected_tier=decision["selected_tier"],
             )
         except Exception as exc:
+            self.last_provider_metadata = dict(getattr(self.provider, "last_call_metadata", {}) or {})
             return self._blocked_verdict(
                 reason=f"GPT reviewer provider failed: {exc}",
                 selected_model=decision["selected_model"],
@@ -191,6 +201,7 @@ class GptReviewerAdapter(ReviewerInterface):
         self.call_count += 1
         if decision["selected_tier"] is ReviewerModelTier.VERY_HIGH:
             self.very_high_calls_used += 1
+        self.last_provider_metadata = dict(getattr(self.provider, "last_call_metadata", {}) or {})
 
         return self._parse_provider_response(
             raw_response=raw_response,
@@ -393,6 +404,12 @@ class GptReviewerAdapter(ReviewerInterface):
             r"(?i)\b([A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|URL)[A-Z0-9_]*)=([^\s]+)",
             r"\1=[REDACTED]",
             sanitized,
+        )
+        sanitized = re.sub(
+            r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
+            "[REDACTED PRIVATE KEY]",
+            sanitized,
+            flags=re.IGNORECASE | re.DOTALL,
         )
         sanitized = re.sub(r"(?i)\bbearer\s+[a-z0-9._-]+\b", "bearer [REDACTED]", sanitized)
         sanitized = re.sub(r"(?i)\b(token|secret|password)\s*[:=]\s*([^\s]+)", r"\1=[REDACTED]", sanitized)
