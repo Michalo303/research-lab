@@ -29,10 +29,17 @@ data/manifests/*
 tmp/
 backtests/runs/
 reports/
+codex_runs/*
 registry/source_items.jsonl
 registry/*.lock
 registry/*.jsonl
 registry/*.csv
+
+# Preserve tracked placeholders for local supervisor queues/artifacts.
+!codex_runs/.gitkeep
+!tasks/inbox/.gitkeep
+!tasks/done/.gitkeep
+!tasks/blocked/.gitkeep
 
 # EODHD runtime smoke-test artifacts
 registry/eodhd_coverage_report.csv
