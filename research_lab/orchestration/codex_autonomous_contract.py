@@ -28,6 +28,11 @@ class CodexExecutionTier(str, Enum):
     VERY_HIGH = "very_high"
 
 
+class ReviewerModelTier(str, Enum):
+    HIGH = "high"
+    VERY_HIGH = "very_high"
+
+
 DEFAULT_ALLOWED_PATHS = [
     ".gitignore",
     "research_lab/",
@@ -153,6 +158,16 @@ class CodexTierDecision:
 
 
 @dataclass
+class ReviewerBudgetConfig:
+    max_reviewer_calls_per_run: int = 20
+    max_very_high_calls_per_run: int = 1
+    default_model: str = "gpt-reviewer-high"
+    high_model: str = "gpt-reviewer-high"
+    very_high_model: str = "gpt-reviewer-very-high"
+    allow_very_high: bool = False
+
+
+@dataclass
 class CodexRoundInput:
     run_id: str
     round_number: int
@@ -175,6 +190,46 @@ class CodexRoundResult:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass
+class ReviewerRequest:
+    run_id: str
+    round_number: int
+    mode: LoopMode
+    task_text: str
+    changed_files: list[str]
+    diff_line_count: int
+    validation_summary: dict[str, Any]
+    policy_summary: dict[str, Any]
+    codex_summary: str
+    codex_executor_details: dict[str, Any]
+    previous_reviewer_verdicts: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload["mode"] = self.mode.value
+        return payload
+
+
+@dataclass
+class ReviewerResponse:
+    verdict: LoopStatus
+    confidence: float
+    reason: str
+    required_changes: list[str]
+    safety_notes: list[str]
+    escalation_recommended: bool
+    selected_model: str
+    selected_tier: ReviewerModelTier
+    budget_blocked: bool
+    raw_response_redacted: str
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload["verdict"] = self.verdict.value
+        payload["selected_tier"] = self.selected_tier.value
+        return payload
 
 
 @dataclass
@@ -249,6 +304,11 @@ AUDIT_REQUIRED_KEYS = [
     "registry_append_attempted",
     "dry_run_external_calls",
     "final_human_action_required",
+    "reviewer_selected_model",
+    "reviewer_selected_tier",
+    "reviewer_call_count",
+    "reviewer_budget_blocked",
+    "reviewer_redaction_notes",
 ]
 
 
@@ -284,6 +344,11 @@ class CodexLoopAudit:
     registry_append_attempted: bool
     dry_run_external_calls: bool
     final_human_action_required: bool
+    reviewer_selected_model: str | None = None
+    reviewer_selected_tier: str | None = None
+    reviewer_call_count: int = 0
+    reviewer_budget_blocked: bool = False
+    reviewer_redaction_notes: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -298,7 +363,14 @@ class CodexExecutorInterface(Protocol):
 
 
 class ReviewerInterface(Protocol):
-    def review(self, round_input: CodexRoundInput, round_result: CodexRoundResult) -> ReviewVerdict:
+    def review(
+        self,
+        round_input: CodexRoundInput,
+        round_result: CodexRoundResult,
+        *,
+        validation_result: ValidationResult | None = None,
+        policy_summary: dict[str, Any] | None = None,
+    ) -> ReviewVerdict:
         ...
 
 

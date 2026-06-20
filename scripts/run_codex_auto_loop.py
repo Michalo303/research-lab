@@ -15,6 +15,8 @@ from research_lab.orchestration.codex_autonomous_contract import (
     CodexExecutionTier,
     CodexLoopConfig,
     LoopMode,
+    ReviewerBudgetConfig,
+    ReviewerModelTier,
 )
 from research_lab.orchestration.codex_cli_executor import CodexCliExecutor
 from research_lab.orchestration.codex_autonomous_loop import (
@@ -23,6 +25,10 @@ from research_lab.orchestration.codex_autonomous_loop import (
     FakeGitAction,
     FakeReviewer,
     FakeValidationRunner,
+)
+from research_lab.orchestration.gpt_reviewer_adapter import (
+    DisabledReviewerProvider,
+    GptReviewerAdapter,
 )
 
 TASKS_INBOX = ROOT / "tasks" / "inbox"
@@ -34,6 +40,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--task-file")
     parser.add_argument("--executor", choices=["fake", "codex_cli"], default="fake")
     parser.add_argument("--codex-timeout-seconds", type=int, default=300)
+    parser.add_argument("--reviewer", choices=["fake", "gpt"], default="fake")
+    parser.add_argument(
+        "--reviewer-tier",
+        choices=[tier.value for tier in ReviewerModelTier],
+        default=ReviewerModelTier.HIGH.value,
+    )
+    parser.add_argument("--reviewer-model", default="gpt-reviewer-high")
+    parser.add_argument("--reviewer-very-high-model", default="gpt-reviewer-very-high")
+    parser.add_argument("--allow-reviewer-very-high", choices=["true", "false"], default="false")
+    parser.add_argument("--max-reviewer-calls", type=int, default=20)
+    parser.add_argument("--max-reviewer-very-high-calls", type=int, default=1)
     parser.add_argument(
         "--codex-tier",
         choices=[tier.value for tier in CodexExecutionTier],
@@ -76,7 +93,7 @@ def main() -> int:
             args.codex_timeout_seconds,
             args,
         ),
-        reviewer=FakeReviewer(),
+        reviewer=_build_reviewer(args, config, task_prompt_text),
         validation_runner=FakeValidationRunner(),
         git_action=FakeGitAction(),
     )
@@ -133,6 +150,29 @@ def _build_executor(
             ),
         )
     return FakeCodexExecutor()
+
+
+def _build_reviewer(
+    args: argparse.Namespace,
+    config: CodexLoopConfig,
+    task_prompt_text: str,
+):
+    if args.reviewer == "gpt":
+        return GptReviewerAdapter(
+            provider=DisabledReviewerProvider(),
+            dry_run=config.dry_run_external_calls,
+            task_text=task_prompt_text,
+            requested_tier=ReviewerModelTier(args.reviewer_tier),
+            budget_config=ReviewerBudgetConfig(
+                max_reviewer_calls_per_run=args.max_reviewer_calls,
+                max_very_high_calls_per_run=args.max_reviewer_very_high_calls,
+                default_model=args.reviewer_model,
+                high_model=args.reviewer_model,
+                very_high_model=args.reviewer_very_high_model,
+                allow_very_high=args.allow_reviewer_very_high.lower() == "true",
+            ),
+        )
+    return FakeReviewer()
 
 
 def _resolve_task_file(task_file: str | None) -> tuple[Path, bool]:
