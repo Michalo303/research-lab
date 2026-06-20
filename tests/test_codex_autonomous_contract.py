@@ -13,6 +13,10 @@ from research_lab.orchestration.codex_autonomous_contract import (
     GitActionResult,
     LoopMode,
     LoopStatus,
+    ReviewerBudgetConfig,
+    ReviewerModelTier,
+    ReviewerRequest,
+    ReviewerResponse,
     ReviewVerdict,
     ValidationResult,
 )
@@ -163,3 +167,42 @@ def test_codex_budget_defaults_and_tier_decision_shape():
     assert budget.allow_very_high is False
     assert decision.to_dict()["requested_tier"] == "auto"
     assert decision.to_dict()["selected_tier"] == "standard"
+
+
+def test_reviewer_budget_defaults_and_request_response_shapes():
+    budget = ReviewerBudgetConfig()
+    request = ReviewerRequest(
+        run_id="run-1",
+        round_number=1,
+        mode=LoopMode.SUPER_AUTO,
+        task_text="Review the Codex output safely.",
+        changed_files=["research_lab/orchestration/codex_autonomous_loop.py"],
+        diff_line_count=42,
+        validation_summary={"success": True, "tests_requested": ["pytest -q"]},
+        policy_summary={"status": "PASS"},
+        codex_summary="Updated loop audit fields.",
+        codex_executor_details={"returncode": 0},
+        previous_reviewer_verdicts=["REVISE"],
+    )
+    response = ReviewerResponse(
+        verdict=LoopStatus.PASS,
+        confidence=0.92,
+        reason="The change is coherent and validated.",
+        required_changes=[],
+        safety_notes=["No unsafe behavior recommended."],
+        escalation_recommended=False,
+        selected_model="gpt-reviewer-high",
+        selected_tier=ReviewerModelTier.HIGH,
+        budget_blocked=False,
+        raw_response_redacted='{"verdict":"PASS"}',
+    )
+
+    assert budget.max_reviewer_calls_per_run == 20
+    assert budget.max_very_high_calls_per_run == 1
+    assert budget.default_model == "gpt-reviewer-high"
+    assert budget.high_model == "gpt-reviewer-high"
+    assert budget.very_high_model == "gpt-reviewer-very-high"
+    assert budget.allow_very_high is False
+    assert request.to_dict()["mode"] == "super_auto"
+    assert response.to_dict()["verdict"] == "PASS"
+    assert response.to_dict()["selected_tier"] == "high"

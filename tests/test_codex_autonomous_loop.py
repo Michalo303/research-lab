@@ -9,6 +9,8 @@ from research_lab.orchestration.codex_autonomous_contract import (
     CodexRoundResult,
     LoopMode,
     LoopStatus,
+    ReviewerResponse,
+    ReviewerModelTier,
     ReviewVerdict,
     ValidationResult,
 )
@@ -313,3 +315,37 @@ def test_executor_failure_produces_blocked_without_git_actions():
     assert status is LoopStatus.BLOCKED
     assert git_action.calls == []
     assert audit["rounds_used"] == 1
+
+
+def test_loop_audit_includes_gpt_reviewer_details_when_opted_in():
+    reviewer = FakeReviewer([ReviewVerdict(status=LoopStatus.PASS)])
+    reviewer.last_response = ReviewerResponse(
+        verdict=LoopStatus.PASS,
+        confidence=0.95,
+        reason="Looks good.",
+        required_changes=[],
+        safety_notes=[],
+        escalation_recommended=False,
+        selected_model="gpt-reviewer-high",
+        selected_tier=ReviewerModelTier.HIGH,
+        budget_blocked=False,
+        raw_response_redacted='{"verdict":"PASS"}',
+    )
+    reviewer.call_count = 0
+    reviewer.last_redaction_notes = ["Truncated long codex summary before provider call."]
+
+    loop = CodexAutonomousLoop(
+        config=CodexLoopConfig.for_mode(LoopMode.SUPER_AUTO),
+        codex_executor=FakeCodexExecutor([_round()]),
+        reviewer=reviewer,
+        validation_runner=FakeValidationRunner([ValidationResult(success=True)]),
+        git_action=FakeGitAction(),
+    )
+
+    audit = loop.run(task_file="tasks/inbox/example.md").to_dict()
+
+    assert audit["reviewer_selected_model"] == "gpt-reviewer-high"
+    assert audit["reviewer_selected_tier"] == "high"
+    assert audit["reviewer_call_count"] == 1
+    assert audit["reviewer_budget_blocked"] is False
+    assert audit["reviewer_redaction_notes"] == ["Truncated long codex summary before provider call."]

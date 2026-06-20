@@ -44,6 +44,11 @@ class CodexAutonomousLoop:
         protected_paths_touched: list[str] = []
         forbidden_commands_detected: list[str] = []
         git_result = GitActionResult(branch=branch, merge_blocked=True)
+        reviewer_selected_model: str | None = None
+        reviewer_selected_tier: str | None = None
+        reviewer_call_count = 0
+        reviewer_budget_blocked = False
+        reviewer_redaction_notes: list[str] = []
 
         for round_number in range(1, self.config.max_rounds + 1):
             round_input = CodexRoundInput(
@@ -75,6 +80,11 @@ class CodexAutonomousLoop:
                     protected_paths_touched=protected_paths_touched,
                     forbidden_commands_detected=forbidden_commands_detected,
                     git_result=git_result,
+                    reviewer_selected_model=reviewer_selected_model,
+                    reviewer_selected_tier=reviewer_selected_tier,
+                    reviewer_call_count=reviewer_call_count,
+                    reviewer_budget_blocked=reviewer_budget_blocked,
+                    reviewer_redaction_notes=reviewer_redaction_notes,
                 )
 
             policy = evaluate_round_policy(
@@ -105,14 +115,38 @@ class CodexAutonomousLoop:
                     protected_paths_touched=protected_paths_touched,
                     forbidden_commands_detected=forbidden_commands_detected,
                     git_result=git_result,
+                    reviewer_selected_model=reviewer_selected_model,
+                    reviewer_selected_tier=reviewer_selected_tier,
+                    reviewer_call_count=reviewer_call_count,
+                    reviewer_budget_blocked=reviewer_budget_blocked,
+                    reviewer_redaction_notes=reviewer_redaction_notes,
                 )
-
-            review = self.reviewer.review(round_input, round_result)
-            reviewer_verdicts.append(review.status.value)
 
             validation = self.validation_runner.run_validation(round_input, round_result)
             tests_requested = list(validation.tests_requested)
             tests_passed = validation.success
+            policy_summary = {
+                "status": policy.status,
+                "disallowed_paths_touched": list(policy.disallowed_paths_touched),
+                "protected_paths_touched": list(policy.protected_paths_touched),
+                "forbidden_commands_detected": list(policy.forbidden_commands_detected),
+                "changed_file_limit_exceeded": policy.changed_file_limit_exceeded,
+                "diff_limit_exceeded": policy.diff_limit_exceeded,
+            }
+            review = self.reviewer.review(
+                round_input,
+                round_result,
+                validation_result=validation,
+                policy_summary=policy_summary,
+            )
+            reviewer_verdicts.append(review.status.value)
+            reviewer_response = getattr(self.reviewer, "last_response", None)
+            if reviewer_response is not None:
+                reviewer_selected_model = reviewer_response.selected_model
+                reviewer_selected_tier = reviewer_response.selected_tier.value
+                reviewer_budget_blocked = reviewer_response.budget_blocked
+            reviewer_call_count = getattr(self.reviewer, "call_count", reviewer_call_count)
+            reviewer_redaction_notes = list(getattr(self.reviewer, "last_redaction_notes", reviewer_redaction_notes))
 
             if round_result.meaningful_progress:
                 no_progress_rounds = 0
@@ -131,6 +165,10 @@ class CodexAutonomousLoop:
 
             if review.status is LoopStatus.UNSAFE:
                 self.final_status = LoopStatus.UNSAFE
+                break
+
+            if review.status is LoopStatus.BLOCKED:
+                self.final_status = LoopStatus.BLOCKED
                 break
 
             if review.status is LoopStatus.REVISE:
@@ -156,6 +194,11 @@ class CodexAutonomousLoop:
             protected_paths_touched=protected_paths_touched,
             forbidden_commands_detected=forbidden_commands_detected,
             git_result=git_result,
+            reviewer_selected_model=reviewer_selected_model,
+            reviewer_selected_tier=reviewer_selected_tier,
+            reviewer_call_count=reviewer_call_count,
+            reviewer_budget_blocked=reviewer_budget_blocked,
+            reviewer_redaction_notes=reviewer_redaction_notes,
         )
 
 
@@ -171,9 +214,20 @@ class FakeCodexExecutor:
 class FakeReviewer:
     def __init__(self, verdicts: list[ReviewVerdict] | None = None) -> None:
         self._verdicts = list(verdicts or [ReviewVerdict(status=LoopStatus.PASS)])
+        self.call_count = 0
+        self.last_response = None
+        self.last_redaction_notes: list[str] = []
 
-    def review(self, round_input: CodexRoundInput, round_result: CodexRoundResult) -> ReviewVerdict:
+    def review(
+        self,
+        round_input: CodexRoundInput,
+        round_result: CodexRoundResult,
+        *,
+        validation_result: ValidationResult | None = None,
+        policy_summary: dict[str, object] | None = None,
+    ) -> ReviewVerdict:
         index = min(round_input.round_number - 1, len(self._verdicts) - 1)
+        self.call_count += 1
         return self._verdicts[index]
 
 
@@ -233,6 +287,11 @@ def _build_audit(
     protected_paths_touched: list[str],
     forbidden_commands_detected: list[str],
     git_result: GitActionResult,
+    reviewer_selected_model: str | None,
+    reviewer_selected_tier: str | None,
+    reviewer_call_count: int,
+    reviewer_budget_blocked: bool,
+    reviewer_redaction_notes: list[str],
 ) -> CodexLoopAudit:
     lowered_commands = " ".join(forbidden_commands_detected).lower()
     return CodexLoopAudit(
@@ -266,4 +325,9 @@ def _build_audit(
         registry_append_attempted="registry append" in lowered_commands,
         dry_run_external_calls=config.dry_run_external_calls,
         final_human_action_required=True,
+        reviewer_selected_model=reviewer_selected_model,
+        reviewer_selected_tier=reviewer_selected_tier,
+        reviewer_call_count=reviewer_call_count,
+        reviewer_budget_blocked=reviewer_budget_blocked,
+        reviewer_redaction_notes=reviewer_redaction_notes,
     )

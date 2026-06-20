@@ -502,12 +502,28 @@ def test_cli_accepts_codex_cli_executor_tiering_flags_and_defaults_to_fake():
             "1",
             "--max-codex-calls",
             "9",
+            "--reviewer",
+            "gpt",
+            "--reviewer-tier",
+            "very_high",
+            "--reviewer-model",
+            "reviewer-a",
+            "--reviewer-very-high-model",
+            "reviewer-b",
+            "--allow-reviewer-very-high",
+            "true",
+            "--max-reviewer-calls",
+            "7",
+            "--max-reviewer-very-high-calls",
+            "1",
         ]
     )
 
     assert default_args.executor == "fake"
     assert default_args.codex_timeout_seconds == 300
     assert default_args.codex_tier == "auto"
+    assert default_args.reviewer == "fake"
+    assert default_args.reviewer_tier == "high"
     assert explicit_args.executor == "codex_cli"
     assert explicit_args.codex_timeout_seconds == 45
     assert explicit_args.codex_tier == "auto"
@@ -518,3 +534,10 @@ def test_cli_accepts_codex_cli_executor_tiering_flags_and_defaults_to_fake():
     assert explicit_args.max_high_rounds == 4
     assert explicit_args.max_very_high_rounds == 1
     assert explicit_args.max_codex_calls == 9
+    assert explicit_args.reviewer == "gpt"
+    assert explicit_args.reviewer_tier == "very_high"
+    assert explicit_args.reviewer_model == "reviewer-a"
+    assert explicit_args.reviewer_very_high_model == "reviewer-b"
+    assert explicit_args.allow_reviewer_very_high == "true"
+    assert explicit_args.max_reviewer_calls == 7
+    assert explicit_args.max_reviewer_very_high_calls == 1
