@@ -98,11 +98,16 @@ def test_audit_to_dict_contains_all_required_keys():
         forbidden_commands_detected=[],
         commit_attempted=False,
         commit_created=False,
+        commit_sha=None,
         push_attempted=False,
         push_completed=False,
         pr_attempted=False,
         pr_created=False,
+        pr_number=None,
         pr_url=None,
+        pr_title=None,
+        pr_base_branch=None,
+        pr_head_branch=None,
         merge_attempted=False,
         merge_blocked=True,
         deploy_attempted=False,
@@ -130,6 +135,7 @@ def test_result_types_expose_json_friendly_fields():
         push_completed=False,
         pr_attempted=True,
         pr_created=False,
+        pr_number=None,
         pr_url=None,
         merge_attempted=False,
         merge_blocked=True,
@@ -140,6 +146,7 @@ def test_result_types_expose_json_friendly_fields():
     assert review.to_dict()["status"] == "REVISE"
     assert validation.to_dict()["success"] is True
     assert git_action.to_dict()["planned_actions"] == ["commit", "push", "pr"]
+    assert git_action.to_dict()["git_action_provider"] == "fake"
 
 
 def test_codex_budget_defaults_and_tier_decision_shape():

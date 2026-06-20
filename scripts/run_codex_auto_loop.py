@@ -26,6 +26,7 @@ from research_lab.orchestration.codex_autonomous_loop import (
     FakeReviewer,
     FakeValidationRunner,
 )
+from research_lab.orchestration.github_pr_adapter import GitHubPrAdapter, GitHubPrConfig
 from research_lab.orchestration.gpt_reviewer_adapter import (
     DisabledReviewerProvider,
     GptReviewerAdapter,
@@ -63,6 +64,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--allow-reviewer-very-high", choices=["true", "false"], default="false")
     parser.add_argument("--max-reviewer-calls", type=int, default=20)
     parser.add_argument("--max-reviewer-very-high-calls", type=int, default=1)
+    parser.add_argument("--git-action", choices=["fake", "github_pr"], default="fake")
+    parser.add_argument("--enable-live-git-action", choices=["true", "false"], default="false")
+    parser.add_argument("--github-base-branch", default="main")
+    parser.add_argument("--github-remote", default="origin")
+    parser.add_argument("--github-pr-title")
+    parser.add_argument("--github-pr-body")
+    parser.add_argument("--commit-message", default="Codex supervisor update")
+    parser.add_argument("--allow-empty-commit", choices=["true", "false"], default="false")
     parser.add_argument(
         "--codex-tier",
         choices=[tier.value for tier in CodexExecutionTier],
@@ -111,7 +120,7 @@ def main() -> int:
         ),
         reviewer=_build_reviewer(args, config, task_prompt_text),
         validation_runner=FakeValidationRunner(),
-        git_action=FakeGitAction(),
+        git_action=_build_git_action(args, ROOT),
     )
     audit = loop.run(task_file=str(task_path.relative_to(ROOT)) if task_path.exists() else str(task_path))
 
@@ -233,6 +242,23 @@ def _build_reviewer(
     return reviewer
 
 
+def _build_git_action(args: argparse.Namespace, repo_root: Path):
+    if args.git_action == "github_pr":
+        return GitHubPrAdapter(
+            config=GitHubPrConfig(
+                live_enabled=args.enable_live_git_action.lower() == "true",
+                base_branch=args.github_base_branch,
+                remote=args.github_remote,
+                pr_title=args.github_pr_title,
+                pr_body=args.github_pr_body,
+                commit_message=args.commit_message,
+                allow_empty_commit=args.allow_empty_commit.lower() == "true",
+            ),
+            repo_root=repo_root,
+        )
+    return FakeGitAction()
+
+
 def _resolve_task_file(task_file: str | None) -> tuple[Path, bool]:
     if task_file:
         return Path(task_file).resolve(), False
@@ -268,6 +294,16 @@ def _build_report(audit: dict[str, object]) -> str:
         f"- Live reviewer enabled: `{reviewer_preflight.get('live_reviewer_enabled', False)}`\n"
         f"- Reviewer credential present: `{reviewer_preflight.get('api_key_present', False)}`\n"
         f"- Reviewer live call attempted: `{reviewer_provider_metadata.get('live_call_attempted', False)}`\n"
+        f"- Git action provider: `{audit.get('git_action_provider', 'fake')}`\n"
+        f"- Live git action enabled: `{audit.get('git_action_live_enabled', False)}`\n"
+        f"- Git action attempted: `{audit.get('git_action_attempted', False)}`\n"
+        f"- Commit attempted: `{audit.get('commit_attempted', False)}`\n"
+        f"- Commit SHA: `{audit.get('commit_sha') or 'none'}`\n"
+        f"- Push attempted: `{audit.get('push_attempted', False)}`\n"
+        f"- PR attempted: `{audit.get('pr_attempted', False)}`\n"
+        f"- PR URL: `{audit.get('pr_url') or 'none'}`\n"
+        f"- PR number: `{audit.get('pr_number') or 'none'}`\n"
+        f"- Git action blocked reason: `{audit.get('git_action_blocked_reason') or 'none'}`\n"
         f"- Human action required: `{audit['final_human_action_required']}`\n\n"
         "This skeleton is dry-run only.\n"
         "Runtime artifact only; do not commit audit.json or final_report.md outputs.\n"
