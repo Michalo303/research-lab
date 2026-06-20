@@ -91,6 +91,12 @@ def test_github_pr_action_allows_live_flow_only_after_pass_validation_and_policy
             subprocess.CompletedProcess(args=["git", "branch"], returncode=0, stdout=CURRENT_BRANCH, stderr=""),
             subprocess.CompletedProcess(args=["git", "status"], returncode=0, stdout=DEFAULT_TRACKED_STATUS, stderr=""),
             subprocess.CompletedProcess(args=["git", "add"], returncode=0, stdout="", stderr=""),
+            subprocess.CompletedProcess(
+                args=["git", "diff", "--cached", "--name-only"],
+                returncode=0,
+                stdout="research_lab/orchestration/gpt_reviewer_adapter.py\ntests/test_gpt_reviewer_adapter.py\n",
+                stderr="",
+            ),
             subprocess.CompletedProcess(args=["git", "commit"], returncode=0, stdout="[codex/example abc123] msg", stderr=""),
             subprocess.CompletedProcess(args=["git", "rev-parse"], returncode=0, stdout="abc123\n", stderr=""),
             subprocess.CompletedProcess(args=["git", "push"], returncode=0, stdout="", stderr=""),
@@ -152,6 +158,12 @@ def test_stages_only_exact_allowed_files_and_never_uses_git_add_dot():
             subprocess.CompletedProcess(args=["git", "branch"], returncode=0, stdout=CURRENT_BRANCH, stderr=""),
             subprocess.CompletedProcess(args=["git", "status"], returncode=0, stdout=DEFAULT_TRACKED_STATUS, stderr=""),
             subprocess.CompletedProcess(args=["git", "add"], returncode=0, stdout="", stderr=""),
+            subprocess.CompletedProcess(
+                args=["git", "diff", "--cached", "--name-only"],
+                returncode=0,
+                stdout="research_lab/orchestration/gpt_reviewer_adapter.py\ntests/test_gpt_reviewer_adapter.py\n",
+                stderr="",
+            ),
             subprocess.CompletedProcess(args=["git", "commit"], returncode=0, stdout="", stderr=""),
             subprocess.CompletedProcess(args=["git", "rev-parse"], returncode=0, stdout="abc123\n", stderr=""),
             subprocess.CompletedProcess(args=["git", "push"], returncode=0, stdout="", stderr=""),
@@ -178,6 +190,12 @@ def test_never_force_pushes_or_pushes_main():
             subprocess.CompletedProcess(args=["git", "branch"], returncode=0, stdout=CURRENT_BRANCH, stderr=""),
             subprocess.CompletedProcess(args=["git", "status"], returncode=0, stdout=DEFAULT_TRACKED_STATUS, stderr=""),
             subprocess.CompletedProcess(args=["git", "add"], returncode=0, stdout="", stderr=""),
+            subprocess.CompletedProcess(
+                args=["git", "diff", "--cached", "--name-only"],
+                returncode=0,
+                stdout="research_lab/orchestration/gpt_reviewer_adapter.py\ntests/test_gpt_reviewer_adapter.py\n",
+                stderr="",
+            ),
             subprocess.CompletedProcess(args=["git", "commit"], returncode=0, stdout="", stderr=""),
             subprocess.CompletedProcess(args=["git", "rev-parse"], returncode=0, stdout="abc123\n", stderr=""),
             subprocess.CompletedProcess(args=["git", "push"], returncode=0, stdout="", stderr=""),
@@ -192,7 +210,7 @@ def test_never_force_pushes_or_pushes_main():
 
     adapter.plan_after_pass(_request())
 
-    push_call = runner.calls[5]["argv"]
+    push_call = runner.calls[6]["argv"]
     assert "--force" not in push_call
     assert push_call == ["git", "push", "origin", "codex/example"]
 
@@ -209,6 +227,12 @@ def test_creates_commit_with_configured_message():
             subprocess.CompletedProcess(args=["git", "branch"], returncode=0, stdout=CURRENT_BRANCH, stderr=""),
             subprocess.CompletedProcess(args=["git", "status"], returncode=0, stdout=DEFAULT_TRACKED_STATUS, stderr=""),
             subprocess.CompletedProcess(args=["git", "add"], returncode=0, stdout="", stderr=""),
+            subprocess.CompletedProcess(
+                args=["git", "diff", "--cached", "--name-only"],
+                returncode=0,
+                stdout="research_lab/orchestration/gpt_reviewer_adapter.py\ntests/test_gpt_reviewer_adapter.py\n",
+                stderr="",
+            ),
             subprocess.CompletedProcess(args=["git", "commit"], returncode=0, stdout="", stderr=""),
             subprocess.CompletedProcess(args=["git", "rev-parse"], returncode=0, stdout="abc123\n", stderr=""),
             subprocess.CompletedProcess(args=["git", "push"], returncode=0, stdout="", stderr=""),
@@ -223,7 +247,7 @@ def test_creates_commit_with_configured_message():
 
     adapter.plan_after_pass(_request())
 
-    assert runner.calls[3]["argv"] == ["git", "commit", "-m", "Commit msg"]
+    assert runner.calls[4]["argv"] == ["git", "commit", "-m", "Commit msg"]
 
 
 def test_creates_pr_against_main_with_configured_title_body():
@@ -232,6 +256,12 @@ def test_creates_pr_against_main_with_configured_title_body():
             subprocess.CompletedProcess(args=["git", "branch"], returncode=0, stdout=CURRENT_BRANCH, stderr=""),
             subprocess.CompletedProcess(args=["git", "status"], returncode=0, stdout=DEFAULT_TRACKED_STATUS, stderr=""),
             subprocess.CompletedProcess(args=["git", "add"], returncode=0, stdout="", stderr=""),
+            subprocess.CompletedProcess(
+                args=["git", "diff", "--cached", "--name-only"],
+                returncode=0,
+                stdout="research_lab/orchestration/gpt_reviewer_adapter.py\ntests/test_gpt_reviewer_adapter.py\n",
+                stderr="",
+            ),
             subprocess.CompletedProcess(args=["git", "commit"], returncode=0, stdout="", stderr=""),
             subprocess.CompletedProcess(args=["git", "rev-parse"], returncode=0, stdout="abc123\n", stderr=""),
             subprocess.CompletedProcess(args=["git", "push"], returncode=0, stdout="", stderr=""),
@@ -246,7 +276,7 @@ def test_creates_pr_against_main_with_configured_title_body():
 
     result = adapter.plan_after_pass(_request())
 
-    pr_call = runner.calls[6]["argv"]
+    pr_call = runner.calls[7]["argv"]
     assert pr_call == ["gh", "pr", "create", "--base", "main", "--head", "codex/example", "--title", "PR Title", "--body", "PR Body"]
     assert result.pr_url == "https://github.com/example/repo/pull/12"
     assert result.pr_number == 12
@@ -264,6 +294,12 @@ def test_missing_gh_command_maps_to_blocked():
             subprocess.CompletedProcess(args=["git", "branch"], returncode=0, stdout=CURRENT_BRANCH, stderr=""),
             subprocess.CompletedProcess(args=["git", "status"], returncode=0, stdout=DEFAULT_TRACKED_STATUS, stderr=""),
             subprocess.CompletedProcess(args=["git", "add"], returncode=0, stdout="", stderr=""),
+            subprocess.CompletedProcess(
+                args=["git", "diff", "--cached", "--name-only"],
+                returncode=0,
+                stdout="research_lab/orchestration/gpt_reviewer_adapter.py\ntests/test_gpt_reviewer_adapter.py\n",
+                stderr="",
+            ),
             subprocess.CompletedProcess(args=["git", "commit"], returncode=0, stdout="", stderr=""),
             subprocess.CompletedProcess(args=["git", "rev-parse"], returncode=0, stdout="abc123\n", stderr=""),
             subprocess.CompletedProcess(args=["git", "push"], returncode=0, stdout="", stderr=""),
@@ -347,6 +383,12 @@ def test_allows_exact_same_set_with_different_ordering():
                 stderr="",
             ),
             subprocess.CompletedProcess(args=["git", "add"], returncode=0, stdout="", stderr=""),
+            subprocess.CompletedProcess(
+                args=["git", "diff", "--cached", "--name-only"],
+                returncode=0,
+                stdout="tests/test_gpt_reviewer_adapter.py\nresearch_lab/orchestration/gpt_reviewer_adapter.py\n",
+                stderr="",
+            ),
             subprocess.CompletedProcess(args=["git", "commit"], returncode=0, stdout="", stderr=""),
             subprocess.CompletedProcess(args=["git", "rev-parse"], returncode=0, stdout="abc123\n", stderr=""),
             subprocess.CompletedProcess(args=["git", "push"], returncode=0, stdout="", stderr=""),
@@ -377,6 +419,12 @@ def test_deduplicates_duplicate_request_changed_files_before_staging():
             subprocess.CompletedProcess(args=["git", "branch"], returncode=0, stdout=CURRENT_BRANCH, stderr=""),
             subprocess.CompletedProcess(args=["git", "status"], returncode=0, stdout=DEFAULT_TRACKED_STATUS, stderr=""),
             subprocess.CompletedProcess(args=["git", "add"], returncode=0, stdout="", stderr=""),
+            subprocess.CompletedProcess(
+                args=["git", "diff", "--cached", "--name-only"],
+                returncode=0,
+                stdout="research_lab/orchestration/gpt_reviewer_adapter.py\ntests/test_gpt_reviewer_adapter.py\n",
+                stderr="",
+            ),
             subprocess.CompletedProcess(args=["git", "commit"], returncode=0, stdout="", stderr=""),
             subprocess.CompletedProcess(args=["git", "rev-parse"], returncode=0, stdout="abc123\n", stderr=""),
             subprocess.CompletedProcess(args=["git", "push"], returncode=0, stdout="", stderr=""),
@@ -435,6 +483,7 @@ def test_empty_changed_files_with_allow_empty_commit_true_skips_git_add_and_comm
         [
             subprocess.CompletedProcess(args=["git", "branch"], returncode=0, stdout=CURRENT_BRANCH, stderr=""),
             subprocess.CompletedProcess(args=["git", "status"], returncode=0, stdout="", stderr=""),
+            subprocess.CompletedProcess(args=["git", "diff", "--cached", "--name-only"], returncode=0, stdout="", stderr=""),
             subprocess.CompletedProcess(args=["git", "commit"], returncode=0, stdout="", stderr=""),
             subprocess.CompletedProcess(args=["git", "rev-parse"], returncode=0, stdout="abc123\n", stderr=""),
             subprocess.CompletedProcess(args=["git", "push"], returncode=0, stdout="", stderr=""),
@@ -456,8 +505,8 @@ def test_empty_changed_files_with_allow_empty_commit_true_skips_git_add_and_comm
     result = adapter.plan_after_pass(_request(changed_files=[]))
 
     assert result.commit_created is True
-    assert len(runner.calls) == 6
-    assert runner.calls[2]["argv"] == ["git", "commit", "--allow-empty", "-m", "Commit"]
+    assert len(runner.calls) == 7
+    assert runner.calls[3]["argv"] == ["git", "commit", "--allow-empty", "-m", "Commit"]
     assert all(call["argv"][:2] != ["git", "add"] for call in runner.calls)
 
 
@@ -508,6 +557,12 @@ def test_allows_flow_when_current_branch_equals_request_branch():
             subprocess.CompletedProcess(args=["git", "branch"], returncode=0, stdout=CURRENT_BRANCH, stderr=""),
             subprocess.CompletedProcess(args=["git", "status"], returncode=0, stdout=DEFAULT_TRACKED_STATUS, stderr=""),
             subprocess.CompletedProcess(args=["git", "add"], returncode=0, stdout="", stderr=""),
+            subprocess.CompletedProcess(
+                args=["git", "diff", "--cached", "--name-only"],
+                returncode=0,
+                stdout="research_lab/orchestration/gpt_reviewer_adapter.py\ntests/test_gpt_reviewer_adapter.py\n",
+                stderr="",
+            ),
             subprocess.CompletedProcess(args=["git", "commit"], returncode=0, stdout="", stderr=""),
             subprocess.CompletedProcess(args=["git", "rev-parse"], returncode=0, stdout="abc123\n", stderr=""),
             subprocess.CompletedProcess(args=["git", "push"], returncode=0, stdout="", stderr=""),
@@ -595,6 +650,12 @@ def test_clean_exact_tracked_set_still_proceeds():
             subprocess.CompletedProcess(args=["git", "branch"], returncode=0, stdout=CURRENT_BRANCH, stderr=""),
             subprocess.CompletedProcess(args=["git", "status"], returncode=0, stdout=DEFAULT_TRACKED_STATUS, stderr=""),
             subprocess.CompletedProcess(args=["git", "add"], returncode=0, stdout="", stderr=""),
+            subprocess.CompletedProcess(
+                args=["git", "diff", "--cached", "--name-only"],
+                returncode=0,
+                stdout="research_lab/orchestration/gpt_reviewer_adapter.py\ntests/test_gpt_reviewer_adapter.py\n",
+                stderr="",
+            ),
             subprocess.CompletedProcess(args=["git", "commit"], returncode=0, stdout="", stderr=""),
             subprocess.CompletedProcess(args=["git", "rev-parse"], returncode=0, stdout="abc123\n", stderr=""),
             subprocess.CompletedProcess(args=["git", "push"], returncode=0, stdout="", stderr=""),
@@ -610,6 +671,124 @@ def test_clean_exact_tracked_set_still_proceeds():
     result = adapter.plan_after_pass(_request())
 
     assert result.pr_created is True
+
+
+def test_blocks_when_staged_index_contains_extra_file():
+    runner = StubRunner(
+        [
+            subprocess.CompletedProcess(args=["git", "branch"], returncode=0, stdout=CURRENT_BRANCH, stderr=""),
+            subprocess.CompletedProcess(args=["git", "status"], returncode=0, stdout=DEFAULT_TRACKED_STATUS, stderr=""),
+            subprocess.CompletedProcess(args=["git", "add"], returncode=0, stdout="", stderr=""),
+            subprocess.CompletedProcess(
+                args=["git", "diff", "--cached", "--name-only"],
+                returncode=0,
+                stdout="research_lab/orchestration/gpt_reviewer_adapter.py\ntests/test_gpt_reviewer_adapter.py\nscripts/run_codex_auto_loop.py\n",
+                stderr="",
+            ),
+        ]
+    )
+    adapter = GitHubPrAdapter(config=GitHubPrConfig(live_enabled=True), runner=runner, repo_root=ROOT)
+
+    result = adapter.plan_after_pass(_request())
+
+    assert "staged index does not match intended files" in result.git_action_blocked_reason
+    assert "scripts/run_codex_auto_loop.py" in result.git_action_blocked_reason
+    assert all(call["argv"][:2] != ["git", "commit"] for call in runner.calls)
+
+
+def test_blocks_when_staged_index_is_missing_intended_file():
+    runner = StubRunner(
+        [
+            subprocess.CompletedProcess(args=["git", "branch"], returncode=0, stdout=CURRENT_BRANCH, stderr=""),
+            subprocess.CompletedProcess(args=["git", "status"], returncode=0, stdout=DEFAULT_TRACKED_STATUS, stderr=""),
+            subprocess.CompletedProcess(args=["git", "add"], returncode=0, stdout="", stderr=""),
+            subprocess.CompletedProcess(
+                args=["git", "diff", "--cached", "--name-only"],
+                returncode=0,
+                stdout="research_lab/orchestration/gpt_reviewer_adapter.py\n",
+                stderr="",
+            ),
+        ]
+    )
+    adapter = GitHubPrAdapter(config=GitHubPrConfig(live_enabled=True), runner=runner, repo_root=ROOT)
+
+    result = adapter.plan_after_pass(_request())
+
+    assert "staged index does not match intended files" in result.git_action_blocked_reason
+    assert "tests/test_gpt_reviewer_adapter.py" in result.git_action_blocked_reason
+    assert all(call["argv"][:2] != ["git", "commit"] for call in runner.calls)
+
+
+def test_blocks_before_commit_if_staged_index_differs():
+    runner = StubRunner(
+        [
+            subprocess.CompletedProcess(args=["git", "branch"], returncode=0, stdout=CURRENT_BRANCH, stderr=""),
+            subprocess.CompletedProcess(args=["git", "status"], returncode=0, stdout=DEFAULT_TRACKED_STATUS, stderr=""),
+            subprocess.CompletedProcess(args=["git", "add"], returncode=0, stdout="", stderr=""),
+            subprocess.CompletedProcess(
+                args=["git", "diff", "--cached", "--name-only"],
+                returncode=0,
+                stdout="tests/test_gpt_reviewer_adapter.py\n",
+                stderr="",
+            ),
+        ]
+    )
+    adapter = GitHubPrAdapter(config=GitHubPrConfig(live_enabled=True), runner=runner, repo_root=ROOT)
+
+    adapter.plan_after_pass(_request())
+
+    assert [call["argv"][:4] for call in runner.calls] == [
+        ["git", "branch", "--show-current"],
+        ["git", "status", "--short", "--untracked-files=all"],
+        ["git", "add", "--", "research_lab/orchestration/gpt_reviewer_adapter.py"],
+        ["git", "diff", "--cached", "--name-only"],
+    ]
+
+
+def test_empty_changed_files_with_allow_empty_commit_true_blocks_if_staged_index_is_not_empty():
+    runner = StubRunner(
+        [
+            subprocess.CompletedProcess(args=["git", "branch"], returncode=0, stdout=CURRENT_BRANCH, stderr=""),
+            subprocess.CompletedProcess(args=["git", "status"], returncode=0, stdout="", stderr=""),
+            subprocess.CompletedProcess(
+                args=["git", "diff", "--cached", "--name-only"],
+                returncode=0,
+                stdout="tests/test_gpt_reviewer_adapter.py\n",
+                stderr="",
+            ),
+        ]
+    )
+    adapter = GitHubPrAdapter(
+        config=GitHubPrConfig(live_enabled=True, allow_empty_commit=True),
+        runner=runner,
+        repo_root=ROOT,
+    )
+
+    result = adapter.plan_after_pass(_request(changed_files=[]))
+
+    assert "staged index does not match intended files" in result.git_action_blocked_reason
+    assert all(call["argv"][:2] != ["git", "commit"] for call in runner.calls)
+
+
+def test_staged_index_command_failure_maps_to_blocked():
+    runner = StubRunner(
+        [
+            subprocess.CompletedProcess(args=["git", "branch"], returncode=0, stdout=CURRENT_BRANCH, stderr=""),
+            subprocess.CompletedProcess(args=["git", "status"], returncode=0, stdout=DEFAULT_TRACKED_STATUS, stderr=""),
+            subprocess.CompletedProcess(args=["git", "add"], returncode=0, stdout="", stderr=""),
+            subprocess.CompletedProcess(
+                args=["git", "diff", "--cached", "--name-only"],
+                returncode=1,
+                stdout="",
+                stderr="cached diff failed",
+            ),
+        ]
+    )
+    adapter = GitHubPrAdapter(config=GitHubPrConfig(live_enabled=True), runner=runner, repo_root=ROOT)
+
+    result = adapter.plan_after_pass(_request())
+
+    assert "git diff --cached --name-only failed" in result.git_action_blocked_reason
 
 
 def test_cli_accepts_git_action_flags():
