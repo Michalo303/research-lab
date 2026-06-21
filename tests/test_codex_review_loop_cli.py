@@ -156,6 +156,49 @@ def test_default_run_is_fake_non_live_and_uses_tmp_output_only(tmp_path: Path):
     assert "No live git/GitHub action: yes" in report
 
 
+def test_cli_operator_smoke_dry_run_writes_clean_tracked_tree_metadata(tmp_path: Path):
+    result = _run_cli(
+        tmp_path,
+        "--task",
+        "Operator smoke: fake review loop.",
+        "--executor",
+        "fake",
+        "--enable-live-codex",
+        "false",
+        "--dry-run-external-calls",
+        "true",
+        "--fake-reviewer-verdicts",
+        "PASS",
+    )
+
+    output_dir = tmp_path / "review-loop-output"
+    audit_path = output_dir / "audit.json"
+    report_path = output_dir / "final_report.md"
+
+    assert result.returncode == 0
+    assert audit_path.exists()
+    assert report_path.exists()
+
+    audit, report, _ = _load_artifacts(tmp_path)
+    assert audit["pre_run_tracked_dirty"] is False
+    assert audit["pre_run_tracked_status"] == ""
+    assert audit["final_tracked_dirty"] is False
+    assert audit["final_tracked_status"] == ""
+    assert audit["attempts"][0]["post_attempt_tracked_dirty"] is False
+    assert audit["attempts"][0]["post_attempt_tracked_status"] == ""
+    assert audit["executor_type"] == "fake"
+    assert audit["live_codex_enabled"] is False
+    assert audit["dry_run_external_calls"] is True
+    assert audit["live_codex_attempted"] is False
+    assert audit["blocked_reason"] is None
+    assert "Pre-run tracked tree dirty: False" in report
+    assert "Pre-run tracked status: (clean)" in report
+    assert "Final tracked tree dirty: False" in report
+    assert "Final tracked status: (clean)" in report
+    assert "Attempt 1 tracked tree dirty: False" in report
+    assert "Attempt 1 tracked status: (clean)" in report
+
+
 def test_output_files_are_written_only_inside_requested_tmp_path(tmp_path: Path):
     result = _run_cli(tmp_path, "--fake-reviewer-verdicts", "PASS")
 
