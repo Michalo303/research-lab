@@ -161,17 +161,55 @@ def test_default_run_is_fake_non_live_and_uses_tmp_output_only(tmp_path: Path):
     assert "No live git/GitHub action: yes" in report
 
 
+def test_environment_variables_cannot_silently_enable_live_reviewer_mode(
+    tmp_path: Path,
+    monkeypatch,
+):
+    monkeypatch.setenv("REVIEWER_MODE", "live-openai")
+    monkeypatch.setenv("CODEX_REVIEWER_MODE", "live-openai")
+    monkeypatch.setenv("REVIEW_LOOP_REVIEWER_MODE", "live-openai")
+    monkeypatch.setenv("ALLOW_PROVIDER_CALLS", "true")
+    monkeypatch.setenv("CODEX_ALLOW_PROVIDER_CALLS", "true")
+    monkeypatch.setenv("MAX_REVIEWER_CALLS", "999")
+    monkeypatch.setenv("CODEX_MAX_REVIEWER_CALLS", "999")
+    monkeypatch.setenv("OPENAI_API_KEY", "dummy")
+
+    result = _run_cli(tmp_path)
+
+    assert result.returncode == 0
+    audit, report, _ = _load_artifacts(tmp_path)
+    assert audit["reviewer_mode"] == "replay"
+    assert audit["provider_calls_allowed"] is False
+    assert audit["max_reviewer_calls"] == 0
+    assert audit["provider_gate_passed"] is True
+    assert audit["provider_gate_blocked"] is False
+    assert audit["attempts"]
+    assert audit["final_status"] == "PASS"
+    assert "disabled" not in (audit["blocked_reason"] or "").lower()
+    assert "Provider gate blocked the run before executor start." not in report
+    assert "No live OpenAI/GPT reviewer call: yes" in report
+
+
 def test_live_reviewer_mode_without_allow_provider_calls_fails_closed_before_attempt_one(tmp_path: Path):
+    build_loop_calls = 0
+
+    def build_loop_spy(args, dry_run_external_calls):
+        nonlocal build_loop_calls
+        build_loop_calls += 1
+        raise AssertionError("_build_loop must not be called when provider gate blocks.")
+
     result = _run_cli(
         tmp_path,
         "--reviewer-mode",
         "live-openai",
         "--max-reviewer-calls",
         "1",
+        build_loop=build_loop_spy,
     )
 
     assert result.returncode == 0
     audit, report, _ = _load_artifacts(tmp_path)
+    assert build_loop_calls == 0
     assert audit["reviewer_mode"] == "live-openai"
     assert audit["provider_calls_allowed"] is False
     assert audit["max_reviewer_calls"] == 1
@@ -183,6 +221,13 @@ def test_live_reviewer_mode_without_allow_provider_calls_fails_closed_before_att
 
 
 def test_live_reviewer_mode_without_positive_call_budget_fails_closed_before_attempt_one(tmp_path: Path):
+    build_loop_calls = 0
+
+    def build_loop_spy(args, dry_run_external_calls):
+        nonlocal build_loop_calls
+        build_loop_calls += 1
+        raise AssertionError("_build_loop must not be called when provider gate blocks.")
+
     result = _run_cli(
         tmp_path,
         "--reviewer-mode",
@@ -191,16 +236,48 @@ def test_live_reviewer_mode_without_positive_call_budget_fails_closed_before_att
         "true",
         "--max-reviewer-calls",
         "0",
+        build_loop=build_loop_spy,
     )
 
     assert result.returncode == 0
     audit, report, _ = _load_artifacts(tmp_path)
+    assert build_loop_calls == 0
     assert audit["reviewer_mode"] == "live-openai"
     assert audit["provider_calls_allowed"] is True
     assert audit["max_reviewer_calls"] == 0
     assert audit["provider_gate_passed"] is False
     assert audit["provider_gate_blocked"] is True
     assert "max-reviewer-calls" in audit["blocked_reason"]
+    assert audit["attempts"] == []
+    assert "provider gate blocked" in report.lower()
+
+
+def test_live_reviewer_mode_with_budget_but_without_allow_provider_calls_fails_closed_before_attempt_one(tmp_path: Path):
+    build_loop_calls = 0
+
+    def build_loop_spy(args, dry_run_external_calls):
+        nonlocal build_loop_calls
+        build_loop_calls += 1
+        raise AssertionError("_build_loop must not be called when provider gate blocks.")
+
+    result = _run_cli(
+        tmp_path,
+        "--reviewer-mode",
+        "live-openai",
+        "--max-reviewer-calls",
+        "5",
+        build_loop=build_loop_spy,
+    )
+
+    assert result.returncode == 0
+    audit, report, _ = _load_artifacts(tmp_path)
+    assert build_loop_calls == 0
+    assert audit["reviewer_mode"] == "live-openai"
+    assert audit["provider_calls_allowed"] is False
+    assert audit["max_reviewer_calls"] == 5
+    assert audit["provider_gate_passed"] is False
+    assert audit["provider_gate_blocked"] is True
+    assert "allow-provider-calls" in audit["blocked_reason"]
     assert audit["attempts"] == []
     assert "provider gate blocked" in report.lower()
 
