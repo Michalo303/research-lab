@@ -8,9 +8,11 @@ from research_lab.orchestration.codex_review_loop import ReviewerBundle
 from research_lab.orchestration.codex_review_loop_reviewer import (
     LiveReviewerAdapterStub,
     ReplayReviewLoopReviewer,
+    ReviewLoopReviewerMode,
     ReviewerDecision,
     ReviewerDecisionError,
     ReviewerDecisionVerdict,
+    validate_provider_call_gate,
     parse_reviewer_decision,
 )
 
@@ -126,3 +128,51 @@ def test_live_reviewer_stub_refuses_execution():
 
     with pytest.raises(RuntimeError, match="disabled"):
         reviewer.review(_bundle())
+
+
+def test_provider_gate_blocks_live_mode_without_allow_provider_calls():
+    gate = validate_provider_call_gate(
+        reviewer_mode=ReviewLoopReviewerMode.LIVE_OPENAI,
+        allow_provider_calls=False,
+        max_reviewer_calls=1,
+    )
+
+    assert gate.passed is False
+    assert gate.blocked is True
+    assert "allow-provider-calls" in gate.blocked_reason
+
+
+def test_provider_gate_blocks_live_mode_without_positive_budget():
+    gate = validate_provider_call_gate(
+        reviewer_mode=ReviewLoopReviewerMode.LIVE_OPENAI,
+        allow_provider_calls=True,
+        max_reviewer_calls=0,
+    )
+
+    assert gate.passed is False
+    assert gate.blocked is True
+    assert "max-reviewer-calls" in gate.blocked_reason
+
+
+def test_provider_gate_allows_replay_mode_even_when_provider_calls_are_allowed():
+    gate = validate_provider_call_gate(
+        reviewer_mode=ReviewLoopReviewerMode.REPLAY,
+        allow_provider_calls=True,
+        max_reviewer_calls=0,
+    )
+
+    assert gate.passed is True
+    assert gate.blocked is False
+    assert gate.blocked_reason is None
+
+
+def test_provider_gate_allows_live_mode_only_with_explicit_budget():
+    gate = validate_provider_call_gate(
+        reviewer_mode=ReviewLoopReviewerMode.LIVE_OPENAI,
+        allow_provider_calls=True,
+        max_reviewer_calls=2,
+    )
+
+    assert gate.passed is True
+    assert gate.blocked is False
+    assert gate.blocked_reason is None

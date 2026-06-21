@@ -13,6 +13,11 @@ class ReviewerDecisionError(ValueError):
     pass
 
 
+class ReviewLoopReviewerMode(str, Enum):
+    REPLAY = "replay"
+    LIVE_OPENAI = "live-openai"
+
+
 class ReviewerDecisionVerdict(str, Enum):
     PASS = "PASS"
     RETRY = "RETRY"
@@ -109,6 +114,36 @@ class LiveReviewerAdapterStub:
         raise RuntimeError(
             "Live reviewer adapter execution is disabled in this deterministic review-loop path."
         )
+
+
+@dataclass(frozen=True)
+class ProviderCallGateResult:
+    passed: bool
+    blocked: bool
+    blocked_reason: str | None = None
+
+
+def validate_provider_call_gate(
+    *,
+    reviewer_mode: ReviewLoopReviewerMode,
+    allow_provider_calls: bool,
+    max_reviewer_calls: int,
+) -> ProviderCallGateResult:
+    if reviewer_mode is not ReviewLoopReviewerMode.LIVE_OPENAI:
+        return ProviderCallGateResult(passed=True, blocked=False, blocked_reason=None)
+    if not allow_provider_calls:
+        return ProviderCallGateResult(
+            passed=False,
+            blocked=True,
+            blocked_reason="Live reviewer mode requires --allow-provider-calls true.",
+        )
+    if max_reviewer_calls < 1:
+        return ProviderCallGateResult(
+            passed=False,
+            blocked=True,
+            blocked_reason="Live reviewer mode requires --max-reviewer-calls to be a positive integer.",
+        )
+    return ProviderCallGateResult(passed=True, blocked=False, blocked_reason=None)
 
 
 def _normalize_payload(raw_value: str | dict[str, Any]) -> dict[str, Any]:
