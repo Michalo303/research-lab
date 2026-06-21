@@ -62,14 +62,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     output_dir = Path(args.output_dir).expanduser().resolve()
     dry_run_external_calls = args.dry_run_external_calls.lower() == "true"
-    loop = CodexReviewLoop(
-        config=CodexReviewLoopConfig(max_attempts=args.max_attempts, dry_run_external_calls=dry_run_external_calls),
-        executor=_build_executor(args, dry_run_external_calls),
-        reviewer=FakeReviewLoopReviewer(_build_fake_reviewer_verdicts(args.fake_reviewer_verdicts)),
-        validation_runner=FakeReviewLoopValidationRunner(_build_fake_validation_results(args.max_attempts)),
-    )
+    loop = _build_loop(args, dry_run_external_calls)
     audit = loop.run(args.task)
-    audit_payload = _build_audit_payload(audit.to_dict(), args.max_attempts)
+    audit_payload = _build_audit_payload(audit.to_dict(), args, dry_run_external_calls)
     report_text = _build_report(audit_payload)
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -104,6 +99,15 @@ def _build_executor(args: argparse.Namespace, dry_run_external_calls: bool):
             dry_run_external_calls=dry_run_external_calls,
         )
     return FakeReviewLoopExecutorFactory().build(max_attempts=args.max_attempts)
+
+
+def _build_loop(args: argparse.Namespace, dry_run_external_calls: bool) -> CodexReviewLoop:
+    return CodexReviewLoop(
+        config=CodexReviewLoopConfig(max_attempts=args.max_attempts, dry_run_external_calls=dry_run_external_calls),
+        executor=_build_executor(args, dry_run_external_calls),
+        reviewer=FakeReviewLoopReviewer(_build_fake_reviewer_verdicts(args.fake_reviewer_verdicts)),
+        validation_runner=FakeReviewLoopValidationRunner(_build_fake_validation_results(args.max_attempts)),
+    )
 
 
 def _build_fake_reviewer_verdicts(verdicts: list[str]) -> list[ReviewVerdict]:
@@ -146,18 +150,22 @@ def _build_fake_validation_results(max_attempts: int) -> list[ValidationResult]:
     return results
 
 
-def _build_audit_payload(audit_payload: dict, max_attempts: int) -> dict:
+def _build_audit_payload(audit_payload: dict, args: argparse.Namespace, dry_run_external_calls: bool) -> dict:
     payload = dict(audit_payload)
-    payload["max_attempts"] = max_attempts
+    payload["max_attempts"] = args.max_attempts
     payload["reviewer_verdicts"] = list(payload.get("verdicts", []))
     first_attempt = payload["attempts"][0] if payload.get("attempts") else None
     executor_details = dict(first_attempt["executor_result"].get("executor_details", {})) if first_attempt else {}
     parsed_output = dict(executor_details.get("parsed_output", {}) or {})
-    payload["executor_type"] = executor_details.get("executor_type", "unknown")
-    payload["live_codex_enabled"] = bool(executor_details.get("live_codex_enabled", False))
+    payload["executor_type"] = executor_details.get("executor_type", args.executor)
+    payload["live_codex_enabled"] = bool(executor_details.get("live_codex_enabled", args.enable_live_codex.lower() == "true"))
+    payload["dry_run_external_calls"] = bool(executor_details.get("dry_run_external_calls", dry_run_external_calls))
     payload["live_codex_attempted"] = bool(executor_details.get("live_codex_attempted", False))
-    payload["codex_command"] = executor_details.get("codex_command")
-    payload["codex_timeout_seconds"] = executor_details.get("codex_timeout_seconds")
+    payload["codex_command"] = executor_details.get("codex_command", args.codex_command if args.executor == "codex_cli" else None)
+    payload["codex_timeout_seconds"] = executor_details.get(
+        "codex_timeout_seconds",
+        args.codex_timeout_seconds if args.executor == "codex_cli" else None,
+    )
     payload["codex_exit_code"] = executor_details.get("codex_exit_code")
     payload["stdout_summary"] = executor_details.get("stdout_summary", "")
     payload["stderr_summary"] = executor_details.get("stderr_summary", "")
@@ -169,6 +177,11 @@ def _build_audit_payload(audit_payload: dict, max_attempts: int) -> dict:
     payload["parsed_blocked_reason"] = parsed_output.get("blocked_reason")
     payload["parser_warning"] = parsed_output.get("parser_warning")
     payload["parse_error"] = parsed_output.get("parse_error")
+    payload["pre_run_tracked_dirty"] = bool(payload.get("pre_run_tracked_dirty", False))
+    payload["pre_run_tracked_status"] = payload.get("pre_run_tracked_status", "") or ""
+    payload["final_tracked_dirty"] = bool(payload.get("final_tracked_dirty", False))
+    payload["final_tracked_status"] = payload.get("final_tracked_status", "") or ""
+    payload["tracked_tree_failure_reason"] = payload.get("tracked_tree_failure_reason")
     return payload
 
 
@@ -180,13 +193,22 @@ def _build_report(audit_payload: dict) -> str:
         f"Number of attempts: {len(audit_payload['attempts'])}",
         f"Executor type: {audit_payload['executor_type']}",
         f"Live Codex enabled: {audit_payload['live_codex_enabled']}",
+        f"Dry-run external calls: {audit_payload['dry_run_external_calls']}",
         f"Live Codex attempted: {audit_payload['live_codex_attempted']}",
         f"Codex command: {audit_payload['codex_command'] or '(not configured)'}",
         f"Codex timeout seconds: {audit_payload['codex_timeout_seconds'] if audit_payload['codex_timeout_seconds'] is not None else '(n/a)'}",
+        f"Pre-run tracked tree dirty: {audit_payload['pre_run_tracked_dirty']}",
+        f"Pre-run tracked status: {audit_payload['pre_run_tracked_status'] or '(clean)'}",
+        f"Final tracked tree dirty: {audit_payload['final_tracked_dirty']}",
+        f"Final tracked status: {audit_payload['final_tracked_status'] or '(clean)'}",
         "Mode: fake/non-live dry-run only." if not audit_payload["live_codex_attempted"] else "Mode: local Codex executor requested.",
         "",
         "## Attempt Verdicts",
     ]
+    if not audit_payload["attempts"] and audit_payload["pre_run_tracked_dirty"]:
+        lines.append("- Review loop aborted before executor start because the tracked tree was not clean.")
+    if audit_payload.get("tracked_tree_failure_reason"):
+        lines.append(f"- Tracked-tree probe failure: {audit_payload['tracked_tree_failure_reason']}")
     for attempt in audit_payload["attempts"]:
         lines.append(f"- Attempt {attempt['attempt_number']}: {attempt['reviewer_verdict']['status']}")
 
@@ -194,6 +216,10 @@ def _build_report(audit_payload: dict) -> str:
     for attempt in audit_payload["attempts"]:
         changed_files = attempt["executor_result"]["changed_files"]
         lines.append(f"- Attempt {attempt['attempt_number']}: {', '.join(changed_files) if changed_files else '(none)'}")
+        lines.append(f"- Attempt {attempt['attempt_number']} tracked tree dirty: {attempt.get('post_attempt_tracked_dirty', False)}")
+        lines.append(
+            f"- Attempt {attempt['attempt_number']} tracked status: {attempt.get('post_attempt_tracked_status') or '(clean)'}"
+        )
 
     lines.extend(["", "## Parsed Codex Output"])
     lines.append(f"- Parsed summary: {audit_payload.get('parsed_summary') or '(none)'}")
@@ -246,6 +272,8 @@ def _build_report(audit_payload: dict) -> str:
     )
     if audit_payload.get("blocked_reason"):
         lines.append(f"- Blocked reason: {audit_payload['blocked_reason']}")
+    if audit_payload.get("tracked_tree_failure_reason"):
+        lines.append(f"- Tracked-tree failure reason: {audit_payload['tracked_tree_failure_reason']}")
 
     follow_up_prompts = [
         attempt["follow_up_prompt"]
