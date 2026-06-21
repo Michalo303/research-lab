@@ -9,6 +9,9 @@ from typing import Callable
 
 from research_lab.orchestration.codex_autonomous_contract import CodexRoundResult
 from research_lab.orchestration.codex_review_loop import FakeReviewLoopExecutor
+from research_lab.orchestration.codex_review_loop_output_parser import (
+    parse_codex_review_loop_output,
+)
 
 
 CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
@@ -104,21 +107,27 @@ class CodexCliReviewLoopExecutor:
             duration_seconds = round(self.clock() - started, 3)
             stdout_summary = _summarize_output(completed.stdout or "")
             stderr_summary = _summarize_output(completed.stderr or "")
+            parsed_output = parse_codex_review_loop_output(
+                stdout=completed.stdout or "",
+                stderr=completed.stderr or "",
+                exit_code=completed.returncode,
+            )
             return CodexRoundResult(
-                changed_files=[],
-                diff_line_count=0,
+                changed_files=list(parsed_output.changed_files),
+                diff_line_count=int(parsed_output.diff_summary.get("line_count", 0)),
                 proposed_commands=[],
-                summary=_completed_summary(completed.returncode, stdout_summary, stderr_summary),
-                patch_digest=stdout_summary,
-                meaningful_progress=bool(stdout_summary.strip()),
-                executor_failed=completed.returncode != 0,
+                summary=parsed_output.summary,
+                patch_digest=stdout_summary or parsed_output.summary,
+                meaningful_progress=bool(parsed_output.changed_files or stdout_summary.strip()),
+                executor_failed=completed.returncode != 0 or parsed_output.status == "failed",
                 executor_details=self._executor_details(
                     live_codex_attempted=True,
                     codex_exit_code=completed.returncode,
                     stdout_summary=stdout_summary,
                     stderr_summary=stderr_summary,
                     duration_seconds=duration_seconds,
-                    blocked_reason=None,
+                    blocked_reason=parsed_output.blocked_reason,
+                    parsed_output=parsed_output.to_dict(),
                 ),
             )
         except subprocess.TimeoutExpired as exc:
@@ -162,6 +171,7 @@ class CodexCliReviewLoopExecutor:
         stderr_summary: str,
         duration_seconds: float,
         blocked_reason: str | None,
+        parsed_output: dict[str, object] | None = None,
     ) -> dict[str, object]:
         return {
             "executor_type": "codex_cli",
@@ -174,6 +184,7 @@ class CodexCliReviewLoopExecutor:
             "stderr_summary": stderr_summary,
             "duration_seconds": duration_seconds,
             "blocked_reason": blocked_reason,
+            "parsed_output": dict(parsed_output or {}),
         }
 
 
