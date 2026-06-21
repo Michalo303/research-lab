@@ -21,6 +21,7 @@ def _run_cli(
     *extra_args: str,
     build_loop=None,
     build_executor=None,
+    build_reviewer=None,
 ) -> subprocess.CompletedProcess[str]:
     output_dir = tmp_path / "review-loop-output"
     argv = [
@@ -32,6 +33,7 @@ def _run_cli(
     ]
     original_build_loop = cli_script._build_loop
     original_build_executor = cli_script._build_executor
+    original_build_reviewer = cli_script._build_reviewer
 
     def _clean_build_loop(args, dry_run_external_calls):
         loop = original_build_loop(args, dry_run_external_calls)
@@ -41,6 +43,8 @@ def _run_cli(
     cli_script._build_loop = build_loop or _clean_build_loop
     if build_executor is not None:
         cli_script._build_executor = build_executor
+    if build_reviewer is not None:
+        cli_script._build_reviewer = build_reviewer
 
     stdout = io.StringIO()
     stderr = io.StringIO()
@@ -53,6 +57,7 @@ def _run_cli(
     finally:
         cli_script._build_loop = original_build_loop
         cli_script._build_executor = original_build_executor
+        cli_script._build_reviewer = original_build_reviewer
 
     return subprocess.CompletedProcess(
         args=[sys.executable, str(SCRIPT), *argv],
@@ -154,6 +159,10 @@ def test_default_run_is_fake_non_live_and_uses_tmp_output_only(tmp_path: Path):
     assert audit["reviewer_mode"] == "replay"
     assert audit["provider_calls_allowed"] is False
     assert audit["max_reviewer_calls"] == 0
+    assert audit["reviewer_calls_used"] == 0
+    assert audit["provider_call_attempted"] is False
+    assert audit["provider_call_succeeded"] is False
+    assert audit["provider_call_failed"] is False
     assert audit["provider_gate_passed"] is True
     assert audit["provider_gate_blocked"] is False
     assert "No live Codex CLI executed: yes" in report
@@ -181,6 +190,8 @@ def test_environment_variables_cannot_silently_enable_live_reviewer_mode(
     assert audit["reviewer_mode"] == "replay"
     assert audit["provider_calls_allowed"] is False
     assert audit["max_reviewer_calls"] == 0
+    assert audit["reviewer_calls_used"] == 0
+    assert audit["provider_call_attempted"] is False
     assert audit["provider_gate_passed"] is True
     assert audit["provider_gate_blocked"] is False
     assert audit["attempts"]
@@ -282,7 +293,7 @@ def test_live_reviewer_mode_with_budget_but_without_allow_provider_calls_fails_c
     assert "provider gate blocked" in report.lower()
 
 
-def test_live_reviewer_mode_with_both_gates_reaches_only_disabled_stub(tmp_path: Path):
+def test_live_reviewer_mode_with_both_gates_reaches_live_adapter_path_but_stays_fail_closed_without_credentials(tmp_path: Path):
     result = _run_cli(
         tmp_path,
         "--reviewer-mode",
@@ -300,9 +311,39 @@ def test_live_reviewer_mode_with_both_gates_reaches_only_disabled_stub(tmp_path:
     assert audit["max_reviewer_calls"] == 1
     assert audit["provider_gate_passed"] is True
     assert audit["provider_gate_blocked"] is False
-    assert audit["attempts"] == []
-    assert "disabled" in (audit["blocked_reason"] or "").lower()
+    assert len(audit["attempts"]) == 1
+    assert audit["provider_call_attempted"] is False
+    assert audit["provider_call_failed"] is True
+    assert "OPENAI_API_KEY" in (audit["blocked_reason"] or "")
     assert "Provider gate blocked the run before executor start." not in report
+
+
+def test_live_reviewer_mode_with_gates_but_missing_api_key_fails_closed(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    result = _run_cli(
+        tmp_path,
+        "--reviewer-mode",
+        "live-openai",
+        "--allow-provider-calls",
+        "true",
+        "--max-reviewer-calls",
+        "1",
+    )
+
+    assert result.returncode == 0
+    audit, report, _ = _load_artifacts(tmp_path)
+    assert audit["reviewer_mode"] == "live-openai"
+    assert audit["provider_calls_allowed"] is True
+    assert audit["max_reviewer_calls"] == 1
+    assert audit["reviewer_calls_used"] == 0
+    assert audit["provider_call_attempted"] is False
+    assert audit["provider_call_succeeded"] is False
+    assert audit["provider_call_failed"] is True
+    assert "OPENAI_API_KEY" in (audit["provider_failure_reason"] or "")
+    assert audit["final_status"] == "BLOCKED"
+    assert len(audit["attempts"]) == 1
+    assert "blocked reason" in report.lower()
 
 
 def test_allow_provider_calls_alone_does_not_change_reviewer_mode(tmp_path: Path):
@@ -319,10 +360,59 @@ def test_allow_provider_calls_alone_does_not_change_reviewer_mode(tmp_path: Path
     assert audit["reviewer_mode"] == "replay"
     assert audit["provider_calls_allowed"] is True
     assert audit["max_reviewer_calls"] == 3
+    assert audit["reviewer_calls_used"] == 0
+    assert audit["provider_call_attempted"] is False
     assert audit["provider_gate_passed"] is True
     assert audit["provider_gate_blocked"] is False
     assert audit["final_status"] == "PASS"
     assert "fake/non-live" in report
+
+
+def test_live_reviewer_mode_records_provider_call_metadata_with_fake_client(tmp_path: Path):
+    from research_lab.orchestration.codex_review_loop_reviewer import LiveOpenAIReviewLoopReviewer
+
+    class _FakeClient:
+        def review_json(self, *, request_payload: dict[str, object], api_key: str, model_name: str) -> str:
+            return json.dumps(
+                {
+                    "verdict": "PASS",
+                    "reason": "Approved by fake provider.",
+                    "next_codex_instruction": None,
+                    "risk_flags": [],
+                    "allowed_to_continue": True,
+                    "confidence": "high",
+                }
+            )
+
+    result = _run_cli(
+        tmp_path,
+        "--reviewer-mode",
+        "live-openai",
+        "--allow-provider-calls",
+        "true",
+        "--max-reviewer-calls",
+        "2",
+        build_reviewer=lambda args: LiveOpenAIReviewLoopReviewer(
+            api_key="test-key",
+            max_reviewer_calls=args.max_reviewer_calls,
+            provider_client=_FakeClient(),
+            provider_name="openai",
+            model_name="gpt-4.1-mini",
+        ),
+    )
+
+    assert result.returncode == 0
+    audit, report, _ = _load_artifacts(tmp_path)
+    assert audit["reviewer_mode"] == "live-openai"
+    assert audit["reviewer_calls_used"] == 1
+    assert audit["provider_name"] == "openai"
+    assert audit["model_name"] == "gpt-4.1-mini"
+    assert audit["provider_call_attempted"] is True
+    assert audit["provider_call_succeeded"] is True
+    assert audit["provider_call_failed"] is False
+    assert audit["parsed_reviewer_decision"]["verdict"] == "PASS"
+    assert audit["final_status"] == "PASS"
+    assert "Provider calls allowed: True" in report
 
 
 def test_cli_operator_smoke_dry_run_writes_clean_tracked_tree_metadata(tmp_path: Path):
