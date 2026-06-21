@@ -11,7 +11,6 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from research_lab.orchestration.codex_autonomous_contract import (
-    CodexRoundResult,
     LoopStatus,
     ReviewVerdict,
     ValidationResult,
@@ -19,9 +18,12 @@ from research_lab.orchestration.codex_autonomous_contract import (
 from research_lab.orchestration.codex_review_loop import (
     CodexReviewLoop,
     CodexReviewLoopConfig,
-    FakeReviewLoopExecutor,
     FakeReviewLoopReviewer,
     FakeReviewLoopValidationRunner,
+)
+from research_lab.orchestration.codex_review_loop_executors import (
+    CodexCliReviewLoopExecutor,
+    FakeReviewLoopExecutorFactory,
 )
 
 
@@ -34,6 +36,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run CodexReviewLoop in fake/non-live mode.")
     parser.add_argument("--task", default=DEFAULT_TASK, help="Initial task prompt for the review loop.")
     parser.add_argument("--max-attempts", type=int, default=1, help="Maximum review-loop attempts to run.")
+    parser.add_argument("--executor", choices=["fake", "codex_cli"], default="fake")
+    parser.add_argument("--enable-live-codex", choices=["true", "false"], default="false")
+    parser.add_argument("--codex-command", default="codex")
+    parser.add_argument("--codex-timeout-seconds", type=int, default=300)
+    parser.add_argument("--dry-run-external-calls", choices=["true", "false"], default="true")
     parser.add_argument(
         "--fake-reviewer-verdicts",
         default="PASS",
@@ -54,9 +61,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     output_dir = Path(args.output_dir).expanduser().resolve()
+    dry_run_external_calls = args.dry_run_external_calls.lower() == "true"
     loop = CodexReviewLoop(
-        config=CodexReviewLoopConfig(max_attempts=args.max_attempts, dry_run_external_calls=True),
-        executor=FakeReviewLoopExecutor(_build_fake_rounds(args.max_attempts)),
+        config=CodexReviewLoopConfig(max_attempts=args.max_attempts, dry_run_external_calls=dry_run_external_calls),
+        executor=_build_executor(args, dry_run_external_calls),
         reviewer=FakeReviewLoopReviewer(_build_fake_reviewer_verdicts(args.fake_reviewer_verdicts)),
         validation_runner=FakeReviewLoopValidationRunner(_build_fake_validation_results(args.max_attempts)),
     )
@@ -86,25 +94,16 @@ def _parse_fake_verdicts(raw_value: str, parser: argparse.ArgumentParser) -> lis
     return verdict_tokens
 
 
-def _build_fake_rounds(max_attempts: int) -> list[CodexRoundResult]:
-    rounds: list[CodexRoundResult] = []
-    for attempt_number in range(1, max_attempts + 1):
-        changed_files = [
-            "research_lab/orchestration/codex_review_loop.py",
-            f"tests/fake_review_loop_attempt_{attempt_number}.py",
-        ]
-        rounds.append(
-            CodexRoundResult(
-                changed_files=changed_files,
-                diff_line_count=10 * attempt_number,
-                proposed_commands=[],
-                summary=f"Fake executor completed attempt {attempt_number}.",
-                patch_digest=f"fake-attempt-{attempt_number}",
-                meaningful_progress=True,
-                executor_details={"mode": "fake_non_live", "attempt_number": attempt_number},
-            )
+def _build_executor(args: argparse.Namespace, dry_run_external_calls: bool):
+    if args.executor == "codex_cli":
+        return CodexCliReviewLoopExecutor(
+            repo_root=ROOT,
+            codex_command=args.codex_command,
+            timeout_seconds=args.codex_timeout_seconds,
+            live_codex_enabled=args.enable_live_codex.lower() == "true",
+            dry_run_external_calls=dry_run_external_calls,
         )
-    return rounds
+    return FakeReviewLoopExecutorFactory().build(max_attempts=args.max_attempts)
 
 
 def _build_fake_reviewer_verdicts(verdicts: list[str]) -> list[ReviewVerdict]:
@@ -151,6 +150,17 @@ def _build_audit_payload(audit_payload: dict, max_attempts: int) -> dict:
     payload = dict(audit_payload)
     payload["max_attempts"] = max_attempts
     payload["reviewer_verdicts"] = list(payload.get("verdicts", []))
+    first_attempt = payload["attempts"][0] if payload.get("attempts") else None
+    executor_details = dict(first_attempt["executor_result"].get("executor_details", {})) if first_attempt else {}
+    payload["executor_type"] = executor_details.get("executor_type", "unknown")
+    payload["live_codex_enabled"] = bool(executor_details.get("live_codex_enabled", False))
+    payload["live_codex_attempted"] = bool(executor_details.get("live_codex_attempted", False))
+    payload["codex_command"] = executor_details.get("codex_command")
+    payload["codex_timeout_seconds"] = executor_details.get("codex_timeout_seconds")
+    payload["codex_exit_code"] = executor_details.get("codex_exit_code")
+    payload["stdout_summary"] = executor_details.get("stdout_summary", "")
+    payload["stderr_summary"] = executor_details.get("stderr_summary", "")
+    payload["blocked_reason"] = executor_details.get("blocked_reason")
     return payload
 
 
@@ -160,7 +170,12 @@ def _build_report(audit_payload: dict) -> str:
         "",
         f"Final status: {audit_payload['final_status']}",
         f"Number of attempts: {len(audit_payload['attempts'])}",
-        "Mode: fake/non-live dry-run only.",
+        f"Executor type: {audit_payload['executor_type']}",
+        f"Live Codex enabled: {audit_payload['live_codex_enabled']}",
+        f"Live Codex attempted: {audit_payload['live_codex_attempted']}",
+        f"Codex command: {audit_payload['codex_command'] or '(not configured)'}",
+        f"Codex timeout seconds: {audit_payload['codex_timeout_seconds'] if audit_payload['codex_timeout_seconds'] is not None else '(n/a)'}",
+        "Mode: fake/non-live dry-run only." if not audit_payload["live_codex_attempted"] else "Mode: local Codex executor requested.",
         "",
         "## Attempt Verdicts",
     ]
@@ -178,6 +193,18 @@ def _build_report(audit_payload: dict) -> str:
         outcome = "PASS" if validation["success"] else "FAIL"
         requested = ", ".join(validation["tests_requested"]) if validation["tests_requested"] else "(none)"
         lines.append(f"- Attempt {attempt['attempt_number']}: {outcome}; requested {requested}")
+
+    lines.extend(
+        [
+            "",
+            "## Executor Summary",
+            f"- Codex exit code: {audit_payload['codex_exit_code'] if audit_payload['codex_exit_code'] is not None else '(not executed)'}",
+            f"- Stdout summary: {audit_payload['stdout_summary'] or '(none)'}",
+            f"- Stderr summary: {audit_payload['stderr_summary'] or '(none)'}",
+        ]
+    )
+    if audit_payload.get("blocked_reason"):
+        lines.append(f"- Blocked reason: {audit_payload['blocked_reason']}")
 
     follow_up_prompts = [
         attempt["follow_up_prompt"]

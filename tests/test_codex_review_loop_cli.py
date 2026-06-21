@@ -107,6 +107,8 @@ def test_default_run_is_fake_non_live_and_uses_tmp_output_only(tmp_path: Path):
     assert audit["reviewer_verdicts"] == ["PASS"]
     assert audit["git_action_attempted"] is False
     assert audit["live_external_actions_enabled"] is False
+    assert audit["executor_type"] == "fake"
+    assert audit["live_codex_attempted"] is False
     assert output_dir.parent == tmp_path
     assert "No live Codex CLI executed: yes" in report
     assert "No live OpenAI/GPT reviewer call: yes" in report
@@ -121,3 +123,42 @@ def test_output_files_are_written_only_inside_requested_tmp_path(tmp_path: Path)
     assert (output_dir / "audit.json").exists()
     assert (output_dir / "final_report.md").exists()
     assert not (ROOT / "codex_runs" / "audit.json").exists()
+
+
+def test_codex_cli_with_live_disabled_reports_blocked_non_live_reason(tmp_path: Path):
+    result = _run_cli(
+        tmp_path,
+        "--executor",
+        "codex_cli",
+        "--enable-live-codex",
+        "false",
+    )
+
+    assert result.returncode == 0
+    audit, report, _ = _load_artifacts(tmp_path)
+    assert audit["executor_type"] == "codex_cli"
+    assert audit["live_codex_enabled"] is False
+    assert audit["live_codex_attempted"] is False
+    assert "blocked_reason" in audit
+    assert "disabled" in audit["blocked_reason"].lower()
+    assert "No live Codex CLI executed: yes" in report
+
+
+def test_codex_cli_with_live_flag_true_but_dry_run_enabled_still_does_not_run(tmp_path: Path):
+    result = _run_cli(
+        tmp_path,
+        "--executor",
+        "codex_cli",
+        "--enable-live-codex",
+        "true",
+        "--dry-run-external-calls",
+        "true",
+    )
+
+    assert result.returncode == 0
+    audit, report, _ = _load_artifacts(tmp_path)
+    assert audit["executor_type"] == "codex_cli"
+    assert audit["live_codex_enabled"] is True
+    assert audit["live_codex_attempted"] is False
+    assert "dry-run" in audit["blocked_reason"].lower()
+    assert "blocked reason" in report.lower()
