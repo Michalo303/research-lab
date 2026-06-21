@@ -18,18 +18,23 @@ from research_lab.orchestration.codex_autonomous_contract import (
 from research_lab.orchestration.codex_review_loop import (
     CodexReviewLoop,
     CodexReviewLoopConfig,
-    FakeReviewLoopReviewer,
     FakeReviewLoopValidationRunner,
 )
 from research_lab.orchestration.codex_review_loop_executors import (
     CodexCliReviewLoopExecutor,
     FakeReviewLoopExecutorFactory,
 )
+from research_lab.orchestration.codex_review_loop_reviewer import ReplayReviewLoopReviewer
 
 
 DEFAULT_OUTPUT_DIR = ROOT / "codex_runs" / "review-loop-cli-smoke"
 DEFAULT_TASK = "Run the fake Codex review loop."
 VALID_VERDICTS = {status.value: status for status in (LoopStatus.PASS, LoopStatus.REVISE, LoopStatus.BLOCKED)}
+LEGACY_TO_REVIEWER_VERDICT = {
+    "PASS": "PASS",
+    "REVISE": "RETRY",
+    "BLOCKED": "ABORT",
+}
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -105,33 +110,45 @@ def _build_loop(args: argparse.Namespace, dry_run_external_calls: bool) -> Codex
     return CodexReviewLoop(
         config=CodexReviewLoopConfig(max_attempts=args.max_attempts, dry_run_external_calls=dry_run_external_calls),
         executor=_build_executor(args, dry_run_external_calls),
-        reviewer=FakeReviewLoopReviewer(_build_fake_reviewer_verdicts(args.fake_reviewer_verdicts)),
+        reviewer=ReplayReviewLoopReviewer.from_raw_decisions(_build_fake_reviewer_decisions(args.fake_reviewer_verdicts)),
         validation_runner=FakeReviewLoopValidationRunner(_build_fake_validation_results(args.max_attempts)),
     )
 
 
-def _build_fake_reviewer_verdicts(verdicts: list[str]) -> list[ReviewVerdict]:
-    items: list[ReviewVerdict] = []
+def _build_fake_reviewer_decisions(verdicts: list[str]) -> list[dict[str, object]]:
+    items: list[dict[str, object]] = []
     for attempt_number, verdict_name in enumerate(verdicts, start=1):
-        status = VALID_VERDICTS[verdict_name]
-        if status is LoopStatus.REVISE:
+        mapped_verdict = LEGACY_TO_REVIEWER_VERDICT[verdict_name]
+        if mapped_verdict == "RETRY":
             items.append(
-                ReviewVerdict(
-                    status=status,
-                    summary=f"Fake reviewer requested revisions on attempt {attempt_number}.",
-                    issues=[f"Address fake reviewer feedback for attempt {attempt_number}."],
-                )
+                {
+                    "verdict": "RETRY",
+                    "reason": f"Fake reviewer requested revisions on attempt {attempt_number}.",
+                    "next_codex_instruction": f"Address fake reviewer feedback for attempt {attempt_number}.",
+                    "risk_flags": [],
+                    "allowed_to_continue": True,
+                }
             )
-        elif status is LoopStatus.BLOCKED:
+        elif mapped_verdict == "ABORT":
             items.append(
-                ReviewVerdict(
-                    status=status,
-                    summary=f"Fake reviewer blocked the run on attempt {attempt_number}.",
-                    issues=["Manual intervention required before another attempt."],
-                )
+                {
+                    "verdict": "ABORT",
+                    "reason": f"Fake reviewer blocked the run on attempt {attempt_number}.",
+                    "next_codex_instruction": None,
+                    "risk_flags": ["Manual intervention required before another attempt."],
+                    "allowed_to_continue": False,
+                }
             )
         else:
-            items.append(ReviewVerdict(status=status, summary=f"Fake reviewer approved attempt {attempt_number}."))
+            items.append(
+                {
+                    "verdict": "PASS",
+                    "reason": f"Fake reviewer approved attempt {attempt_number}.",
+                    "next_codex_instruction": None,
+                    "risk_flags": [],
+                    "allowed_to_continue": True,
+                }
+            )
     return items
 
 
