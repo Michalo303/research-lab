@@ -7,6 +7,7 @@ import pytest
 from research_lab.orchestration.codex_review_loop import ReviewerBundle
 from research_lab.orchestration.codex_review_loop_reviewer import (
     LiveReviewerAdapterStub,
+    LiveOpenAIReviewLoopReviewer,
     ReplayReviewLoopReviewer,
     ReviewLoopReviewerMode,
     ReviewerDecision,
@@ -26,6 +27,27 @@ def _bundle() -> ReviewerBundle:
         validation_output={"success": True},
         diff_summary="Changed 1 file.",
     )
+
+
+class FakeProviderClient:
+    def __init__(self, responses: list[str] | None = None, *, error: Exception | None = None) -> None:
+        self._responses = list(responses or [])
+        self._error = error
+        self.calls: list[dict] = []
+
+    def review_json(self, *, request_payload: dict[str, object], api_key: str, model_name: str) -> str:
+        self.calls.append(
+            {
+                "request_payload": request_payload,
+                "api_key": api_key,
+                "model_name": model_name,
+            }
+        )
+        if self._error is not None:
+            raise self._error
+        if not self._responses:
+            raise AssertionError("No fake provider response configured.")
+        return self._responses.pop(0)
 
 
 def test_parse_pass_decision():
@@ -128,6 +150,166 @@ def test_live_reviewer_stub_refuses_execution():
 
     with pytest.raises(RuntimeError, match="disabled"):
         reviewer.review(_bundle())
+
+
+def test_live_openai_reviewer_missing_api_key_fails_closed_without_provider_call():
+    provider_client = FakeProviderClient(
+        responses=[
+            json.dumps(
+                {
+                    "verdict": "PASS",
+                    "reason": "Approved.",
+                    "next_codex_instruction": None,
+                    "risk_flags": [],
+                    "allowed_to_continue": True,
+                }
+            )
+        ]
+    )
+    reviewer = LiveOpenAIReviewLoopReviewer(
+        api_key="",
+        max_reviewer_calls=2,
+        provider_client=provider_client,
+        provider_name="openai",
+        model_name="gpt-4.1-mini",
+    )
+
+    verdict = reviewer.review(_bundle())
+
+    assert verdict.status.value == "BLOCKED"
+    assert provider_client.calls == []
+    assert reviewer.reviewer_calls_used == 0
+    assert reviewer.latest_provider_metadata["provider_call_attempted"] is False
+    assert reviewer.latest_provider_metadata["provider_call_failed"] is True
+    assert "OPENAI_API_KEY" in reviewer.latest_provider_metadata["failure_reason"]
+
+
+def test_live_openai_reviewer_parses_valid_provider_json_through_reviewer_decision():
+    provider_client = FakeProviderClient(
+        responses=[
+            json.dumps(
+                {
+                    "verdict": "PASS",
+                    "reason": "Validation and diff summary look safe.",
+                    "next_codex_instruction": None,
+                    "risk_flags": [],
+                    "allowed_to_continue": True,
+                    "required_changes": [],
+                    "confidence": "high",
+                }
+            )
+        ]
+    )
+    reviewer = LiveOpenAIReviewLoopReviewer(
+        api_key="test-key",
+        max_reviewer_calls=2,
+        provider_client=provider_client,
+        provider_name="openai",
+        model_name="gpt-4.1-mini",
+    )
+
+    verdict = reviewer.review(_bundle())
+
+    assert verdict.status.value == "PASS"
+    assert reviewer.reviewer_calls_used == 1
+    assert reviewer.latest_decision == ReviewerDecision(
+        verdict=ReviewerDecisionVerdict.PASS,
+        reason="Validation and diff summary look safe.",
+        next_codex_instruction=None,
+        risk_flags=[],
+        allowed_to_continue=True,
+    )
+    assert reviewer.latest_provider_metadata["provider_call_attempted"] is True
+    assert reviewer.latest_provider_metadata["provider_call_succeeded"] is True
+    assert reviewer.latest_provider_metadata["provider_call_failed"] is False
+    assert reviewer.latest_provider_metadata["parsed_reviewer_decision"]["verdict"] == "PASS"
+
+
+def test_live_openai_reviewer_malformed_provider_json_fails_closed():
+    reviewer = LiveOpenAIReviewLoopReviewer(
+        api_key="test-key",
+        max_reviewer_calls=2,
+        provider_client=FakeProviderClient(responses=["{not-json}"]),
+        provider_name="openai",
+        model_name="gpt-4.1-mini",
+    )
+
+    verdict = reviewer.review(_bundle())
+
+    assert verdict.status.value == "BLOCKED"
+    assert reviewer.reviewer_calls_used == 1
+    assert reviewer.latest_provider_metadata["provider_call_attempted"] is True
+    assert reviewer.latest_provider_metadata["provider_call_failed"] is True
+    assert "Malformed reviewer decision JSON" in reviewer.latest_provider_metadata["parse_failure"]
+
+
+def test_live_openai_reviewer_invalid_provider_fields_fail_closed():
+    reviewer = LiveOpenAIReviewLoopReviewer(
+        api_key="test-key",
+        max_reviewer_calls=2,
+        provider_client=FakeProviderClient(responses=[json.dumps({"verdict": "PASS"})]),
+        provider_name="openai",
+        model_name="gpt-4.1-mini",
+    )
+
+    verdict = reviewer.review(_bundle())
+
+    assert verdict.status.value == "BLOCKED"
+    assert reviewer.reviewer_calls_used == 1
+    assert reviewer.latest_provider_metadata["provider_call_failed"] is True
+    assert "Missing required reviewer fields" in reviewer.latest_provider_metadata["parse_failure"]
+
+
+def test_live_openai_reviewer_budget_exhaustion_blocks_second_call():
+    provider_client = FakeProviderClient(
+        responses=[
+            json.dumps(
+                {
+                    "verdict": "PASS",
+                    "reason": "Approved.",
+                    "next_codex_instruction": None,
+                    "risk_flags": [],
+                    "allowed_to_continue": True,
+                }
+            )
+        ]
+    )
+    reviewer = LiveOpenAIReviewLoopReviewer(
+        api_key="test-key",
+        max_reviewer_calls=1,
+        provider_client=provider_client,
+        provider_name="openai",
+        model_name="gpt-4.1-mini",
+    )
+
+    first_verdict = reviewer.review(_bundle())
+    second_verdict = reviewer.review(_bundle())
+
+    assert first_verdict.status.value == "PASS"
+    assert second_verdict.status.value == "BLOCKED"
+    assert reviewer.reviewer_calls_used == 1
+    assert len(provider_client.calls) == 1
+    assert reviewer.latest_provider_metadata["provider_call_attempted"] is False
+    assert reviewer.latest_provider_metadata["provider_call_failed"] is True
+    assert "budget" in reviewer.latest_provider_metadata["failure_reason"].lower()
+
+
+def test_live_openai_reviewer_provider_exception_fails_closed():
+    reviewer = LiveOpenAIReviewLoopReviewer(
+        api_key="test-key",
+        max_reviewer_calls=2,
+        provider_client=FakeProviderClient(error=RuntimeError("provider transport failed")),
+        provider_name="openai",
+        model_name="gpt-4.1-mini",
+    )
+
+    verdict = reviewer.review(_bundle())
+
+    assert verdict.status.value == "BLOCKED"
+    assert reviewer.reviewer_calls_used == 1
+    assert reviewer.latest_provider_metadata["provider_call_attempted"] is True
+    assert reviewer.latest_provider_metadata["provider_call_failed"] is True
+    assert "provider transport failed" in reviewer.latest_provider_metadata["failure_reason"]
 
 
 def test_provider_gate_blocks_live_mode_without_allow_provider_calls():

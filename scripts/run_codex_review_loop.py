@@ -27,9 +27,9 @@ from research_lab.orchestration.codex_review_loop_executors import (
     FakeReviewLoopExecutorFactory,
 )
 from research_lab.orchestration.codex_review_loop_reviewer import (
-    LiveReviewerAdapterStub,
     ReplayReviewLoopReviewer,
     ReviewLoopReviewerMode,
+    build_live_openai_reviewer,
     validate_provider_call_gate,
 )
 
@@ -90,17 +90,17 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     blocked_reason: str | None = None
+    reviewer = None
     if gate.blocked:
         audit_payload = _build_blocked_audit_payload(args, dry_run_external_calls, blocked_reason=gate.blocked_reason)
-    elif ReviewLoopReviewerMode(args.reviewer_mode) is ReviewLoopReviewerMode.LIVE_OPENAI:
-        blocked_reason = _probe_live_reviewer_stub(args.task)
-        audit_payload = _build_blocked_audit_payload(args, dry_run_external_calls, blocked_reason=blocked_reason)
     else:
         loop = _build_loop(args, dry_run_external_calls)
+        reviewer = getattr(loop, "reviewer", None)
         audit = loop.run(args.task)
         audit_payload = _build_audit_payload(audit.to_dict(), args, dry_run_external_calls)
 
     audit_payload = _annotate_provider_gate(audit_payload, args, gate, blocked_reason=blocked_reason)
+    audit_payload = _annotate_reviewer_runtime(audit_payload, reviewer)
     report_text = _build_report(audit_payload)
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -149,7 +149,7 @@ def _build_loop(args: argparse.Namespace, dry_run_external_calls: bool) -> Codex
 def _build_reviewer(args: argparse.Namespace):
     reviewer_mode = ReviewLoopReviewerMode(args.reviewer_mode)
     if reviewer_mode is ReviewLoopReviewerMode.LIVE_OPENAI:
-        return LiveReviewerAdapterStub()
+        return build_live_openai_reviewer(max_reviewer_calls=args.max_reviewer_calls)
     return ReplayReviewLoopReviewer.from_raw_decisions(_build_fake_reviewer_decisions(args.fake_reviewer_verdicts))
 
 
@@ -252,6 +252,23 @@ def _annotate_provider_gate(audit_payload: dict, args: argparse.Namespace, gate,
     return payload
 
 
+def _annotate_reviewer_runtime(audit_payload: dict, reviewer) -> dict:
+    payload = dict(audit_payload)
+    provider_metadata = dict(getattr(reviewer, "latest_provider_metadata", {}) or {})
+    payload["reviewer_calls_used"] = int(provider_metadata.get("reviewer_calls_used", 0))
+    payload["provider_name"] = provider_metadata.get("provider_name")
+    payload["model_name"] = provider_metadata.get("model_name")
+    payload["provider_call_attempted"] = bool(provider_metadata.get("provider_call_attempted", False))
+    payload["provider_call_succeeded"] = bool(provider_metadata.get("provider_call_succeeded", False))
+    payload["provider_call_failed"] = bool(provider_metadata.get("provider_call_failed", False))
+    payload["provider_failure_reason"] = provider_metadata.get("failure_reason")
+    payload["provider_parse_failure"] = provider_metadata.get("parse_failure")
+    payload["parsed_reviewer_decision"] = provider_metadata.get("parsed_reviewer_decision")
+    if payload.get("provider_failure_reason") and not payload.get("blocked_reason"):
+        payload["blocked_reason"] = payload["provider_failure_reason"]
+    return payload
+
+
 def _build_blocked_audit_payload(args: argparse.Namespace, dry_run_external_calls: bool, *, blocked_reason: str | None) -> dict:
     return {
         "run_id": "review-loop-provider-gate-blocked",
@@ -290,25 +307,16 @@ def _build_blocked_audit_payload(args: argparse.Namespace, dry_run_external_call
         "parsed_blocked_reason": None,
         "parser_warning": None,
         "parse_error": None,
+        "reviewer_calls_used": 0,
+        "provider_name": None,
+        "model_name": None,
+        "provider_call_attempted": False,
+        "provider_call_succeeded": False,
+        "provider_call_failed": False,
+        "provider_failure_reason": blocked_reason,
+        "provider_parse_failure": None,
+        "parsed_reviewer_decision": None,
     }
-
-
-def _probe_live_reviewer_stub(task: str) -> str:
-    reviewer = LiveReviewerAdapterStub()
-    try:
-        reviewer.review(
-            ReviewerBundle(
-                initial_task=task,
-                current_prompt=task,
-                attempt_number=1,
-                changed_files=[],
-                validation_output={},
-                diff_summary="",
-            )
-        )
-    except RuntimeError as exc:
-        return str(exc)
-    return "Live reviewer stub unexpectedly allowed execution."
 
 
 def _build_report(audit_payload: dict) -> str:
@@ -323,8 +331,14 @@ def _build_report(audit_payload: dict) -> str:
         f"Reviewer mode: {audit_payload.get('reviewer_mode', '(unknown)')}",
         f"Provider calls allowed: {audit_payload.get('provider_calls_allowed', False)}",
         f"Max reviewer calls: {audit_payload.get('max_reviewer_calls', 0)}",
+        f"Reviewer calls used: {audit_payload.get('reviewer_calls_used', 0)}",
+        f"Provider name: {audit_payload.get('provider_name') or '(none)'}",
+        f"Model name: {audit_payload.get('model_name') or '(none)'}",
         f"Provider gate passed: {audit_payload.get('provider_gate_passed', False)}",
         f"Provider gate blocked: {audit_payload.get('provider_gate_blocked', False)}",
+        f"Provider call attempted: {audit_payload.get('provider_call_attempted', False)}",
+        f"Provider call succeeded: {audit_payload.get('provider_call_succeeded', False)}",
+        f"Provider call failed: {audit_payload.get('provider_call_failed', False)}",
         f"Live Codex attempted: {audit_payload['live_codex_attempted']}",
         f"Codex command: {audit_payload['codex_command'] or '(not configured)'}",
         f"Codex timeout seconds: {audit_payload['codex_timeout_seconds'] if audit_payload['codex_timeout_seconds'] is not None else '(n/a)'}",
@@ -405,6 +419,14 @@ def _build_report(audit_payload: dict) -> str:
     )
     if audit_payload.get("blocked_reason"):
         lines.append(f"- Blocked reason: {audit_payload['blocked_reason']}")
+    if audit_payload.get("provider_failure_reason"):
+        lines.append(f"- Provider failure reason: {audit_payload['provider_failure_reason']}")
+    if audit_payload.get("provider_parse_failure"):
+        lines.append(f"- Provider parse failure: {audit_payload['provider_parse_failure']}")
+    if audit_payload.get("parsed_reviewer_decision"):
+        lines.append(
+            f"- Parsed reviewer decision: {json.dumps(audit_payload['parsed_reviewer_decision'], sort_keys=True)}"
+        )
     if audit_payload.get("tracked_tree_failure_reason"):
         lines.append(f"- Tracked-tree failure reason: {audit_payload['tracked_tree_failure_reason']}")
 
@@ -422,9 +444,13 @@ def _build_report(audit_payload: dict) -> str:
     lines.extend(
         [
             "## Safety Notes",
-            "- This run was fake/non-live. No live Codex CLI, OpenAI/GPT reviewer, git/GitHub action, deploy, Hetzner sync, or research execution occurred.",
+            "- LLM review output is metadata-only and cannot directly trigger file writes, commits, merges, deployments, registry appends, backtests, Hermes calls, broker/order/API actions, or strategy promotion.",
+            "- This run stayed within deterministic review-loop controls. No provider output directly triggered external actions.",
+            "- This run was fake/non-live. No live Codex CLI, OpenAI/GPT reviewer, git/GitHub action, deploy, Hetzner sync, or research execution occurred."
+            if not audit_payload.get("provider_call_attempted")
+            else "- Live reviewer mode remained isolated to review metadata and deterministic parsing only.",
             "- No live Codex CLI executed: yes",
-            "- No live OpenAI/GPT reviewer call: yes",
+            f"- No live OpenAI/GPT reviewer call: {'yes' if not audit_payload.get('provider_call_attempted') else 'no'}",
             "- No live git/GitHub action: yes",
         ]
     )
