@@ -152,6 +152,7 @@ def _build_audit_payload(audit_payload: dict, max_attempts: int) -> dict:
     payload["reviewer_verdicts"] = list(payload.get("verdicts", []))
     first_attempt = payload["attempts"][0] if payload.get("attempts") else None
     executor_details = dict(first_attempt["executor_result"].get("executor_details", {})) if first_attempt else {}
+    parsed_output = dict(executor_details.get("parsed_output", {}) or {})
     payload["executor_type"] = executor_details.get("executor_type", "unknown")
     payload["live_codex_enabled"] = bool(executor_details.get("live_codex_enabled", False))
     payload["live_codex_attempted"] = bool(executor_details.get("live_codex_attempted", False))
@@ -161,6 +162,13 @@ def _build_audit_payload(audit_payload: dict, max_attempts: int) -> dict:
     payload["stdout_summary"] = executor_details.get("stdout_summary", "")
     payload["stderr_summary"] = executor_details.get("stderr_summary", "")
     payload["blocked_reason"] = executor_details.get("blocked_reason")
+    payload["parsed_summary"] = parsed_output.get("summary", "")
+    payload["parsed_changed_files"] = list(parsed_output.get("changed_files", []))
+    payload["parsed_diff_summary"] = dict(parsed_output.get("diff_summary", {}) or {})
+    payload["parsed_validation"] = dict(parsed_output.get("validation", {}) or {})
+    payload["parsed_blocked_reason"] = parsed_output.get("blocked_reason")
+    payload["parser_warning"] = parsed_output.get("parser_warning")
+    payload["parse_error"] = parsed_output.get("parse_error")
     return payload
 
 
@@ -186,6 +194,39 @@ def _build_report(audit_payload: dict) -> str:
     for attempt in audit_payload["attempts"]:
         changed_files = attempt["executor_result"]["changed_files"]
         lines.append(f"- Attempt {attempt['attempt_number']}: {', '.join(changed_files) if changed_files else '(none)'}")
+
+    lines.extend(["", "## Parsed Codex Output"])
+    lines.append(f"- Parsed summary: {audit_payload.get('parsed_summary') or '(none)'}")
+    parsed_changed_files = audit_payload.get("parsed_changed_files", [])
+    lines.append(f"- Parsed changed files: {', '.join(parsed_changed_files) if parsed_changed_files else '(none)'}")
+    parsed_diff_summary = dict(audit_payload.get("parsed_diff_summary", {}) or {})
+    if parsed_diff_summary:
+        lines.append(
+            "- Parsed diff summary: "
+            f"files={parsed_diff_summary.get('files_changed', 0)}, "
+            f"insertions={parsed_diff_summary.get('insertions', 0)}, "
+            f"deletions={parsed_diff_summary.get('deletions', 0)}, "
+            f"lines={parsed_diff_summary.get('line_count', 0)}"
+        )
+    else:
+        lines.append("- Parsed diff summary: (none)")
+    parsed_validation = dict(audit_payload.get("parsed_validation", {}) or {})
+    lines.append(f"- Parsed validation status: {parsed_validation.get('overall_status', '(none)')}")
+    parsed_commands = parsed_validation.get("commands", []) if isinstance(parsed_validation.get("commands", []), list) else []
+    if parsed_commands:
+        for command in parsed_commands:
+            lines.append(
+                f"- Parsed validation command: {command.get('command') or '(empty)'} "
+                f"(exit={command.get('exit_code') if command.get('exit_code') is not None else 'n/a'})"
+            )
+    else:
+        lines.append("- Parsed validation command: (none)")
+    if audit_payload.get("parsed_blocked_reason"):
+        lines.append(f"- Parsed blocked reason: {audit_payload['parsed_blocked_reason']}")
+    if audit_payload.get("parser_warning"):
+        lines.append(f"- Parser warning: {audit_payload['parser_warning']}")
+    if audit_payload.get("parse_error"):
+        lines.append(f"- Parse error: {audit_payload['parse_error']}")
 
     lines.extend(["", "## Validation Summary"])
     for attempt in audit_payload["attempts"]:
