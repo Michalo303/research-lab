@@ -37,6 +37,7 @@ class FakeReviewLoopExecutorFactory:
                     executor_details={
                         "executor_type": "fake",
                         "live_codex_enabled": False,
+                        "dry_run_external_calls": True,
                         "live_codex_attempted": False,
                         "codex_command": None,
                         "codex_timeout_seconds": None,
@@ -176,6 +177,7 @@ class CodexCliReviewLoopExecutor:
         return {
             "executor_type": "codex_cli",
             "live_codex_enabled": self.live_codex_enabled,
+            "dry_run_external_calls": self.dry_run_external_calls,
             "live_codex_attempted": live_codex_attempted,
             "codex_command": self.codex_command,
             "codex_timeout_seconds": self.timeout_seconds,

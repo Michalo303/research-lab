@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import redirect_stderr, redirect_stdout
+import io
 import json
 import subprocess
 import sys
@@ -7,29 +9,56 @@ from pathlib import Path
 
 import scripts.run_codex_review_loop as cli_script
 from research_lab.orchestration.codex_autonomous_contract import CodexRoundResult
-from research_lab.orchestration.codex_review_loop import FakeReviewLoopExecutor
+from research_lab.orchestration.codex_review_loop import FakeReviewLoopExecutor, TrackedTreeProbeResult
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "run_codex_review_loop.py"
 
 
-def _run_cli(tmp_path: Path, *extra_args: str) -> subprocess.CompletedProcess[str]:
+def _run_cli(
+    tmp_path: Path,
+    *extra_args: str,
+    build_loop=None,
+    build_executor=None,
+) -> subprocess.CompletedProcess[str]:
     output_dir = tmp_path / "review-loop-output"
-    return subprocess.run(
-        [
-            sys.executable,
-            str(SCRIPT),
-            "--task",
-            "Implement a fake review loop CLI.",
-            "--output-dir",
-            str(output_dir),
-            *extra_args,
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
+    argv = [
+        "--task",
+        "Implement a fake review loop CLI.",
+        "--output-dir",
+        str(output_dir),
+        *extra_args,
+    ]
+    original_build_loop = cli_script._build_loop
+    original_build_executor = cli_script._build_executor
+
+    def _clean_build_loop(args, dry_run_external_calls):
+        loop = original_build_loop(args, dry_run_external_calls)
+        loop.tracked_tree_checker = lambda: TrackedTreeProbeResult(dirty=False, status="")
+        return loop
+
+    cli_script._build_loop = build_loop or _clean_build_loop
+    if build_executor is not None:
+        cli_script._build_executor = build_executor
+
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    try:
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            try:
+                returncode = cli_script.main(argv)
+            except SystemExit as exc:
+                returncode = exc.code if isinstance(exc.code, int) else 1
+    finally:
+        cli_script._build_loop = original_build_loop
+        cli_script._build_executor = original_build_executor
+
+    return subprocess.CompletedProcess(
+        args=[sys.executable, str(SCRIPT), *argv],
+        returncode=returncode,
+        stdout=stdout.getvalue(),
+        stderr=stderr.getvalue(),
     )
 
 
@@ -38,6 +67,14 @@ def _load_artifacts(tmp_path: Path) -> tuple[dict, str, Path]:
     audit_path = output_dir / "audit.json"
     report_path = output_dir / "final_report.md"
     return json.loads(audit_path.read_text(encoding="utf-8")), report_path.read_text(encoding="utf-8"), output_dir
+
+
+class StubAudit:
+    def __init__(self, payload: dict) -> None:
+        self._payload = payload
+
+    def to_dict(self) -> dict:
+        return self._payload
 
 
 def test_cli_pass_writes_audit_and_report(tmp_path: Path):
@@ -168,8 +205,7 @@ def test_codex_cli_with_live_flag_true_but_dry_run_enabled_still_does_not_run(tm
     assert "blocked reason" in report.lower()
 
 
-def test_cli_audit_and_report_include_parsed_executor_fields(tmp_path: Path, monkeypatch):
-    output_dir = tmp_path / "review-loop-output"
+def test_cli_audit_and_report_include_parsed_executor_fields(tmp_path: Path):
     round_result = CodexRoundResult(
         changed_files=[
             "research_lab/orchestration/codex_review_loop.py",
@@ -224,24 +260,13 @@ def test_cli_audit_and_report_include_parsed_executor_fields(tmp_path: Path, mon
         },
     )
 
-    monkeypatch.setattr(
-        cli_script,
-        "_build_executor",
-        lambda args, dry_run_external_calls: FakeReviewLoopExecutor([round_result]),
+    result = _run_cli(
+        tmp_path,
+        build_executor=lambda args, dry_run_external_calls: FakeReviewLoopExecutor([round_result]),
     )
 
-    exit_code = cli_script.main(
-        [
-            "--task",
-            "Implement a fake review loop CLI.",
-            "--output-dir",
-            str(output_dir),
-        ]
-    )
-
-    assert exit_code == 0
-    audit = json.loads((output_dir / "audit.json").read_text(encoding="utf-8"))
-    report = (output_dir / "final_report.md").read_text(encoding="utf-8")
+    assert result.returncode == 0
+    audit, report, _ = _load_artifacts(tmp_path)
     parsed_output = audit["attempts"][0]["executor_result"]["executor_details"]["parsed_output"]
     assert parsed_output["changed_files"] == [
         "research_lab/orchestration/codex_review_loop.py",
@@ -251,3 +276,154 @@ def test_cli_audit_and_report_include_parsed_executor_fields(tmp_path: Path, mon
     assert parsed_output["validation"]["overall_status"] == "passed"
     assert "Updated parser and review-loop wiring." in report
     assert "tests/test_codex_review_loop_output_parser.py" in report
+
+
+def test_cli_dirty_tree_abort_writes_audit_and_report_metadata(tmp_path: Path):
+    def build_stub_loop(args, dry_run_external_calls):
+        class _Loop:
+            def run(self, task: str) -> StubAudit:
+                return StubAudit(
+                    {
+                        "run_id": "review-loop-cli-dirty",
+                        "initial_task": task,
+                        "attempts": [],
+                        "verdicts": [],
+                        "changed_files_per_attempt": [],
+                        "validation_outputs": [],
+                        "reviewer_feedback": [],
+                        "final_status": "BLOCKED",
+                        "git_action_attempted": False,
+                        "live_external_actions_enabled": False,
+                        "protected_paths_touched": [],
+                        "disallowed_paths_touched": [],
+                        "pre_run_tracked_dirty": True,
+                        "pre_run_tracked_status": " M research_lab/orchestration/codex_review_loop.py",
+                        "final_tracked_dirty": True,
+                        "final_tracked_status": " M research_lab/orchestration/codex_review_loop.py",
+                        "tracked_tree_failure_reason": None,
+                    }
+                )
+
+        return _Loop()
+
+    result = _run_cli(tmp_path, "--task", "Abort when tracked tree is dirty.", build_loop=build_stub_loop)
+
+    assert result.returncode == 0
+    audit, report, _ = _load_artifacts(tmp_path)
+    assert audit["pre_run_tracked_dirty"] is True
+    assert audit["pre_run_tracked_status"] == " M research_lab/orchestration/codex_review_loop.py"
+    assert audit["final_tracked_dirty"] is True
+    assert audit["final_tracked_status"] == " M research_lab/orchestration/codex_review_loop.py"
+    assert audit["tracked_tree_failure_reason"] is None
+    assert "Pre-run tracked tree dirty: True" in report
+    assert "Final tracked tree dirty: True" in report
+    assert "review loop aborted before executor start" in report.lower()
+
+
+def test_cli_audit_includes_post_attempt_tracked_tree_metadata(tmp_path: Path):
+    round_result = CodexRoundResult(
+        changed_files=["research_lab/orchestration/codex_review_loop.py"],
+        diff_line_count=12,
+        proposed_commands=[],
+        summary="Recorded tracked-tree audit metadata.",
+        patch_digest="Recorded tracked-tree audit metadata.",
+        meaningful_progress=True,
+        executor_details={
+            "executor_type": "codex_cli",
+            "live_codex_enabled": True,
+            "dry_run_external_calls": True,
+            "live_codex_attempted": False,
+            "codex_command": "codex",
+            "codex_timeout_seconds": 300,
+            "codex_exit_code": None,
+            "stdout_summary": "",
+            "stderr_summary": "",
+            "blocked_reason": "Dry-run external calls are enabled.",
+            "parsed_output": {},
+        },
+    )
+
+    def build_stub_loop(args, dry_run_external_calls):
+        class _Loop:
+            def run(self, task: str) -> StubAudit:
+                return StubAudit(
+                    {
+                        "run_id": "review-loop-cli-post-dirty",
+                        "initial_task": task,
+                        "attempts": [
+                            {
+                                "attempt_number": 1,
+                                "prompt_used": task,
+                                "executor_result": round_result.to_dict(),
+                                "validation_result": {
+                                    "success": True,
+                                    "tests_requested": ["python -m pytest tests/test_codex_review_loop.py -q"],
+                                    "tests_passed": ["python -m pytest tests/test_codex_review_loop.py -q"],
+                                    "failures": [],
+                                },
+                                "reviewer_bundle": {
+                                    "initial_task": task,
+                                    "current_prompt": task,
+                                    "attempt_number": 1,
+                                    "changed_files": ["research_lab/orchestration/codex_review_loop.py"],
+                                    "validation_output": {
+                                        "success": True,
+                                        "tests_requested": ["python -m pytest tests/test_codex_review_loop.py -q"],
+                                        "tests_passed": ["python -m pytest tests/test_codex_review_loop.py -q"],
+                                        "failures": [],
+                                    },
+                                    "diff_summary": "Recorded tracked-tree audit metadata.",
+                                    "protected_paths_touched": [],
+                                    "disallowed_paths_touched": [],
+                                    "prior_feedback": [],
+                                },
+                                "reviewer_verdict": {"status": "PASS", "summary": "Approved.", "issues": []},
+                                "reviewer_feedback": "Approved.",
+                                "follow_up_prompt": None,
+                                "post_attempt_tracked_dirty": True,
+                                "post_attempt_tracked_status": " M tests/test_codex_review_loop_cli.py",
+                            }
+                        ],
+                        "verdicts": ["PASS"],
+                        "changed_files_per_attempt": [["research_lab/orchestration/codex_review_loop.py"]],
+                        "validation_outputs": [
+                            {
+                                "success": True,
+                                "tests_requested": ["python -m pytest tests/test_codex_review_loop.py -q"],
+                                "tests_passed": ["python -m pytest tests/test_codex_review_loop.py -q"],
+                                "failures": [],
+                            }
+                        ],
+                        "reviewer_feedback": ["Approved."],
+                        "final_status": "PASS",
+                        "git_action_attempted": False,
+                        "live_external_actions_enabled": False,
+                        "protected_paths_touched": [],
+                        "disallowed_paths_touched": [],
+                        "pre_run_tracked_dirty": False,
+                        "pre_run_tracked_status": "",
+                        "final_tracked_dirty": True,
+                        "final_tracked_status": " M tests/test_codex_review_loop_cli.py",
+                        "tracked_tree_failure_reason": None,
+                    }
+                )
+
+        return _Loop()
+
+    result = _run_cli(
+        tmp_path,
+        "--task",
+        "Record post-attempt tracked tree state.",
+        build_loop=build_stub_loop,
+    )
+
+    assert result.returncode == 0
+    audit, report, _ = _load_artifacts(tmp_path)
+    assert audit["dry_run_external_calls"] is True
+    assert audit["attempts"][0]["post_attempt_tracked_dirty"] is True
+    assert audit["attempts"][0]["post_attempt_tracked_status"] == " M tests/test_codex_review_loop_cli.py"
+    assert audit["final_tracked_dirty"] is True
+    assert audit["final_tracked_status"] == " M tests/test_codex_review_loop_cli.py"
+    assert audit["live_codex_attempted"] is False
+    assert "Attempt 1 tracked tree dirty: True" in report
+    assert "Dry-run external calls: True" in report

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from enum import Enum
-from typing import Any, Protocol
+from pathlib import Path
+import subprocess
+from typing import Any, Callable, Protocol
 
 from research_lab.orchestration.codex_autonomous_contract import (
     CodexRoundResult,
@@ -24,6 +26,13 @@ class CodexReviewLoopConfig:
     max_attempts: int
     dry_run_external_calls: bool = True
     run_id: str | None = None
+
+
+@dataclass
+class TrackedTreeProbeResult:
+    dirty: bool
+    status: str
+    failure_reason: str | None = None
 
 
 @dataclass
@@ -52,6 +61,8 @@ class ReviewLoopAttempt:
     reviewer_verdict: ReviewVerdict
     reviewer_feedback: str
     follow_up_prompt: str | None = None
+    post_attempt_tracked_dirty: bool = False
+    post_attempt_tracked_status: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -63,6 +74,8 @@ class ReviewLoopAttempt:
             "reviewer_verdict": self.reviewer_verdict.to_dict(),
             "reviewer_feedback": self.reviewer_feedback,
             "follow_up_prompt": self.follow_up_prompt,
+            "post_attempt_tracked_dirty": self.post_attempt_tracked_dirty,
+            "post_attempt_tracked_status": self.post_attempt_tracked_status,
         }
 
 
@@ -80,6 +93,11 @@ class CodexReviewLoopAudit:
     live_external_actions_enabled: bool
     protected_paths_touched: list[str] = field(default_factory=list)
     disallowed_paths_touched: list[str] = field(default_factory=list)
+    pre_run_tracked_dirty: bool = False
+    pre_run_tracked_status: str = ""
+    final_tracked_dirty: bool = False
+    final_tracked_status: str = ""
+    tracked_tree_failure_reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -95,6 +113,11 @@ class CodexReviewLoopAudit:
             "live_external_actions_enabled": self.live_external_actions_enabled,
             "protected_paths_touched": list(self.protected_paths_touched),
             "disallowed_paths_touched": list(self.disallowed_paths_touched),
+            "pre_run_tracked_dirty": self.pre_run_tracked_dirty,
+            "pre_run_tracked_status": self.pre_run_tracked_status,
+            "final_tracked_dirty": self.final_tracked_dirty,
+            "final_tracked_status": self.final_tracked_status,
+            "tracked_tree_failure_reason": self.tracked_tree_failure_reason,
         }
 
 
@@ -113,12 +136,16 @@ class ReviewLoopValidationRunnerInterface(Protocol):
         ...
 
 
+TrackedTreeChecker = Callable[[], TrackedTreeProbeResult]
+
+
 @dataclass
 class CodexReviewLoop:
     config: CodexReviewLoopConfig
     executor: ReviewLoopExecutorInterface
     reviewer: ReviewLoopReviewerInterface
     validation_runner: ReviewLoopValidationRunnerInterface
+    tracked_tree_checker: TrackedTreeChecker | None = None
 
     def run(self, initial_task: str) -> CodexReviewLoopAudit:
         run_id = self.config.run_id or new_run_id()
@@ -132,9 +159,81 @@ class CodexReviewLoop:
         prompt = initial_task
         prior_feedback: list[str] = []
         final_status = ReviewLoopFinalStatus.NEEDS_REVIEW
+        tracked_tree_failure_reason: str | None = None
+        tracked_tree_checker = self.tracked_tree_checker or _default_tracked_tree_checker
+        pre_run_tree_state = _probe_tracked_tree(tracked_tree_checker)
+        final_tree_state = pre_run_tree_state
+
+        if pre_run_tree_state.failure_reason or pre_run_tree_state.dirty:
+            tracked_tree_failure_reason = pre_run_tree_state.failure_reason
+            return CodexReviewLoopAudit(
+                run_id=run_id,
+                initial_task=initial_task,
+                attempts=[],
+                verdicts=[],
+                changed_files_per_attempt=[],
+                validation_outputs=[],
+                reviewer_feedback=[],
+                final_status=ReviewLoopFinalStatus.BLOCKED,
+                git_action_attempted=False,
+                live_external_actions_enabled=not self.config.dry_run_external_calls,
+                protected_paths_touched=[],
+                disallowed_paths_touched=[],
+                pre_run_tracked_dirty=pre_run_tree_state.dirty,
+                pre_run_tracked_status=pre_run_tree_state.status,
+                final_tracked_dirty=pre_run_tree_state.dirty,
+                final_tracked_status=pre_run_tree_state.status,
+                tracked_tree_failure_reason=tracked_tree_failure_reason,
+            )
 
         for attempt_number in range(1, self.config.max_attempts + 1):
             executor_result = self.executor.execute(prompt, attempt_number)
+            post_attempt_tree_state = _probe_tracked_tree(tracked_tree_checker)
+            final_tree_state = post_attempt_tree_state
+            tracked_tree_failure_reason = post_attempt_tree_state.failure_reason or tracked_tree_failure_reason
+            if post_attempt_tree_state.failure_reason:
+                validation_result = ValidationResult(
+                    success=False,
+                    tests_requested=[],
+                    tests_passed=[],
+                    failures=[post_attempt_tree_state.failure_reason],
+                )
+                reviewer_verdict = ReviewVerdict(
+                    status=LoopStatus.BLOCKED,
+                    summary="Tracked-tree status probe failed after executor attempt.",
+                    issues=[post_attempt_tree_state.failure_reason],
+                )
+                feedback = _reviewer_feedback_text(reviewer_verdict)
+                reviewer_bundle = ReviewerBundle(
+                    initial_task=initial_task,
+                    current_prompt=prompt,
+                    attempt_number=attempt_number,
+                    changed_files=list(executor_result.changed_files),
+                    validation_output=validation_result.to_dict(),
+                    diff_summary=_build_diff_summary(executor_result),
+                    protected_paths_touched=list(protected_paths),
+                    disallowed_paths_touched=list(disallowed_paths),
+                    prior_feedback=list(prior_feedback),
+                )
+                attempt = ReviewLoopAttempt(
+                    attempt_number=attempt_number,
+                    prompt_used=prompt,
+                    executor_result=executor_result,
+                    validation_result=validation_result,
+                    reviewer_bundle=reviewer_bundle,
+                    reviewer_verdict=reviewer_verdict,
+                    reviewer_feedback=feedback,
+                    follow_up_prompt=None,
+                    post_attempt_tracked_dirty=post_attempt_tree_state.dirty,
+                    post_attempt_tracked_status=post_attempt_tree_state.status,
+                )
+                attempts.append(attempt)
+                verdicts.append(reviewer_verdict.status.value)
+                changed_files_per_attempt.append(list(executor_result.changed_files))
+                validation_outputs.append(validation_result.to_dict())
+                reviewer_feedback_items.append(feedback)
+                final_status = ReviewLoopFinalStatus.BLOCKED
+                break
             validation_result = self.validation_runner.run_validation(prompt, executor_result, attempt_number)
             policy_summary = dict(executor_result.executor_details.get("policy_summary", {}) or {})
             protected_paths = list(policy_summary.get("protected_paths_touched", protected_paths))
@@ -175,6 +274,8 @@ class CodexReviewLoop:
                 reviewer_verdict=reviewer_verdict,
                 reviewer_feedback=feedback,
                 follow_up_prompt=follow_up_prompt,
+                post_attempt_tracked_dirty=post_attempt_tree_state.dirty,
+                post_attempt_tracked_status=post_attempt_tree_state.status,
             )
             attempts.append(attempt)
             verdicts.append(reviewer_verdict.status.value)
@@ -201,6 +302,11 @@ class CodexReviewLoop:
             live_external_actions_enabled=not self.config.dry_run_external_calls,
             protected_paths_touched=list(protected_paths),
             disallowed_paths_touched=list(disallowed_paths),
+            pre_run_tracked_dirty=pre_run_tree_state.dirty,
+            pre_run_tracked_status=pre_run_tree_state.status,
+            final_tracked_dirty=final_tree_state.dirty,
+            final_tracked_status=final_tree_state.status,
+            tracked_tree_failure_reason=tracked_tree_failure_reason,
         )
 
 
@@ -258,3 +364,40 @@ def _build_follow_up_prompt(initial_task: str, verdict: ReviewVerdict) -> str:
         "Reviewer requested another attempt. Address the following feedback before finishing:\n"
         f"{feedback}"
     )
+
+
+def _default_tracked_tree_checker() -> TrackedTreeProbeResult:
+    repo_root = Path(__file__).resolve().parents[2]
+    command = ["git", "status", "--short", "--untracked-files=no"]
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            check=False,
+            shell=False,
+        )
+    except Exception as exc:
+        return TrackedTreeProbeResult(
+            dirty=True,
+            status="",
+            failure_reason=f"{' '.join(command)} failed: {exc}",
+        )
+
+    status_text = (completed.stdout or "").strip()
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "").strip() or f"exit code {completed.returncode}"
+        return TrackedTreeProbeResult(
+            dirty=True,
+            status=status_text,
+            failure_reason=f"{' '.join(command)} failed: {detail}",
+        )
+    return TrackedTreeProbeResult(dirty=bool(status_text), status=status_text)
+
+
+def _probe_tracked_tree(checker: TrackedTreeChecker) -> TrackedTreeProbeResult:
+    try:
+        return checker()
+    except Exception as exc:
+        return TrackedTreeProbeResult(dirty=True, status="", failure_reason=str(exc))
