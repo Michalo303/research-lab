@@ -60,6 +60,7 @@ class ReviewLoopAttempt:
     reviewer_bundle: ReviewerBundle
     reviewer_verdict: ReviewVerdict
     reviewer_feedback: str
+    reviewer_decision: dict[str, Any] | None = None
     follow_up_prompt: str | None = None
     post_attempt_tracked_dirty: bool = False
     post_attempt_tracked_status: str = ""
@@ -73,6 +74,7 @@ class ReviewLoopAttempt:
             "reviewer_bundle": self.reviewer_bundle.to_dict(),
             "reviewer_verdict": self.reviewer_verdict.to_dict(),
             "reviewer_feedback": self.reviewer_feedback,
+            "reviewer_decision": dict(self.reviewer_decision) if self.reviewer_decision else None,
             "follow_up_prompt": self.follow_up_prompt,
             "post_attempt_tracked_dirty": self.post_attempt_tracked_dirty,
             "post_attempt_tracked_status": self.post_attempt_tracked_status,
@@ -223,6 +225,7 @@ class CodexReviewLoop:
                     reviewer_bundle=reviewer_bundle,
                     reviewer_verdict=reviewer_verdict,
                     reviewer_feedback=feedback,
+                    reviewer_decision=None,
                     follow_up_prompt=None,
                     post_attempt_tracked_dirty=post_attempt_tree_state.dirty,
                     post_attempt_tracked_status=post_attempt_tree_state.status,
@@ -273,6 +276,7 @@ class CodexReviewLoop:
                 reviewer_bundle=reviewer_bundle,
                 reviewer_verdict=reviewer_verdict,
                 reviewer_feedback=feedback,
+                reviewer_decision=_reviewer_decision_payload(self.reviewer),
                 follow_up_prompt=follow_up_prompt,
                 post_attempt_tracked_dirty=post_attempt_tree_state.dirty,
                 post_attempt_tracked_status=post_attempt_tree_state.status,
@@ -364,6 +368,13 @@ def _build_follow_up_prompt(initial_task: str, verdict: ReviewVerdict) -> str:
         "Reviewer requested another attempt. Address the following feedback before finishing:\n"
         f"{feedback}"
     )
+
+
+def _reviewer_decision_payload(reviewer: Any) -> dict[str, Any] | None:
+    decision = getattr(reviewer, "latest_decision", None)
+    if decision is None or not hasattr(decision, "to_dict"):
+        return None
+    return decision.to_dict()
 
 
 def _default_tracked_tree_checker() -> TrackedTreeProbeResult:
