@@ -392,6 +392,25 @@ def _build_provider_request_payload(bundle: ReviewerBundle) -> dict[str, object]
                     "allowed_to_continue",
                 ],
                 "allowed_verdicts": ["PASS", "RETRY", "ABORT"],
+                "unsupported_verdict_aliases": {
+                    "CHANGES_REQUESTED": "RETRY",
+                    "BLOCKED": "ABORT",
+                },
+                "conditional_rules": {
+                    "PASS": {
+                        "allowed_to_continue": True,
+                        "next_codex_instruction": None,
+                        "follow_up_codex_work": "must_not_be_requested",
+                    },
+                    "RETRY": {
+                        "allowed_to_continue": True,
+                        "next_codex_instruction": "must_be_a_non_empty_actionable_instruction",
+                    },
+                    "ABORT": {
+                        "allowed_to_continue": False,
+                        "next_codex_instruction": None,
+                    },
+                },
                 "optional_metadata_fields": ["required_changes", "confidence"],
                 "json_only": True,
             },

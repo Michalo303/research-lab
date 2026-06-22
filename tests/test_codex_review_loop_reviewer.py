@@ -6,6 +6,7 @@ import pytest
 
 from research_lab.orchestration.codex_review_loop import ReviewerBundle
 from research_lab.orchestration.codex_review_loop_reviewer import (
+    _build_provider_request_payload,
     LiveReviewerAdapterStub,
     LiveOpenAIReviewLoopReviewer,
     ReplayReviewLoopReviewer,
@@ -50,7 +51,7 @@ class FakeProviderClient:
         return self._responses.pop(0)
 
 
-def test_parse_pass_decision():
+def test_parse_pass_decision_accepts_null_next_codex_instruction():
     decision = parse_reviewer_decision(
         json.dumps(
             {
@@ -72,7 +73,20 @@ def test_parse_pass_decision():
     )
 
 
-def test_parse_retry_decision_requires_instruction():
+def test_parse_pass_decision_rejects_non_null_next_codex_instruction():
+    with pytest.raises(ReviewerDecisionError, match="PASS decisions must not include next_codex_instruction"):
+        parse_reviewer_decision(
+            {
+                "verdict": "PASS",
+                "reason": "Validation passed.",
+                "next_codex_instruction": "Make another change.",
+                "risk_flags": [],
+                "allowed_to_continue": True,
+            }
+        )
+
+
+def test_parse_retry_decision_accepts_non_empty_next_codex_instruction():
     decision = parse_reviewer_decision(
         {
             "verdict": "RETRY",
@@ -85,6 +99,32 @@ def test_parse_retry_decision_requires_instruction():
 
     assert decision.verdict is ReviewerDecisionVerdict.RETRY
     assert decision.next_codex_instruction == "Add a regression test for malformed reviewer JSON."
+
+
+def test_provider_request_payload_includes_conditional_parser_contract():
+    payload = _build_provider_request_payload(_bundle())
+
+    contract = payload["review_request"]["response_contract"]
+    assert contract["allowed_verdicts"] == ["PASS", "RETRY", "ABORT"]
+    assert contract["unsupported_verdict_aliases"] == {
+        "CHANGES_REQUESTED": "RETRY",
+        "BLOCKED": "ABORT",
+    }
+    assert contract["conditional_rules"] == {
+        "PASS": {
+            "allowed_to_continue": True,
+            "next_codex_instruction": None,
+            "follow_up_codex_work": "must_not_be_requested",
+        },
+        "RETRY": {
+            "allowed_to_continue": True,
+            "next_codex_instruction": "must_be_a_non_empty_actionable_instruction",
+        },
+        "ABORT": {
+            "allowed_to_continue": False,
+            "next_codex_instruction": None,
+        },
+    }
 
 
 def test_parse_abort_decision():
