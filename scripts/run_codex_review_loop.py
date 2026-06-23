@@ -256,13 +256,26 @@ def _annotate_reviewer_runtime(audit_payload: dict, reviewer) -> dict:
     payload = dict(audit_payload)
     provider_metadata = dict(getattr(reviewer, "latest_provider_metadata", {}) or {})
     payload["reviewer_calls_used"] = int(provider_metadata.get("reviewer_calls_used", 0))
+    payload["reviewer_call_budget_total"] = int(provider_metadata.get("reviewer_call_budget_total", payload.get("max_reviewer_calls", 0)))
+    payload["reviewer_call_budget_used"] = int(provider_metadata.get("reviewer_call_budget_used", payload["reviewer_calls_used"]))
+    payload["reviewer_call_budget_remaining"] = int(
+        provider_metadata.get(
+            "reviewer_call_budget_remaining",
+            max(payload["reviewer_call_budget_total"] - payload["reviewer_call_budget_used"], 0),
+        )
+    )
+    payload["reviewer_call_budget_exhausted"] = bool(provider_metadata.get("reviewer_call_budget_exhausted", False))
     payload["provider_name"] = provider_metadata.get("provider_name")
     payload["model_name"] = provider_metadata.get("model_name")
     payload["provider_call_attempted"] = bool(provider_metadata.get("provider_call_attempted", False))
     payload["provider_call_succeeded"] = bool(provider_metadata.get("provider_call_succeeded", False))
     payload["provider_call_failed"] = bool(provider_metadata.get("provider_call_failed", False))
+    payload["provider_response_received"] = bool(provider_metadata.get("provider_response_received", False))
+    payload["provider_response_parser_valid"] = bool(provider_metadata.get("provider_response_parser_valid", False))
+    payload["provider_failure_stage"] = provider_metadata.get("provider_failure_stage", "not_attempted")
     payload["provider_failure_reason"] = provider_metadata.get("failure_reason")
     payload["provider_parse_failure"] = provider_metadata.get("parse_failure")
+    payload["provider_parse_failure_reason"] = provider_metadata.get("provider_parse_failure_reason", "none")
     payload["parsed_reviewer_decision"] = provider_metadata.get("parsed_reviewer_decision")
     if payload.get("provider_failure_reason") and not payload.get("blocked_reason"):
         payload["blocked_reason"] = payload["provider_failure_reason"]
@@ -308,13 +321,21 @@ def _build_blocked_audit_payload(args: argparse.Namespace, dry_run_external_call
         "parser_warning": None,
         "parse_error": None,
         "reviewer_calls_used": 0,
+        "reviewer_call_budget_total": args.max_reviewer_calls,
+        "reviewer_call_budget_used": 0,
+        "reviewer_call_budget_remaining": max(args.max_reviewer_calls, 0),
+        "reviewer_call_budget_exhausted": False,
         "provider_name": None,
         "model_name": None,
         "provider_call_attempted": False,
         "provider_call_succeeded": False,
         "provider_call_failed": False,
+        "provider_response_received": False,
+        "provider_response_parser_valid": False,
+        "provider_failure_stage": "not_attempted",
         "provider_failure_reason": blocked_reason,
         "provider_parse_failure": None,
+        "provider_parse_failure_reason": "none",
         "parsed_reviewer_decision": None,
     }
 
@@ -332,6 +353,10 @@ def _build_report(audit_payload: dict) -> str:
         f"Provider calls allowed: {audit_payload.get('provider_calls_allowed', False)}",
         f"Max reviewer calls: {audit_payload.get('max_reviewer_calls', 0)}",
         f"Reviewer calls used: {audit_payload.get('reviewer_calls_used', 0)}",
+        f"Reviewer call budget total: {audit_payload.get('reviewer_call_budget_total', 0)}",
+        f"Reviewer call budget used: {audit_payload.get('reviewer_call_budget_used', 0)}",
+        f"Reviewer call budget remaining: {audit_payload.get('reviewer_call_budget_remaining', 0)}",
+        f"Reviewer call budget exhausted: {audit_payload.get('reviewer_call_budget_exhausted', False)}",
         f"Provider name: {audit_payload.get('provider_name') or '(none)'}",
         f"Model name: {audit_payload.get('model_name') or '(none)'}",
         f"Provider gate passed: {audit_payload.get('provider_gate_passed', False)}",
@@ -339,6 +364,9 @@ def _build_report(audit_payload: dict) -> str:
         f"Provider call attempted: {audit_payload.get('provider_call_attempted', False)}",
         f"Provider call succeeded: {audit_payload.get('provider_call_succeeded', False)}",
         f"Provider call failed: {audit_payload.get('provider_call_failed', False)}",
+        f"Provider response received: {audit_payload.get('provider_response_received', False)}",
+        f"Provider response parser-valid: {audit_payload.get('provider_response_parser_valid', False)}",
+        f"Provider failure stage: {audit_payload.get('provider_failure_stage', 'not_attempted')}",
         f"Live Codex attempted: {audit_payload['live_codex_attempted']}",
         f"Codex command: {audit_payload['codex_command'] or '(not configured)'}",
         f"Codex timeout seconds: {audit_payload['codex_timeout_seconds'] if audit_payload['codex_timeout_seconds'] is not None else '(n/a)'}",
@@ -421,8 +449,9 @@ def _build_report(audit_payload: dict) -> str:
         lines.append(f"- Blocked reason: {audit_payload['blocked_reason']}")
     if audit_payload.get("provider_failure_reason"):
         lines.append(f"- Provider failure reason: {audit_payload['provider_failure_reason']}")
-    if audit_payload.get("provider_parse_failure"):
-        lines.append(f"- Provider parse failure: {audit_payload['provider_parse_failure']}")
+    lines.append(
+        f"- Provider parse failure reason: {audit_payload.get('provider_parse_failure_reason', 'none')}"
+    )
     if audit_payload.get("parsed_reviewer_decision"):
         lines.append(
             f"- Parsed reviewer decision: {json.dumps(audit_payload['parsed_reviewer_decision'], sort_keys=True)}"

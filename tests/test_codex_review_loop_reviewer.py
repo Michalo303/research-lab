@@ -222,6 +222,14 @@ def test_live_openai_reviewer_missing_api_key_fails_closed_without_provider_call
     assert reviewer.latest_provider_metadata["provider_call_attempted"] is False
     assert reviewer.latest_provider_metadata["provider_call_failed"] is True
     assert "OPENAI_API_KEY" in reviewer.latest_provider_metadata["failure_reason"]
+    assert reviewer.latest_provider_metadata["reviewer_call_budget_total"] == 2
+    assert reviewer.latest_provider_metadata["reviewer_call_budget_used"] == 0
+    assert reviewer.latest_provider_metadata["reviewer_call_budget_remaining"] == 2
+    assert reviewer.latest_provider_metadata["reviewer_call_budget_exhausted"] is False
+    assert reviewer.latest_provider_metadata["provider_response_received"] is False
+    assert reviewer.latest_provider_metadata["provider_response_parser_valid"] is False
+    assert reviewer.latest_provider_metadata["provider_failure_stage"] == "credential_gate"
+    assert reviewer.latest_provider_metadata["provider_parse_failure_reason"] == "none"
 
 
 def test_live_openai_reviewer_parses_valid_provider_json_through_reviewer_decision():
@@ -263,6 +271,14 @@ def test_live_openai_reviewer_parses_valid_provider_json_through_reviewer_decisi
     assert reviewer.latest_provider_metadata["provider_call_succeeded"] is True
     assert reviewer.latest_provider_metadata["provider_call_failed"] is False
     assert reviewer.latest_provider_metadata["parsed_reviewer_decision"]["verdict"] == "PASS"
+    assert reviewer.latest_provider_metadata["reviewer_call_budget_total"] == 2
+    assert reviewer.latest_provider_metadata["reviewer_call_budget_used"] == 1
+    assert reviewer.latest_provider_metadata["reviewer_call_budget_remaining"] == 1
+    assert reviewer.latest_provider_metadata["reviewer_call_budget_exhausted"] is False
+    assert reviewer.latest_provider_metadata["provider_response_received"] is True
+    assert reviewer.latest_provider_metadata["provider_response_parser_valid"] is True
+    assert reviewer.latest_provider_metadata["provider_failure_stage"] == "none"
+    assert reviewer.latest_provider_metadata["provider_parse_failure_reason"] == "none"
 
 
 def test_live_openai_reviewer_malformed_provider_json_fails_closed():
@@ -280,7 +296,15 @@ def test_live_openai_reviewer_malformed_provider_json_fails_closed():
     assert reviewer.reviewer_calls_used == 1
     assert reviewer.latest_provider_metadata["provider_call_attempted"] is True
     assert reviewer.latest_provider_metadata["provider_call_failed"] is True
-    assert "Malformed reviewer decision JSON" in reviewer.latest_provider_metadata["parse_failure"]
+    assert reviewer.latest_provider_metadata["parse_failure"] == "malformed_json"
+    assert reviewer.latest_provider_metadata["reviewer_call_budget_total"] == 2
+    assert reviewer.latest_provider_metadata["reviewer_call_budget_used"] == 1
+    assert reviewer.latest_provider_metadata["reviewer_call_budget_remaining"] == 1
+    assert reviewer.latest_provider_metadata["reviewer_call_budget_exhausted"] is False
+    assert reviewer.latest_provider_metadata["provider_response_received"] is True
+    assert reviewer.latest_provider_metadata["provider_response_parser_valid"] is False
+    assert reviewer.latest_provider_metadata["provider_failure_stage"] == "strict_parse"
+    assert reviewer.latest_provider_metadata["provider_parse_failure_reason"] == "malformed_json"
 
 
 def test_live_openai_reviewer_invalid_provider_fields_fail_closed():
@@ -297,7 +321,42 @@ def test_live_openai_reviewer_invalid_provider_fields_fail_closed():
     assert verdict.status.value == "BLOCKED"
     assert reviewer.reviewer_calls_used == 1
     assert reviewer.latest_provider_metadata["provider_call_failed"] is True
-    assert "Missing required reviewer fields" in reviewer.latest_provider_metadata["parse_failure"]
+    assert reviewer.latest_provider_metadata["parse_failure"] == "missing_required_field"
+    assert reviewer.latest_provider_metadata["provider_response_received"] is True
+    assert reviewer.latest_provider_metadata["provider_response_parser_valid"] is False
+    assert reviewer.latest_provider_metadata["provider_failure_stage"] == "strict_parse"
+    assert reviewer.latest_provider_metadata["provider_parse_failure_reason"] == "missing_required_field"
+
+
+def test_live_openai_reviewer_invalid_verdict_sanitizes_persisted_parse_failure_metadata():
+    raw_invalid_verdict = "RAW_PROVIDER_VERDICT_SHOULD_NOT_APPEAR"
+    reviewer = LiveOpenAIReviewLoopReviewer(
+        api_key="test-key",
+        max_reviewer_calls=2,
+        provider_client=FakeProviderClient(
+            responses=[
+                json.dumps(
+                    {
+                        "verdict": raw_invalid_verdict,
+                        "reason": "No decision.",
+                        "next_codex_instruction": None,
+                        "risk_flags": [],
+                        "allowed_to_continue": False,
+                    }
+                )
+            ]
+        ),
+        provider_name="openai",
+        model_name="gpt-4.1-mini",
+    )
+
+    verdict = reviewer.review(_bundle())
+
+    assert verdict.status.value == "BLOCKED"
+    assert reviewer.latest_provider_metadata["provider_failure_stage"] == "strict_parse"
+    assert reviewer.latest_provider_metadata["provider_parse_failure_reason"] == "invalid_verdict"
+    assert reviewer.latest_provider_metadata["parse_failure"] == "invalid_verdict"
+    assert raw_invalid_verdict not in json.dumps(reviewer.latest_provider_metadata, sort_keys=True)
 
 
 def test_live_openai_reviewer_budget_exhaustion_blocks_second_call():
@@ -332,6 +391,14 @@ def test_live_openai_reviewer_budget_exhaustion_blocks_second_call():
     assert reviewer.latest_provider_metadata["provider_call_attempted"] is False
     assert reviewer.latest_provider_metadata["provider_call_failed"] is True
     assert "budget" in reviewer.latest_provider_metadata["failure_reason"].lower()
+    assert reviewer.latest_provider_metadata["reviewer_call_budget_total"] == 1
+    assert reviewer.latest_provider_metadata["reviewer_call_budget_used"] == 1
+    assert reviewer.latest_provider_metadata["reviewer_call_budget_remaining"] == 0
+    assert reviewer.latest_provider_metadata["reviewer_call_budget_exhausted"] is True
+    assert reviewer.latest_provider_metadata["provider_response_received"] is False
+    assert reviewer.latest_provider_metadata["provider_response_parser_valid"] is False
+    assert reviewer.latest_provider_metadata["provider_failure_stage"] == "budget_gate"
+    assert reviewer.latest_provider_metadata["provider_parse_failure_reason"] == "none"
 
 
 def test_live_openai_reviewer_provider_exception_fails_closed():
