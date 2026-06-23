@@ -1,6 +1,12 @@
 import json
 
-from research_lab.strategies.baselines import StrategySpec, dedupe_strategy_specs, next_run_guided_strategies, queued_hypothesis_strategies
+from research_lab.strategies.baselines import (
+    StrategySpec,
+    dedupe_strategy_specs,
+    next_run_guided_strategies,
+    queued_hypothesis_strategies,
+    select_queued_hypothesis_candidates,
+)
 
 
 def test_near_miss_tier_c_strategy_generates_conservative_next_run_variants(tmp_path):
@@ -94,6 +100,198 @@ def test_failure_memory_prefers_materially_changed_risk_repair_candidate(tmp_pat
     specs = queued_hypothesis_strategies(tmp_path, limit=2)
 
     assert [spec.parameters["source_hypothesis_id"] for spec in specs] == ["SWING_2", "SWING_1"]
+
+
+def test_exact_duplicate_queue_rows_collapse_to_one_candidate_with_semantic_reason(tmp_path):
+    _write_queue(
+        tmp_path,
+        [
+            {"hypothesis_id": "SWING_1", "family": "SWING", "ticker": "QQQ", "title": "Plain pullback", "source_title": "source"},
+            {"hypothesis_id": "SWING_1_DUP", "family": "SWING", "ticker": "QQQ", "title": "Plain pullback", "source_title": "source"},
+        ],
+    )
+
+    selection = select_queued_hypothesis_candidates(tmp_path, limit=4)
+
+    assert [spec.parameters["source_hypothesis_id"] for spec in selection["specs"]] == ["SWING_1"]
+    assert selection["diagnostics"]["retained_count"] == 1
+    assert selection["diagnostics"]["skipped_count"] == 1
+    assert selection["diagnostics"]["reasons"] == {"semantic_queue_duplicate": 1}
+    assert selection["diagnostics"]["skipped"][0]["reason_code"] == "semantic_queue_duplicate"
+
+
+def test_equivalent_executable_queue_rows_collapse_to_one_candidate_with_effective_parameter_reason(tmp_path):
+    _write_queue(
+        tmp_path,
+        [
+            {"hypothesis_id": "SWING_1", "family": "SWING", "ticker": "QQQ", "title": "Plain pullback", "source_title": "source"},
+            {
+                "hypothesis_id": "SWING_2",
+                "family": "SWING",
+                "ticker": "QQQ",
+                "title": "Annotated pullback",
+                "source_title": "source",
+                "walk_forward_repair": True,
+                "trade_count_repair": True,
+                "min_unseen_trades_target": 100,
+            },
+        ],
+    )
+
+    selection = select_queued_hypothesis_candidates(tmp_path, limit=4)
+
+    assert [spec.parameters["source_hypothesis_id"] for spec in selection["specs"]] == ["SWING_1"]
+    assert selection["diagnostics"]["retained_count"] == 1
+    assert selection["diagnostics"]["skipped_count"] == 1
+    assert selection["diagnostics"]["reasons"] == {"effective_parameter_duplicate": 1}
+    assert selection["diagnostics"]["skipped"][0]["reason_code"] == "effective_parameter_duplicate"
+
+
+def test_materially_different_risk_overlay_mutation_is_retained_when_executable_params_change(tmp_path):
+    _write_queue(
+        tmp_path,
+        [
+            {"hypothesis_id": "SWING_1", "family": "SWING", "ticker": "QQQ", "title": "Plain pullback", "source_title": "source"},
+            {
+                "hypothesis_id": "SWING_2",
+                "family": "SWING",
+                "ticker": "QQQ",
+                "title": "Plain pullback",
+                "source_title": "source",
+                "risk_overlay_changed": True,
+                "max_exposure": 0.35,
+            },
+        ],
+    )
+
+    selection = select_queued_hypothesis_candidates(tmp_path, limit=4)
+
+    assert {spec.parameters["source_hypothesis_id"] for spec in selection["specs"]} == {"SWING_1", "SWING_2"}
+    assert selection["diagnostics"]["retained_count"] == 2
+    assert selection["diagnostics"]["skipped_count"] == 0
+    assert selection["diagnostics"]["reasons"] == {}
+
+
+def test_non_executable_row_does_not_poison_semantic_or_source_key_dedupe_state(tmp_path):
+    _write_queue(
+        tmp_path,
+        [
+            {
+                "hypothesis_id": "INVALID_1",
+                "source_key": "shared:pullback",
+                "family": "SWING",
+                "ticker": "QQQ",
+                "title": "Plain pullback",
+                "source_title": "source",
+                "llm_generated": True,
+            },
+            {
+                "hypothesis_id": "SWING_1",
+                "source_key": "shared:pullback",
+                "family": "SWING",
+                "ticker": "QQQ",
+                "title": "Plain pullback",
+                "source_title": "source",
+            },
+        ],
+    )
+
+    selection = select_queued_hypothesis_candidates(tmp_path, limit=4)
+
+    assert [spec.parameters["source_hypothesis_id"] for spec in selection["specs"]] == ["SWING_1"]
+    assert selection["diagnostics"]["retained_count"] == 1
+    assert selection["diagnostics"]["skipped_count"] == 0
+
+
+def test_shared_source_key_across_strategy_families_does_not_suppress_candidates(tmp_path):
+    _write_queue(
+        tmp_path,
+        [
+            {
+                "hypothesis_id": "SWING_1",
+                "source_key": "shared:research-note",
+                "family": "SWING",
+                "ticker": "QQQ",
+                "title": "Pullback",
+                "source_title": "source",
+            },
+            {
+                "hypothesis_id": "LONG_1",
+                "source_key": "shared:research-note",
+                "family": "LONGTERM",
+                "title": "Volatility target",
+                "source_title": "source",
+            },
+        ],
+    )
+
+    selection = select_queued_hypothesis_candidates(tmp_path, limit=4)
+
+    assert {spec.parameters["source_hypothesis_id"] for spec in selection["specs"]} == {"SWING_1", "LONG_1"}
+    assert selection["diagnostics"]["retained_count"] == 2
+    assert selection["diagnostics"]["skipped_count"] == 0
+
+
+def test_shared_source_key_does_not_suppress_materially_different_execution_parameters(tmp_path):
+    _write_queue(
+        tmp_path,
+        [
+            {
+                "hypothesis_id": "SWING_1",
+                "source_key": "shared:pullback",
+                "family": "SWING",
+                "ticker": "QQQ",
+                "title": "Plain pullback",
+                "source_title": "source",
+            },
+            {
+                "hypothesis_id": "SWING_2",
+                "source_key": "shared:pullback",
+                "family": "SWING",
+                "ticker": "QQQ",
+                "title": "Capped pullback",
+                "source_title": "source",
+                "risk_overlay_changed": True,
+                "max_exposure": 0.35,
+            },
+        ],
+    )
+
+    selection = select_queued_hypothesis_candidates(tmp_path, limit=4)
+
+    assert {spec.parameters["source_hypothesis_id"] for spec in selection["specs"]} == {"SWING_1", "SWING_2"}
+    assert selection["diagnostics"]["retained_count"] == 2
+    assert selection["diagnostics"]["skipped_count"] == 0
+
+
+def test_shared_source_key_suppresses_only_when_execution_identity_is_equal(tmp_path):
+    _write_queue(
+        tmp_path,
+        [
+            {
+                "hypothesis_id": "SWING_1",
+                "source_key": "shared:pullback",
+                "family": "SWING",
+                "ticker": "QQQ",
+                "title": "Plain pullback",
+                "source_title": "source",
+            },
+            {
+                "hypothesis_id": "SWING_2",
+                "source_key": "shared:pullback",
+                "family": "SWING",
+                "ticker": "QQQ",
+                "title": "Annotated pullback",
+                "source_title": "source",
+                "walk_forward_repair": True,
+            },
+        ],
+    )
+
+    selection = select_queued_hypothesis_candidates(tmp_path, limit=4)
+
+    assert [spec.parameters["source_hypothesis_id"] for spec in selection["specs"]] == ["SWING_1"]
+    assert selection["diagnostics"]["reasons"] == {"source_key_duplicate": 1}
 
 
 def test_executable_dedupe_collapses_specs_that_only_reorder_unordered_symbols():

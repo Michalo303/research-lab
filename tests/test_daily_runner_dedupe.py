@@ -20,7 +20,7 @@ def test_daily_runner_skips_duplicate_executable_specs_before_evaluation(tmp_pat
     monkeypatch.setattr(runner, "load_intraday_symbol", lambda root, symbol: _bundle(panel))
     monkeypatch.setattr(runner, "baseline_strategies", lambda: [first, duplicate])
     monkeypatch.setattr(runner, "next_run_guided_strategies", lambda root, limit: [])
-    monkeypatch.setattr(runner, "queued_hypothesis_strategies", lambda root, limit: [])
+    monkeypatch.setattr(runner, "select_queued_hypothesis_candidates", lambda root, limit: {"specs": [], "diagnostics": {"input_count": 0, "retained_count": 0, "skipped_count": 0, "reasons": {}, "skipped": []}})
 
     def fake_build_weights(spec, daily, intraday):
         evaluated.append(spec.parameters["source_hypothesis_id"])
@@ -47,12 +47,83 @@ def test_daily_runner_skips_duplicate_executable_specs_before_evaluation(tmp_pat
     monkeypatch.setattr(runner, "_persist_hypothesis_result", lambda *args: None)
     monkeypatch.setattr(runner, "write_leaderboard", lambda *args: None)
     monkeypatch.setattr(runner, "write_allocation_model", lambda *args: None)
-    monkeypatch.setattr(runner, "write_daily_report_artifacts", lambda *args: {"latest_report_path": tmp_path / "daily.md"})
+    monkeypatch.setattr(runner, "write_daily_report_artifacts", lambda *args, **kwargs: {"latest_report_path": tmp_path / "daily.md"})
 
     results = run_daily_research(tmp_path)
 
     assert len(results) == 1
     assert evaluated == ["H1"]
+
+
+def test_daily_runner_surfaces_queued_candidate_dedupe_diagnostics_in_report_metadata(tmp_path, monkeypatch):
+    import research_lab.runner as runner
+
+    monkeypatch.setenv("RESEARCH_LAB_DATA_PROVIDER", "synthetic")
+    monkeypatch.setenv("RESEARCH_LAB_MODE", "research_only")
+    panel = _panel()
+    close = panel.xs("close", level=1, axis=1)
+    evaluated = []
+    first = _spec("H1")
+    diagnostics = {
+        "input_count": 2,
+        "retained_count": 1,
+        "skipped_count": 1,
+        "reasons": {"effective_parameter_duplicate": 1},
+        "skipped": [
+            {
+                "reason_code": "effective_parameter_duplicate",
+                "hypothesis_id": "H2",
+                "family": "SWING",
+                "source_key": "queue:H2",
+            }
+        ],
+    }
+    metadata = {}
+
+    monkeypatch.setattr(runner, "_load_daily_data_bundle", lambda config: _bundle(panel))
+    monkeypatch.setattr(runner, "load_intraday_symbol", lambda root, symbol: _bundle(panel))
+    monkeypatch.setattr(runner, "baseline_strategies", lambda: [])
+    monkeypatch.setattr(runner, "next_run_guided_strategies", lambda root, limit: [])
+    monkeypatch.setattr(runner, "select_queued_hypothesis_candidates", lambda root, limit: {"specs": [first], "diagnostics": diagnostics})
+
+    def fake_build_weights(spec, daily, intraday):
+        evaluated.append(spec.parameters["source_hypothesis_id"])
+        return pd.DataFrame({"SPY": 1.0}, index=close.index)
+
+    def fake_report_artifacts(root, results, **kwargs):
+        metadata.update(kwargs.get("extra_metadata", {}))
+        return {"latest_report_path": tmp_path / "daily.md"}
+
+    monkeypatch.setattr(runner, "build_weights", fake_build_weights)
+    monkeypatch.setattr(
+        runner,
+        "weighted_backtest",
+        lambda *args: {
+            "metrics": {"cagr": 0.1},
+            "split_metrics": _split_metrics(),
+            "equity": pd.Series([1.0, 1.1], index=close.index),
+            "returns": pd.Series([0.0, 0.1], index=close.index),
+            "average_turnover": 0.0,
+            "average_exposure": 1.0,
+        },
+    )
+    monkeypatch.setattr(runner, "cost_stress", lambda *args: _cost_stress())
+    monkeypatch.setattr(runner, "compute_drawdown_diagnostics", lambda *args, **kwargs: {"max_drawdown": 0.0})
+    monkeypatch.setattr(runner, "run_true_walk_forward", lambda *args, **kwargs: {"method": "true_rolling_oos", "status": "ok"})
+    monkeypatch.setattr(runner, "classify_strategy", lambda *args: ("C", "test"))
+    monkeypatch.setattr(runner, "_persist_result", lambda *args: None)
+    monkeypatch.setattr(runner, "_persist_hypothesis_result", lambda *args: None)
+    monkeypatch.setattr(runner, "write_leaderboard", lambda *args: None)
+    monkeypatch.setattr(runner, "write_allocation_model", lambda *args: None)
+    monkeypatch.setattr(runner, "write_daily_report_artifacts", fake_report_artifacts)
+
+    results = run_daily_research(tmp_path)
+
+    assert len(results) == 1
+    assert evaluated == ["H1"]
+    assert metadata["queued_candidate_dedupe"]["reasons"] == {"effective_parameter_duplicate": 1}
+    assert metadata["queued_candidate_dedupe"]["retained_count"] == 1
+    assert metadata["queued_candidate_dedupe"]["skipped_count"] == 1
 
 
 def _spec(source_hypothesis_id: str) -> StrategySpec:

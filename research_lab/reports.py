@@ -181,6 +181,7 @@ def write_daily_report_artifacts(
     runner_name: str = "run_daily_research",
     run_id: str | None = None,
     allow_existing_run_id: bool = False,
+    extra_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     timestamp_utc = _utc_timestamp(timestamp)
     report_day = timestamp_utc.date()
@@ -205,6 +206,7 @@ def write_daily_report_artifacts(
             "data_sources": _data_sources(results),
             "provider_history_summary": _provider_history_summary(results),
             "hermes": _hermes_metadata(latest_hermes_artifact(root, before=timestamp_utc)),
+            **(extra_metadata or {}),
         }
     )
     write_daily_report(latest_report_path, results, report_date=report_day, run_metadata=metadata)
@@ -885,7 +887,7 @@ def _next_actions(results: list[dict]) -> list[str]:
 
 def _run_metadata_lines(metadata: dict[str, Any]) -> list[str]:
     git = metadata.get("git", {})
-    return [
+    lines = [
         "",
         "## Run Metadata",
         "",
@@ -900,6 +902,20 @@ def _run_metadata_lines(metadata: dict[str, Any]) -> list[str]:
         f"- dirty_files: {_format_dirty_files(git.get('dirty_files'))}",
         f"- immutable_report_path: {metadata.get('run_report_path', '')}",
     ]
+    dedupe = metadata.get("queued_candidate_dedupe")
+    if isinstance(dedupe, dict):
+        lines.extend(
+            [
+                f"- queued_candidate_dedupe_input_count: {dedupe.get('input_count', 0)}",
+                f"- queued_candidate_dedupe_retained_count: {dedupe.get('retained_count', 0)}",
+                f"- queued_candidate_dedupe_selected_count: {dedupe.get('selected_count', dedupe.get('retained_count', 0))}",
+                f"- queued_candidate_dedupe_skipped_count: {dedupe.get('skipped_count', 0)}",
+                f"- queued_candidate_dedupe_non_executable_count: {dedupe.get('non_executable_count', 0)}",
+                f"- queued_candidate_dedupe_risk_filtered_count: {dedupe.get('risk_filtered_count', 0)}",
+                f"- queued_candidate_dedupe_reasons: {dedupe.get('reasons', {})}",
+            ]
+        )
+    return lines
 
 
 def _format_dirty_files(dirty_files: Any) -> str:
