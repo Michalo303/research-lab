@@ -11,11 +11,13 @@ import pandas as pd
 
 from research_lab.failure_memory import build_failure_memory, execution_relevant_parameters
 from research_lab.hermes.schema import validate_hypothesis
+from research_lab.queue_dedupe import candidate_fingerprint
 from research_lab.research_orchestrator import build_research_guidance, score_candidate_direction, summarize_recent_failures
 from research_lab.risk_management import has_strong_rotation_risk_overlay
 
 
 UNORDERED_EXECUTABLE_LIST_KEYS = {"symbols", "universe", "tickers", "assets", "asset_universe"}
+MAX_QUEUE_DEDUPE_SKIP_DETAILS = 50
 
 
 @dataclass(frozen=True)
@@ -134,23 +136,80 @@ def baseline_strategies() -> list[StrategySpec]:
 
 
 def queued_hypothesis_strategies(root: Path, limit: int = 4) -> list[StrategySpec]:
+    return select_queued_hypothesis_candidates(root, limit=limit)["specs"]
+
+
+def select_queued_hypothesis_candidates(root: Path, limit: int = 4) -> dict[str, Any]:
     queue_path = root / "registry" / "hypothesis_queue.jsonl"
     if not queue_path.exists():
-        return []
+        return {
+            "specs": [],
+            "diagnostics": {
+                "input_count": 0,
+                "retained_count": 0,
+                "selected_count": 0,
+                "skipped_count": 0,
+                "non_executable_count": 0,
+                "risk_filtered_count": 0,
+                "reasons": {},
+                "skipped": [],
+            },
+        }
     items = [json.loads(line) for line in queue_path.read_text(encoding="utf-8").splitlines() if line.strip()]
     candidates = []
     extreme_rotation_drawdown = _has_recent_extreme_rotation_drawdown(root)
+    diagnostics = {
+        "input_count": len(items),
+        "retained_count": 0,
+        "selected_count": 0,
+        "skipped_count": 0,
+        "non_executable_count": 0,
+        "risk_filtered_count": 0,
+        "reasons": {},
+        "skipped": [],
+    }
+    seen_semantic_executable: dict[tuple[str, str], str] = {}
+    seen_source_executable: dict[tuple[str, str], str] = {}
+    seen_executable: dict[str, str] = {}
     for order, item in enumerate(items):
         key = str(item.get("source_key") or item.get("hypothesis_id") or f"{item.get('family', '')}:{item.get('ticker', '')}:{item.get('title', '')}")
+        hypothesis_id = str(item.get("hypothesis_id") or "")
+        family = str(item.get("family") or "")
         spec = _spec_from_hypothesis(item)
-        if spec and spec.family == "ROTATION" and extreme_rotation_drawdown and not has_strong_rotation_risk_overlay(item):
+        if spec is None:
+            diagnostics["non_executable_count"] += 1
             continue
-        if spec:
-            candidates.append((order, key, spec))
+        if spec.family == "ROTATION" and extreme_rotation_drawdown and not has_strong_rotation_risk_overlay(item):
+            diagnostics["risk_filtered_count"] += 1
+            continue
+
+        fingerprint = _safe_candidate_fingerprint(item)
+        spec_fingerprint = strategy_execution_fingerprint(spec)
+        retained_id = hypothesis_id or key
+        if fingerprint is not None:
+            duplicate_of = seen_semantic_executable.get((fingerprint, spec_fingerprint))
+            if duplicate_of is not None:
+                _record_queue_skip(diagnostics, "semantic_queue_duplicate", hypothesis_id, family, key, duplicate_of)
+                continue
+        source_execution_key = (key, spec_fingerprint)
+        duplicate_of = seen_source_executable.get(source_execution_key)
+        if duplicate_of is not None:
+            _record_queue_skip(diagnostics, "source_key_duplicate", hypothesis_id, family, key, duplicate_of)
+            continue
+        duplicate_of = seen_executable.get(spec_fingerprint)
+        if duplicate_of is not None:
+            _record_queue_skip(diagnostics, "effective_parameter_duplicate", hypothesis_id, family, key, duplicate_of)
+            continue
+
+        if fingerprint is not None:
+            seen_semantic_executable[(fingerprint, spec_fingerprint)] = retained_id
+        seen_source_executable[source_execution_key] = retained_id
+        seen_executable[spec_fingerprint] = retained_id
+        candidates.append((order, key, spec))
     guidance = build_research_guidance(summarize_recent_failures(root))
     failure_memory = build_failure_memory(root)
     ranked = sorted(
-        _dedupe_ordered_specs(candidates),
+        candidates,
         key=lambda item: (
             failure_memory.penalty_for_spec(item[2]).score,
             score_candidate_direction(item[2], guidance),
@@ -159,10 +218,12 @@ def queued_hypothesis_strategies(root: Path, limit: int = 4) -> list[StrategySpe
             item[1],
         ),
     )
+    diagnostics["retained_count"] = len(ranked)
     specs = [spec for _order, _key, spec in ranked]
     if limit is not None:
         specs = specs[: max(int(limit), 0)]
-    return specs
+    diagnostics["selected_count"] = len(specs)
+    return {"specs": specs, "diagnostics": diagnostics}
 
 
 def next_run_guided_strategies(root: Path, limit: int = 2) -> list[StrategySpec]:
@@ -473,6 +534,35 @@ def _dedupe_ordered_specs(candidates: list[tuple[int, str, StrategySpec]]) -> li
         seen_specs.add(spec_fingerprint)
         retained.append((order, key, spec))
     return retained
+
+
+def _safe_candidate_fingerprint(item: dict[str, Any]) -> str | None:
+    try:
+        return candidate_fingerprint(item)
+    except ValueError:
+        return None
+
+
+def _record_queue_skip(
+    diagnostics: dict[str, Any],
+    reason_code: str,
+    hypothesis_id: str,
+    family: str,
+    source_key: str,
+    duplicate_of: str,
+) -> None:
+    diagnostics["reasons"][reason_code] = diagnostics["reasons"].get(reason_code, 0) + 1
+    diagnostics["skipped_count"] += 1
+    if len(diagnostics["skipped"]) < MAX_QUEUE_DEDUPE_SKIP_DETAILS:
+        diagnostics["skipped"].append(
+            {
+                "reason_code": reason_code,
+                "hypothesis_id": hypothesis_id,
+                "family": family,
+                "source_key": source_key,
+                "duplicate_of": duplicate_of,
+            }
+        )
 
 
 def _recent_experiment_results(root: Path, max_rows: int = 200) -> list[dict[str, Any]]:

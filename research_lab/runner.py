@@ -19,7 +19,7 @@ from research_lab.strategies.baselines import (
     dedupe_strategy_specs,
     next_run_guided_strategies,
     queued_daily_symbols,
-    queued_hypothesis_strategies,
+    select_queued_hypothesis_candidates,
 )
 from research_lab.tiering import classify_strategy
 from research_lab.walk_forward import run_true_walk_forward
@@ -41,10 +41,11 @@ def run_daily_research(root: Path | None = None) -> list[dict]:
 
     results = []
     start_sequence = _next_sequence(config.root)
+    queued_selection = select_queued_hypothesis_candidates(config.root, limit=4)
     specs = dedupe_strategy_specs(
         baseline_strategies()
         + next_run_guided_strategies(config.root, limit=2)
-        + queued_hypothesis_strategies(config.root, limit=4)
+        + queued_selection["specs"]
     )
     for offset, spec in enumerate(specs):
         experiment_start = perf_counter()
@@ -152,7 +153,11 @@ def run_daily_research(root: Path | None = None) -> list[dict]:
         write_allocation_model(config.root / "registry" / "allocation_model.csv", leaderboard_rows)
     report_start = perf_counter()
     _log_daily_progress("writing daily report start")
-    report_artifacts = write_daily_report_artifacts(config.root, results)
+    report_artifacts = write_daily_report_artifacts(
+        config.root,
+        results,
+        extra_metadata={"queued_candidate_dedupe": queued_selection["diagnostics"]},
+    )
     report_path = report_artifacts.get("latest_report_path", config.root / "reports" / "daily")
     _log_daily_progress(f"daily report written in {perf_counter() - report_start:.2f}s path={report_path}")
     _log_daily_progress(f"completed in {perf_counter() - run_start:.2f}s")
