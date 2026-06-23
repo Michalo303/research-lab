@@ -189,17 +189,24 @@ class LiveOpenAIReviewLoopReviewer:
         )
 
         if not self.api_key:
+            metadata["provider_failure_stage"] = "credential_gate"
             return self._blocked_result(
                 metadata,
                 "Live reviewer mode requires OPENAI_API_KEY to be set before provider calls are allowed.",
             )
         if self.reviewer_calls_used >= self.max_reviewer_calls:
+            metadata["provider_failure_stage"] = "budget_gate"
             return self._blocked_result(metadata, "Reviewer call budget exhausted before provider request.")
 
         request_payload = _build_provider_request_payload(bundle)
         metadata["provider_call_attempted"] = True
         self.reviewer_calls_used += 1
         metadata["reviewer_calls_used"] = self.reviewer_calls_used
+        metadata["reviewer_call_budget_used"] = self.reviewer_calls_used
+        metadata["reviewer_call_budget_remaining"] = max(self.max_reviewer_calls - self.reviewer_calls_used, 0)
+        metadata["reviewer_call_budget_exhausted"] = (
+            self.max_reviewer_calls > 0 and metadata["reviewer_call_budget_remaining"] == 0
+        )
 
         try:
             raw_response = self.provider_client.review_json(
@@ -207,19 +214,26 @@ class LiveOpenAIReviewLoopReviewer:
                 api_key=self.api_key,
                 model_name=self.model_name,
             )
+            metadata["provider_response_received"] = True
         except Exception as exc:
+            metadata["provider_failure_stage"] = "provider_transport"
             return self._blocked_result(metadata, _sanitize_text(str(exc), limit=400))
 
         try:
             decision = parse_reviewer_decision(raw_response)
         except ReviewerDecisionError as exc:
-            metadata["parse_failure"] = str(exc)
-            return self._blocked_result(metadata, str(exc))
+            sanitized_reason = _classify_parse_failure_reason(exc)
+            metadata["parse_failure"] = sanitized_reason
+            metadata["provider_failure_stage"] = "strict_parse"
+            metadata["provider_parse_failure_reason"] = sanitized_reason
+            return self._blocked_result(metadata, sanitized_reason)
 
         self._latest_decision = decision
         self.emitted_decisions.append(decision)
         metadata["provider_call_succeeded"] = True
         metadata["provider_call_failed"] = False
+        metadata["provider_response_parser_valid"] = True
+        metadata["provider_failure_stage"] = "none"
         metadata["parsed_reviewer_decision"] = decision.to_dict()
         self.latest_provider_metadata = metadata
         return decision.to_review_verdict()
@@ -440,15 +454,37 @@ def _default_provider_runtime_metadata(
     max_reviewer_calls: int,
     reviewer_calls_used: int,
 ) -> dict[str, Any]:
+    reviewer_call_budget_remaining = max(max_reviewer_calls - reviewer_calls_used, 0)
     return {
         "reviewer_calls_used": reviewer_calls_used,
         "max_reviewer_calls": max_reviewer_calls,
+        "reviewer_call_budget_total": max_reviewer_calls,
+        "reviewer_call_budget_used": reviewer_calls_used,
+        "reviewer_call_budget_remaining": reviewer_call_budget_remaining,
+        "reviewer_call_budget_exhausted": max_reviewer_calls > 0 and reviewer_call_budget_remaining == 0,
         "provider_name": provider_name,
         "model_name": model_name,
         "provider_call_attempted": False,
         "provider_call_succeeded": False,
         "provider_call_failed": False,
+        "provider_response_received": False,
+        "provider_response_parser_valid": False,
+        "provider_failure_stage": "not_attempted",
         "failure_reason": None,
         "parse_failure": None,
+        "provider_parse_failure_reason": "none",
         "parsed_reviewer_decision": None,
     }
+
+
+def _classify_parse_failure_reason(exc: ReviewerDecisionError) -> str:
+    message = str(exc)
+    if message == "Malformed reviewer decision JSON.":
+        return "malformed_json"
+    if message.startswith("Missing required reviewer fields:"):
+        return "missing_required_field"
+    if message.startswith("Unknown reviewer verdict:"):
+        return "invalid_verdict"
+    if message == "PASS decisions must not include next_codex_instruction.":
+        return "invalid_pass_instruction"
+    return "parser_exception"

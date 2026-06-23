@@ -165,6 +165,14 @@ def test_default_run_is_fake_non_live_and_uses_tmp_output_only(tmp_path: Path):
     assert audit["provider_call_failed"] is False
     assert audit["provider_gate_passed"] is True
     assert audit["provider_gate_blocked"] is False
+    assert audit["reviewer_call_budget_total"] == 0
+    assert audit["reviewer_call_budget_used"] == 0
+    assert audit["reviewer_call_budget_remaining"] == 0
+    assert audit["reviewer_call_budget_exhausted"] is False
+    assert audit["provider_response_received"] is False
+    assert audit["provider_response_parser_valid"] is False
+    assert audit["provider_failure_stage"] == "not_attempted"
+    assert audit["provider_parse_failure_reason"] == "none"
     assert "No live Codex CLI executed: yes" in report
     assert "No live OpenAI/GPT reviewer call: yes" in report
     assert "No live git/GitHub action: yes" in report
@@ -228,6 +236,8 @@ def test_live_reviewer_mode_without_allow_provider_calls_fails_closed_before_att
     assert audit["provider_gate_blocked"] is True
     assert "allow-provider-calls" in audit["blocked_reason"]
     assert audit["attempts"] == []
+    assert audit["provider_failure_stage"] == "not_attempted"
+    assert audit["provider_parse_failure_reason"] == "none"
     assert "provider gate blocked" in report.lower()
 
 
@@ -293,7 +303,12 @@ def test_live_reviewer_mode_with_budget_but_without_allow_provider_calls_fails_c
     assert "provider gate blocked" in report.lower()
 
 
-def test_live_reviewer_mode_with_both_gates_reaches_live_adapter_path_but_stays_fail_closed_without_credentials(tmp_path: Path):
+def test_live_reviewer_mode_with_both_gates_reaches_live_adapter_path_but_stays_fail_closed_without_credentials(
+    tmp_path: Path,
+    monkeypatch,
+):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
     result = _run_cli(
         tmp_path,
         "--reviewer-mode",
@@ -341,6 +356,14 @@ def test_live_reviewer_mode_with_gates_but_missing_api_key_fails_closed(tmp_path
     assert audit["provider_call_succeeded"] is False
     assert audit["provider_call_failed"] is True
     assert "OPENAI_API_KEY" in (audit["provider_failure_reason"] or "")
+    assert audit["reviewer_call_budget_total"] == 1
+    assert audit["reviewer_call_budget_used"] == 0
+    assert audit["reviewer_call_budget_remaining"] == 1
+    assert audit["reviewer_call_budget_exhausted"] is False
+    assert audit["provider_response_received"] is False
+    assert audit["provider_response_parser_valid"] is False
+    assert audit["provider_failure_stage"] == "credential_gate"
+    assert audit["provider_parse_failure_reason"] == "none"
     assert audit["final_status"] == "BLOCKED"
     assert len(audit["attempts"]) == 1
     assert "blocked reason" in report.lower()
@@ -411,8 +434,98 @@ def test_live_reviewer_mode_records_provider_call_metadata_with_fake_client(tmp_
     assert audit["provider_call_succeeded"] is True
     assert audit["provider_call_failed"] is False
     assert audit["parsed_reviewer_decision"]["verdict"] == "PASS"
+    assert audit["reviewer_call_budget_total"] == 2
+    assert audit["reviewer_call_budget_used"] == 1
+    assert audit["reviewer_call_budget_remaining"] == 1
+    assert audit["reviewer_call_budget_exhausted"] is False
+    assert audit["provider_response_received"] is True
+    assert audit["provider_response_parser_valid"] is True
+    assert audit["provider_failure_stage"] == "none"
+    assert audit["provider_parse_failure_reason"] == "none"
     assert audit["final_status"] == "PASS"
     assert "Provider calls allowed: True" in report
+
+
+def test_live_reviewer_mode_strict_parse_rejection_is_reported_in_audit_and_report(tmp_path: Path):
+    from research_lab.orchestration.codex_review_loop_reviewer import LiveOpenAIReviewLoopReviewer
+
+    class _MalformedJsonClient:
+        def review_json(self, *, request_payload: dict[str, object], api_key: str, model_name: str) -> str:
+            return "{not-json}"
+
+    result = _run_cli(
+        tmp_path,
+        "--reviewer-mode",
+        "live-openai",
+        "--allow-provider-calls",
+        "true",
+        "--max-reviewer-calls",
+        "2",
+        build_reviewer=lambda args: LiveOpenAIReviewLoopReviewer(
+            api_key="test-key",
+            max_reviewer_calls=args.max_reviewer_calls,
+            provider_client=_MalformedJsonClient(),
+            provider_name="openai",
+            model_name="gpt-4.1-mini",
+        ),
+    )
+
+    assert result.returncode == 0
+    audit, report, _ = _load_artifacts(tmp_path)
+    assert audit["provider_call_attempted"] is True
+    assert audit["provider_call_failed"] is True
+    assert audit["provider_response_received"] is True
+    assert audit["provider_response_parser_valid"] is False
+    assert audit["provider_failure_stage"] == "strict_parse"
+    assert audit["provider_parse_failure_reason"] == "malformed_json"
+    assert "Provider failure stage: strict_parse" in report
+    assert "Provider parse failure reason: malformed_json" in report
+
+
+def test_live_reviewer_mode_invalid_verdict_does_not_leak_raw_provider_value_into_audit_or_report(tmp_path: Path):
+    from research_lab.orchestration.codex_review_loop_reviewer import LiveOpenAIReviewLoopReviewer
+
+    raw_invalid_verdict = "RAW_PROVIDER_VERDICT_SHOULD_NOT_APPEAR"
+
+    class _InvalidVerdictClient:
+        def review_json(self, *, request_payload: dict[str, object], api_key: str, model_name: str) -> str:
+            return json.dumps(
+                {
+                    "verdict": raw_invalid_verdict,
+                    "reason": "No decision.",
+                    "next_codex_instruction": None,
+                    "risk_flags": [],
+                    "allowed_to_continue": False,
+                }
+            )
+
+    result = _run_cli(
+        tmp_path,
+        "--reviewer-mode",
+        "live-openai",
+        "--allow-provider-calls",
+        "true",
+        "--max-reviewer-calls",
+        "2",
+        build_reviewer=lambda args: LiveOpenAIReviewLoopReviewer(
+            api_key="test-key",
+            max_reviewer_calls=args.max_reviewer_calls,
+            provider_client=_InvalidVerdictClient(),
+            provider_name="openai",
+            model_name="gpt-4.1-mini",
+        ),
+    )
+
+    assert result.returncode == 0
+    audit, report, output_dir = _load_artifacts(tmp_path)
+    audit_text = (output_dir / "audit.json").read_text(encoding="utf-8")
+    report_text = (output_dir / "final_report.md").read_text(encoding="utf-8")
+    assert audit["provider_failure_stage"] == "strict_parse"
+    assert audit["provider_parse_failure_reason"] == "invalid_verdict"
+    assert audit["provider_parse_failure"] == "invalid_verdict"
+    assert raw_invalid_verdict not in audit_text
+    assert raw_invalid_verdict not in report_text
+    assert "Provider parse failure reason: invalid_verdict" in report
 
 
 def test_cli_operator_smoke_dry_run_writes_clean_tracked_tree_metadata(tmp_path: Path):
