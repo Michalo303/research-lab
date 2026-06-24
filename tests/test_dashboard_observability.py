@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import urllib.error
 import urllib.request
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from research_lab import dashboard
@@ -41,6 +43,27 @@ def test_dashboard_renders_equity_svg_when_equity_csv_exists(tmp_path):
     assert 'id="equity-chart"' in html
     assert "drawdown" in html.lower()
     assert "No portfolio equity data available" not in html
+
+
+def test_dashboard_renders_stale_daily_and_weekly_artifacts_as_stale(tmp_path):
+    daily = tmp_path / "reports" / "daily"
+    weekly = tmp_path / "reports" / "weekly"
+    daily.mkdir(parents=True)
+    weekly.mkdir(parents=True)
+    daily_path = daily / "2026-06-05.md"
+    weekly_path = weekly / "2026-W21.md"
+    daily_path.write_text("# daily\n", encoding="utf-8")
+    weekly_path.write_text("# weekly\n", encoding="utf-8")
+    daily_stale = (datetime.now(timezone.utc) - timedelta(days=19)).timestamp()
+    weekly_stale = (datetime.now(timezone.utc) - timedelta(days=29)).timestamp()
+    os.utime(daily_path, (daily_stale, daily_stale))
+    os.utime(weekly_path, (weekly_stale, weekly_stale))
+
+    html = dashboard.render_dashboard_html(tmp_path)
+
+    assert "latest daily report is stale" in html
+    assert "latest weekly report is stale" in html
+    assert ">stale<" in html.lower()
 
 
 def test_dashboard_redacts_sensitive_values(tmp_path):

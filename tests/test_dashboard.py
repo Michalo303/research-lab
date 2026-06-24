@@ -1,4 +1,7 @@
-from research_lab.dashboard import _provider_summary, validate_static_dashboard, write_static_dashboard
+from datetime import datetime, timedelta, timezone
+import os
+
+from research_lab.dashboard import _missing_artifact_warning, _provider_summary, build_dashboard_snapshot, validate_static_dashboard, write_static_dashboard
 
 
 def test_static_dashboard_writes_html_from_weekly_csvs(tmp_path):
@@ -95,3 +98,75 @@ def test_provider_summary_reports_real_eod_with_unknown_sources():
     assert "real EOD" in summary["text"]
     assert "unknown" in summary["warning"]
     assert "no capital relevance" not in summary["warning"]
+
+
+def test_dashboard_snapshot_marks_missing_daily_and_weekly_reports(tmp_path):
+    snapshot = build_dashboard_snapshot(tmp_path)
+
+    assert snapshot["files"]["daily_report"]["status"] == "missing"
+    assert snapshot["files"]["weekly_report"]["status"] == "missing"
+
+
+def test_dashboard_snapshot_marks_recent_daily_and_weekly_reports_available(tmp_path):
+    daily = tmp_path / "reports" / "daily"
+    weekly = tmp_path / "reports" / "weekly"
+    daily.mkdir(parents=True)
+    weekly.mkdir(parents=True)
+    daily_path = daily / "2026-06-24.md"
+    weekly_path = weekly / "2026-W26.md"
+    daily_path.write_text("# daily\n", encoding="utf-8")
+    weekly_path.write_text("# weekly\n", encoding="utf-8")
+    now = datetime.now(timezone.utc).timestamp()
+    os.utime(daily_path, (now, now))
+    os.utime(weekly_path, (now, now))
+
+    snapshot = build_dashboard_snapshot(tmp_path)
+
+    assert snapshot["files"]["daily_report"]["status"] == "available"
+    assert snapshot["files"]["weekly_report"]["status"] == "available"
+    assert snapshot["files"]["daily_report"]["stale_reason"] == ""
+    assert snapshot["files"]["weekly_report"]["stale_reason"] == ""
+
+
+def test_dashboard_snapshot_marks_old_daily_report_stale_with_reason_and_age(tmp_path):
+    daily = tmp_path / "reports" / "daily"
+    daily.mkdir(parents=True)
+    daily_path = daily / "2026-06-05.md"
+    daily_path.write_text("# daily\n", encoding="utf-8")
+    stale_time = (datetime.now(timezone.utc) - timedelta(days=19)).timestamp()
+    os.utime(daily_path, (stale_time, stale_time))
+
+    snapshot = build_dashboard_snapshot(tmp_path)
+    daily_meta = snapshot["files"]["daily_report"]
+
+    assert daily_meta["status"] == "stale"
+    assert "latest daily report is stale" in daily_meta["stale_reason"]
+    assert "19 days old" in daily_meta["age"]
+
+
+def test_dashboard_snapshot_marks_old_weekly_report_stale_with_reason_and_age(tmp_path):
+    weekly = tmp_path / "reports" / "weekly"
+    weekly.mkdir(parents=True)
+    weekly_path = weekly / "2026-W21.md"
+    weekly_path.write_text("# weekly\n", encoding="utf-8")
+    stale_time = (datetime.now(timezone.utc) - timedelta(days=29)).timestamp()
+    os.utime(weekly_path, (stale_time, stale_time))
+
+    snapshot = build_dashboard_snapshot(tmp_path)
+    weekly_meta = snapshot["files"]["weekly_report"]
+
+    assert weekly_meta["status"] == "stale"
+    assert "latest weekly report is stale" in weekly_meta["stale_reason"]
+    assert "29 days old" in weekly_meta["age"]
+
+
+def test_missing_artifact_warning_does_not_treat_stale_as_missing():
+    snapshot = {
+        "artifacts": [
+            {"label": "latest daily report", "status": "stale"},
+            {"label": "latest weekly report", "status": "stale"},
+            {"label": "paper ledger", "status": "missing"},
+        ]
+    }
+
+    assert _missing_artifact_warning(snapshot) == "paper ledger"

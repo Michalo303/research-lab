@@ -14,6 +14,8 @@ from typing import Any
 from research_lab.config import REAL_EOD_DATA_SOURCES
 
 READ_ONLY_LABEL = "READ ONLY MODE"
+DAILY_REPORT_STALE_DAYS = 3
+WEEKLY_REPORT_STALE_DAYS = 10
 
 
 def build_dashboard_snapshot(root: Path, report_stem: str | None = None) -> dict[str, Any]:
@@ -92,8 +94,8 @@ def build_dashboard_snapshot(root: Path, report_stem: str | None = None) -> dict
         "provider_summary": provider_summary,
         "systemd_summary": systemd_summary,
         "files": {
-            "daily_report": _artifact_meta(daily_md_path, root, "daily report"),
-            "weekly_report": _artifact_meta(weekly_md_path, root, "weekly report"),
+            "daily_report": _artifact_meta(daily_md_path, root, "daily report", stale_after_days=DAILY_REPORT_STALE_DAYS),
+            "weekly_report": _artifact_meta(weekly_md_path, root, "weekly report", stale_after_days=WEEKLY_REPORT_STALE_DAYS),
             "alerts_report": _artifact_meta(_latest_file(alerts_dir, "*.md"), root, "alerts report"),
             "paper_ledger": _artifact_meta(paper_ledger_path, root, "paper ledger"),
             "paper_positions": _artifact_meta(paper_positions_path, root, "paper positions"),
@@ -160,8 +162,8 @@ def build_dashboard_snapshot(root: Path, report_stem: str | None = None) -> dict
             "latest_alerts": _latest_alert_messages(alerts_rows, alerts_md),
         },
         "artifacts": [
-            _artifact_meta(daily_md_path, root, "latest daily report"),
-            _artifact_meta(weekly_md_path, root, "latest weekly report"),
+            _artifact_meta(daily_md_path, root, "latest daily report", stale_after_days=DAILY_REPORT_STALE_DAYS),
+            _artifact_meta(weekly_md_path, root, "latest weekly report", stale_after_days=WEEKLY_REPORT_STALE_DAYS),
             _artifact_meta(_latest_file(alerts_dir, "*.md"), root, "latest alerts report"),
             _artifact_meta(self_improvement_md_path, root, "latest self-improvement"),
             _artifact_meta(sentiment_candidate_path if sentiment_candidate_path.exists() else None, root, "sentiment candidates"),
@@ -706,16 +708,36 @@ def _table_section(title: str, rows: list[dict[str, Any]], columns: list[str], e
     return f'<div class="panel" style="margin-top: 12px;"><h3>{_e(title)}</h3><div class="table-wrap"><table><thead><tr>{header}</tr></thead><tbody>{"".join(body)}</tbody></table></div></div>'
 
 
-def _artifact_meta(path: Path | None, root: Path, label: str) -> dict[str, Any]:
+def _artifact_meta(path: Path | None, root: Path, label: str, *, stale_after_days: int | None = None) -> dict[str, Any]:
     if path is None:
-        return {"label": label, "status": "missing", "path": "", "updated": "not available", "size": 0, "preview_path": "", "link": ""}
+        return {
+            "label": label,
+            "status": "missing",
+            "path": "",
+            "updated": "not available",
+            "size": 0,
+            "preview_path": "",
+            "link": "",
+            "age": "",
+            "stale_reason": "",
+        }
     try:
-        size = path.stat().st_size
-        updated = _format_mtime(path.stat().st_mtime)
+        stat = path.stat()
+        size = stat.st_size
+        updated = _format_mtime(stat.st_mtime)
     except OSError:
+        stat = None
         size = 0
         updated = "not available"
     status = "empty" if size == 0 else "available"
+    age = ""
+    stale_reason = ""
+    if stat is not None and size > 0 and stale_after_days is not None:
+        age_days = _artifact_age_days(stat.st_mtime)
+        age = _format_age_days(age_days)
+        if age_days > stale_after_days:
+            status = "stale"
+            stale_reason = f"latest {label} is stale"
     rel = _relative_path(root, path)
     return {
         "label": label,
@@ -725,6 +747,8 @@ def _artifact_meta(path: Path | None, root: Path, label: str) -> dict[str, Any]:
         "size": size,
         "preview_path": rel,
         "link": f"/preview?path={_url_escape(rel)}",
+        "age": age,
+        "stale_reason": stale_reason,
     }
 
 
@@ -1316,6 +1340,49 @@ def _ibkr_error_summary(snapshot: dict[str, Any]) -> str:
 
 def provider_label(snapshot: dict[str, Any]) -> str:
     return snapshot["provider_summary"]["text"]
+
+
+def _artifact_age_days(mtime: float) -> int:
+    age = datetime.now(timezone.utc) - datetime.fromtimestamp(mtime, tz=timezone.utc)
+    return max(int(age.total_seconds() // 86400), 0)
+
+
+def _format_age_days(days: int) -> str:
+    return f"{days} day{'s' if days != 1 else ''} old"
+
+
+def _artifact_item(item: dict[str, Any], root: Path | None = None) -> str:
+    status = item.get("status", "missing")
+    status_class = "status-bad" if status == "missing" else "status-warn" if status in {"empty", "stale"} else "status-ok"
+    path = item.get("path") or "not available"
+    link = item.get("link") or ""
+    label = item.get("label", "")
+    if link:
+        path_html = f'<a href="{_e(link)}">{_e(path)}</a>'
+    else:
+        path_html = _e(path)
+    detail = item.get("stale_reason") or item.get("age") or ""
+    meta = f"{path_html} · {_e(item.get('updated', 'not available'))}"
+    if detail:
+        meta = f"{meta} · {_e(detail)}"
+    return f'<div class="artifact-item"><div class="top"><div class="label">{_e(label)}</div><span class="tag {status_class}">{_e(status)}</span></div><div class="meta">{meta}</div></div>'
+
+
+def _artifact_link_row(snapshot: dict[str, Any], item: dict[str, Any], label: str) -> str:
+    if not item.get("link"):
+        return f'<div class="artifact-item"><div class="top"><div class="label">{_e(label)}</div><span class="tag status-bad">missing</span></div><div class="meta">not available</div></div>'
+    status = item.get("status", "available")
+    status_class = "status-warn" if status == "stale" else "status-ok"
+    detail = item.get("stale_reason") or item.get("age") or ""
+    meta = f'<a href="{_e(item["link"])}">{_e(item["path"])}</a> · {_e(item.get("updated", "not available"))}'
+    if detail:
+        meta = f"{meta} · {_e(detail)}"
+    return f'<div class="artifact-item"><div class="top"><div class="label">{_e(label)}</div><span class="tag {status_class}">{_e(status)}</span></div><div class="meta">{meta}</div></div>'
+
+
+def _file_state(meta: dict[str, Any]) -> str:
+    detail = meta.get("stale_reason") or meta.get("age") or meta.get("updated", "not available")
+    return f"{meta.get('status', 'missing')} ({detail})"
 
 
 def _latest_alert_messages(rows: list[dict[str, str]], alerts_md: str) -> list[str]:
