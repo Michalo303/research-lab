@@ -368,6 +368,223 @@ def test_daily_report_renders_orchestrator_guidance(tmp_path):
     assert "- promotion blocked by data quality: false" in section
 
 
+def test_daily_report_renders_bounded_walk_forward_diagnostics_for_etf_tier_c_near_miss(tmp_path):
+    path = tmp_path / "daily.md"
+    results = [
+        _result(
+            strategy_id="LONGTERM_ETF_1D_TREND_VOL_CAP_20260626_006",
+            family="LONGTERM",
+            tier="C",
+            tier_reason="Positive unseen result, but rolling walk-forward is not strong enough for promotion.",
+            split_metrics={
+                "train": {"cagr": 0.0340},
+                "validation": {"cagr": 0.0545},
+                "unseen": {"cagr": 0.0399, "max_drawdown": -0.1339},
+            },
+            walk_forward={
+                "method": "true_rolling_oos",
+                "status": "ok",
+                "window_count": 7,
+                "passed_windows": 4,
+                "pass_rate": 0.5714,
+                "median_test_cagr": 0.01,
+                "worst_test_drawdown": -0.18,
+                "regime_summary": "bull:2/3;bear:1/2;sideways:1/2",
+                "windows": [
+                    {
+                        "window": 1,
+                        "test_start": "2019-01-01",
+                        "test_end": "2019-12-31",
+                        "test_cagr": 0.12,
+                        "test_max_drawdown": -0.05,
+                        "regime": "bull",
+                        "passed": True,
+                    },
+                    {
+                        "window": 2,
+                        "test_start": "2020-01-01",
+                        "test_end": "2020-12-31",
+                        "test_cagr": -0.03,
+                        "test_max_drawdown": -0.23,
+                        "regime": "crisis",
+                        "passed": False,
+                    },
+                    {
+                        "window": 3,
+                        "test_start": "2021-01-01",
+                        "test_end": "2021-12-31",
+                        "test_cagr": 0.02,
+                        "test_max_drawdown": -0.11,
+                        "regime": "bull",
+                        "passed": True,
+                    },
+                    {
+                        "window": 4,
+                        "test_start": "2022-01-01",
+                        "test_end": "2022-12-31",
+                        "test_cagr": -0.01,
+                        "test_max_drawdown": -0.21,
+                        "regime": "bear",
+                        "passed": False,
+                    },
+                ],
+            },
+        )
+    ]
+
+    write_daily_report(path, results)
+
+    text = path.read_text(encoding="utf-8")
+    assert "## Bounded Walk-Forward Diagnostics" in text
+    assert "- LONGTERM_ETF_1D_TREND_VOL_CAP_20260626_006" in text
+    assert "windows: 4/7 passed" in text
+    assert "pass_rate: 57.14% (required: 67.00%)" in text
+    assert "median_test_cagr: 1.00%" in text
+    assert "worst_test_drawdown: -18.00%" in text
+    assert "regime_summary: bull:2/3;bear:1/2;sideways:1/2" in text
+    assert "failed_windows: 2" in text
+    assert "window 2 2020-01-01..2020-12-31 crisis cagr=-3.00% max_dd=-23.00%" in text
+    assert "window 4 2022-01-01..2022-12-31 bear cagr=-1.00% max_dd=-21.00%" in text
+    assert "'window': 1" not in text
+
+
+def test_daily_report_omits_bounded_walk_forward_diagnostics_for_unrelated_etf_tier_c_reject(tmp_path):
+    path = tmp_path / "daily.md"
+    results = [
+        _result(
+            strategy_id="ROTATION_ETF_1D_DUAL_MOMENTUM_20260626_002",
+            family="ROTATION",
+            tier="C",
+            tier_reason="Positive unseen result, but rolling walk-forward is not strong enough for promotion.",
+            split_metrics={
+                "train": {"cagr": 0.0340},
+                "validation": {"cagr": 0.0545},
+                "unseen": {"cagr": 0.0399, "max_drawdown": -0.1339},
+            },
+            walk_forward={
+                "method": "true_rolling_oos",
+                "status": "ok",
+                "window_count": 7,
+                "pass_rate": 0.5714,
+                "median_test_cagr": 0.01,
+                "worst_test_drawdown": -0.18,
+            },
+        )
+    ]
+
+    write_daily_report(path, results)
+
+    text = path.read_text(encoding="utf-8")
+    assert "## Bounded Walk-Forward Diagnostics" not in text
+
+
+def test_daily_report_omits_bounded_walk_forward_diagnostics_for_non_etf_auxiliary_candidate(tmp_path):
+    path = tmp_path / "daily.md"
+    results = [
+        _result(
+            strategy_id="INTRADAY_BTCUSDT_15M_VWAP_RSI_RECLAIM_20260626_004",
+            family="INTRADAY",
+            asset_class="CRYPTO",
+            timeframe="15M",
+            tier="C",
+            tier_reason="Positive unseen result, but rolling walk-forward is not strong enough for promotion.",
+            split_metrics={
+                "train": {"cagr": 0.0340},
+                "validation": {"cagr": 0.0545},
+                "unseen": {"cagr": 0.0399, "max_drawdown": -0.1339},
+            },
+            walk_forward={
+                "method": "true_rolling_oos",
+                "status": "ok",
+                "window_count": 7,
+                "pass_rate": 0.5714,
+                "median_test_cagr": 0.01,
+                "worst_test_drawdown": -0.18,
+            },
+        )
+    ]
+
+    write_daily_report(path, results)
+
+    text = path.read_text(encoding="utf-8")
+    assert "## Bounded Walk-Forward Diagnostics" not in text
+
+
+def test_daily_report_counts_all_failed_windows_while_bounding_worst_window_details(tmp_path):
+    path = tmp_path / "daily.md"
+    results = [
+        _result(
+            strategy_id="LONGTERM_ETF_1D_TREND_VOL_CAP_20260626_006",
+            family="LONGTERM",
+            tier="C",
+            tier_reason="Positive unseen result, but rolling walk-forward is not strong enough for promotion.",
+            split_metrics={
+                "train": {"cagr": 0.0340},
+                "validation": {"cagr": 0.0545},
+                "unseen": {"cagr": 0.0399, "max_drawdown": -0.1339},
+            },
+            walk_forward={
+                "method": "true_rolling_oos",
+                "status": "ok",
+                "window_count": 7,
+                "passed_windows": 3,
+                "pass_rate": 0.5714,
+                "median_test_cagr": 0.01,
+                "worst_test_drawdown": -0.18,
+                "windows": [
+                    {"window": 1, "test_start": "2019-01-01", "test_end": "2019-12-31", "test_cagr": 0.12, "test_max_drawdown": -0.05, "regime": "bull", "passed": True},
+                    {"window": 2, "test_start": "2020-01-01", "test_end": "2020-12-31", "test_cagr": -0.03, "test_max_drawdown": -0.23, "regime": "crisis", "passed": False},
+                    {"window": 3, "test_start": "2021-01-01", "test_end": "2021-12-31", "test_cagr": -0.02, "test_max_drawdown": -0.22, "regime": "bear", "passed": False},
+                    {"window": 4, "test_start": "2022-01-01", "test_end": "2022-12-31", "test_cagr": -0.01, "test_max_drawdown": -0.21, "regime": "bear", "passed": False},
+                    {"window": 5, "test_start": "2023-01-01", "test_end": "2023-12-31", "test_cagr": -0.04, "test_max_drawdown": -0.24, "regime": "sideways", "passed": False},
+                    {"window": 6, "test_start": "2024-01-01", "test_end": "2024-12-31", "test_cagr": 0.01, "test_max_drawdown": -0.08, "regime": "bull", "passed": True},
+                    {"window": 7, "test_start": "2025-01-01", "test_end": "2025-12-31", "test_cagr": 0.03, "test_max_drawdown": -0.10, "regime": "sideways", "passed": True},
+                ],
+            },
+        )
+    ]
+
+    write_daily_report(path, results)
+
+    text = path.read_text(encoding="utf-8")
+    assert "failed_windows: 4" in text
+    assert "window 5 2023-01-01..2023-12-31 sideways cagr=-4.00% max_dd=-24.00%" in text
+    assert "window 2 2020-01-01..2020-12-31 crisis cagr=-3.00% max_dd=-23.00%" in text
+    assert "window 3 2021-01-01..2021-12-31 bear cagr=-2.00% max_dd=-22.00%" in text
+    assert "window 4 2022-01-01..2022-12-31 bear cagr=-1.00% max_dd=-21.00%" not in text
+
+
+def test_daily_report_omits_bounded_walk_forward_diagnostics_for_partial_legacy_payload(tmp_path):
+    path = tmp_path / "daily.md"
+    results = [
+        _result(
+            strategy_id="LONGTERM_ETF_1D_TREND_VOL_CAP_20260626_006",
+            family="LONGTERM",
+            tier="C",
+            tier_reason="Positive unseen result, but rolling walk-forward is not strong enough for promotion.",
+            split_metrics={
+                "train": {"cagr": 0.0340},
+                "validation": {"cagr": 0.0545},
+                "unseen": {"cagr": 0.0399, "max_drawdown": -0.1339},
+            },
+            walk_forward={
+                "method": "true_rolling_oos",
+                "status": "ok",
+                "window_count": None,
+                "pass_rate": None,
+                "median_test_cagr": None,
+                "worst_test_drawdown": None,
+            },
+        )
+    ]
+
+    write_daily_report(path, results)
+
+    text = path.read_text(encoding="utf-8")
+    assert "## Bounded Walk-Forward Diagnostics" not in text
+    assert "pass_rate:" not in text
+
+
 def _section(path: Path, start: str, end: str) -> str:
     text = path.read_text(encoding="utf-8")
     start_index = text.index(start)
@@ -381,6 +598,8 @@ def _result(
     tier: str,
     tier_reason: str,
     family: str = "ROTATION",
+    asset_class: str = "ETF",
+    timeframe: str = "1D",
     split_metrics: dict | None = None,
     data_manifest: dict | None = None,
     cost_stress: dict | None = None,
@@ -427,8 +646,8 @@ def _result(
     return {
         "strategy_id": strategy_id,
         "family": family,
-        "asset_class": "ETF",
-        "timeframe": "1D",
+        "asset_class": asset_class,
+        "timeframe": timeframe,
         "data_manifest": manifest,
         "split_metrics": metrics,
         "cost_stress": {

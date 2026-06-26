@@ -94,6 +94,7 @@ def write_daily_report(path: Path, results: list[dict], report_date: date | None
     next_research_guidance = build_next_research_guidance(results)
     drawdown_diagnostics = _drawdown_diagnostics_rows(results)
     rejection_drawdown_attribution = _rejection_drawdown_attribution_rows(rejected)
+    walk_forward_diagnostics = _bounded_walk_forward_diagnostics(results)
     rows = [
         "| strategy_id | family | asset | timeframe | data_source | train | validation | unseen | max_dd | tier |",
         "|---|---|---|---|---|---:|---:|---:|---:|---|",
@@ -161,6 +162,8 @@ def write_daily_report(path: Path, results: list[dict], report_date: date | None
         "",
         *next_research_guidance,
         "",
+        *_bounded_walk_forward_diagnostics_lines(walk_forward_diagnostics),
+        "",
         "## Leaderboard Changes",
         "",
         "- Leaderboard and allocation model were regenerated from the current run.",
@@ -209,6 +212,7 @@ def write_daily_report_artifacts(
             "data_sources": _data_sources(results),
             "data_source_summary": _data_source_summary(results),
             "provider_history_summary": _provider_history_summary(results),
+            "walk_forward_diagnostics": _bounded_walk_forward_diagnostics(results),
             "hermes": _hermes_metadata(latest_hermes_artifact(root, before=timestamp_utc)),
             **(extra_metadata or {}),
         }
@@ -659,6 +663,87 @@ def _is_near_miss_trend_vol_cap_result(result: dict) -> bool:
     )
 
 
+def _bounded_walk_forward_diagnostics(results: list[dict]) -> list[dict[str, Any]]:
+    diagnostics = []
+    for result in results:
+        diagnostic = _bounded_walk_forward_diagnostic(result)
+        if diagnostic:
+            diagnostics.append(diagnostic)
+    return diagnostics
+
+
+def _bounded_walk_forward_diagnostic(result: dict[str, Any]) -> dict[str, Any] | None:
+    if str(result.get("asset_class") or "") != "ETF" or not _is_near_miss_trend_vol_cap_result(result):
+        return None
+    walk_forward = result.get("walk_forward")
+    if not isinstance(walk_forward, dict):
+        return None
+    if walk_forward.get("method") != "true_rolling_oos" or walk_forward.get("status") != "ok":
+        return None
+
+    window_count = _safe_int(walk_forward.get("window_count"), 0)
+    pass_rate_raw = walk_forward.get("pass_rate")
+    median_test_cagr_raw = walk_forward.get("median_test_cagr")
+    worst_test_drawdown_raw = walk_forward.get("worst_test_drawdown")
+    if window_count <= 0 or not _is_number(pass_rate_raw) or not _is_number(median_test_cagr_raw) or not _is_number(worst_test_drawdown_raw):
+        return None
+
+    windows = walk_forward.get("windows")
+    all_failed_windows = _failed_windows(windows if isinstance(windows, list) else [])
+    failed_windows = _worst_failed_windows(all_failed_windows)
+    passed_windows = _safe_int(walk_forward.get("passed_windows"), -1)
+    if passed_windows < 0 and isinstance(windows, list):
+        passed_windows = sum(1 for window in windows if bool(window.get("passed")))
+    if passed_windows < 0:
+        return None
+
+    diagnostic: dict[str, Any] = {
+        "strategy_id": str(result.get("strategy_id") or ""),
+        "window_count": window_count,
+        "passed_windows": passed_windows,
+        "total_windows": window_count,
+        "pass_rate": float(pass_rate_raw),
+        "required_pass_rate": 0.67,
+        "median_test_cagr": float(median_test_cagr_raw),
+        "worst_test_drawdown": float(worst_test_drawdown_raw),
+        "failed_window_count": len(all_failed_windows),
+        "worst_failed_windows": failed_windows,
+    }
+    regime_summary = walk_forward.get("regime_summary")
+    if isinstance(regime_summary, str) and regime_summary.strip():
+        diagnostic["regime_summary"] = regime_summary.strip()
+    return diagnostic
+
+
+def _failed_windows(windows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    failures: list[dict[str, Any]] = []
+    for window in windows:
+        if bool(window.get("passed")):
+            continue
+        failures.append(
+            {
+                "window": _safe_int(window.get("window"), 0),
+                "test_start": str(window.get("test_start") or ""),
+                "test_end": str(window.get("test_end") or ""),
+                "regime": str(window.get("regime") or "unknown"),
+                "test_cagr": _safe_float(window.get("test_cagr"), 0.0),
+                "test_max_drawdown": _safe_float(window.get("test_max_drawdown"), 0.0),
+            }
+        )
+    return failures
+
+
+def _worst_failed_windows(failures: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(
+        failures,
+        key=lambda window: (
+            _safe_float(window.get("test_max_drawdown"), 0.0),
+            _safe_float(window.get("test_cagr"), 0.0),
+            _safe_int(window.get("window"), 0),
+        ),
+    )[:3]
+
+
 def _short_name_from_strategy_id(strategy_id: str) -> str:
     marker = "_1D_"
     if marker not in strategy_id:
@@ -844,6 +929,10 @@ def _safe_int(value: Any, default: int) -> int:
         return default
 
 
+def _is_number(value: Any) -> bool:
+    return isinstance(value, int | float) and not isinstance(value, bool)
+
+
 def _markdown_cell(value: Any) -> str:
     return str(value).replace("|", "\\|")
 
@@ -993,6 +1082,74 @@ def _run_metadata_lines(metadata: dict[str, Any]) -> list[str]:
                 f"- queued_candidate_dedupe_risk_filtered_count: {dedupe.get('risk_filtered_count', 0)}",
                 f"- queued_candidate_dedupe_reasons: {dedupe.get('reasons', {})}",
             ]
+        )
+    walk_forward_diagnostics = metadata.get("walk_forward_diagnostics")
+    if isinstance(walk_forward_diagnostics, list) and walk_forward_diagnostics:
+        lines.extend(["- walk_forward_diagnostics:"])
+        for diagnostic in walk_forward_diagnostics:
+            lines.extend(_walk_forward_diagnostic_run_metadata_lines(diagnostic))
+    return lines
+
+
+def _bounded_walk_forward_diagnostics_lines(diagnostics: list[dict[str, Any]]) -> list[str]:
+    if not diagnostics:
+        return []
+    lines = ["## Bounded Walk-Forward Diagnostics", ""]
+    for diagnostic in diagnostics:
+        lines.extend(_walk_forward_diagnostic_report_lines(diagnostic))
+    return lines
+
+
+def _walk_forward_diagnostic_report_lines(diagnostic: dict[str, Any]) -> list[str]:
+    lines = [
+        f"- {diagnostic.get('strategy_id', '')}",
+        f"  - windows: {diagnostic.get('passed_windows', 0)}/{diagnostic.get('total_windows', 0)} passed",
+        f"  - pass_rate: {_format_percent(_safe_float(diagnostic.get('pass_rate'), 0.0))} (required: {_format_percent(_safe_float(diagnostic.get('required_pass_rate'), 0.0))})",
+        f"  - median_test_cagr: {_format_percent(_safe_float(diagnostic.get('median_test_cagr'), 0.0))}",
+        f"  - worst_test_drawdown: {_format_percent(_safe_float(diagnostic.get('worst_test_drawdown'), 0.0))}",
+    ]
+    regime_summary = diagnostic.get("regime_summary")
+    if regime_summary:
+        lines.append(f"  - regime_summary: {regime_summary}")
+    lines.append(f"  - failed_windows: {diagnostic.get('failed_window_count', 0)}")
+    for window in diagnostic.get("worst_failed_windows", []):
+        lines.append(
+            "  - window {window} {start}..{end} {regime} cagr={cagr} max_dd={max_dd}".format(
+                window=_safe_int(window.get("window"), 0),
+                start=window.get("test_start", ""),
+                end=window.get("test_end", ""),
+                regime=window.get("regime", "unknown"),
+                cagr=_format_percent(_safe_float(window.get("test_cagr"), 0.0)),
+                max_dd=_format_percent(_safe_float(window.get("test_max_drawdown"), 0.0)),
+            )
+        )
+    lines.append("")
+    return lines
+
+
+def _walk_forward_diagnostic_run_metadata_lines(diagnostic: dict[str, Any]) -> list[str]:
+    lines = [
+        f"  - strategy_id: {diagnostic.get('strategy_id', '')}",
+        f"    passed_windows: {diagnostic.get('passed_windows', 0)}/{diagnostic.get('total_windows', 0)}",
+        f"    pass_rate: {_format_percent(_safe_float(diagnostic.get('pass_rate'), 0.0))}",
+        f"    required_pass_rate: {_format_percent(_safe_float(diagnostic.get('required_pass_rate'), 0.0))}",
+        f"    median_test_cagr: {_format_percent(_safe_float(diagnostic.get('median_test_cagr'), 0.0))}",
+        f"    worst_test_drawdown: {_format_percent(_safe_float(diagnostic.get('worst_test_drawdown'), 0.0))}",
+        f"    failed_window_count: {diagnostic.get('failed_window_count', 0)}",
+    ]
+    regime_summary = diagnostic.get("regime_summary")
+    if regime_summary:
+        lines.append(f"    regime_summary: {regime_summary}")
+    for window in diagnostic.get("worst_failed_windows", []):
+        lines.append(
+            "    failed_window: window {window} {start}..{end} {regime} cagr={cagr} max_dd={max_dd}".format(
+                window=_safe_int(window.get("window"), 0),
+                start=window.get("test_start", ""),
+                end=window.get("test_end", ""),
+                regime=window.get("regime", "unknown"),
+                cagr=_format_percent(_safe_float(window.get("test_cagr"), 0.0)),
+                max_dd=_format_percent(_safe_float(window.get("test_max_drawdown"), 0.0)),
+            )
         )
     return lines
 
