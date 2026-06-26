@@ -153,6 +153,8 @@ def summarize_recent_failures(source: Path | Iterable[dict[str, Any]], max_resul
         duplicate_inputs.append(_candidate_like_payload(result))
         for reason in reasons:
             category = classify_rejection_reason(reason)
+            if category == "synthetic/fallback data" and _is_structural_intraday_synthetic_auxiliary_result(result):
+                continue
             memory.blocker_counts[category] += 1
             memory.strategies_by_blocker[category].add(strategy_id)
             memory.reason_counts[reason] += 1
@@ -263,6 +265,22 @@ def result_rejection_reasons(result: dict[str, Any]) -> list[str]:
         reasons.append("failed promotion gate")
         reasons.append("no accepted tier reached")
     return _dedupe_preserving_order(reasons)
+
+
+def _is_structural_intraday_synthetic_auxiliary_result(result: dict[str, Any]) -> bool:
+    if str(result.get("family") or "") != "INTRADAY":
+        return False
+    data_manifest = result.get("data_manifest", {})
+    source = str(data_manifest.get("source") or result.get("data_source") or "").strip().lower()
+    if source in REAL_EOD_DATA_SOURCES:
+        return False
+    if bool(data_manifest.get("fallback_used") or result.get("fallback_used")):
+        return False
+    if data_manifest.get("fallback_reason") or result.get("fallback_reason"):
+        return False
+    if data_manifest.get("missing_symbols") or result.get("missing_symbols"):
+        return False
+    return True
 
 
 def _load_recent_results(source: Path | Iterable[dict[str, Any]], max_results: int) -> list[dict[str, Any]]:

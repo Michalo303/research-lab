@@ -208,6 +208,71 @@ def test_next_research_guidance_uses_fixed_tie_breaking_and_notes_synthetic_fall
     ]
 
 
+def test_mixed_source_daily_report_clarifies_real_eod_etf_and_synthetic_intraday_auxiliary(tmp_path):
+    path = tmp_path / "daily.md"
+    results = [
+        _result(
+            strategy_id="LONGTERM_ETF_1D_REAL_20260626_001",
+            tier="Rejected",
+            tier_reason="Unseen max drawdown exceeds 15%.",
+            family="LONGTERM",
+            data_manifest={"source": "eodhd", "years": 33.3, "fallback_used": False},
+        ),
+        _result(
+            strategy_id="INTRADAY_BTCUSDT_15M_VWAP_RSI_RECLAIM_20260626_004",
+            tier="Rejected",
+            tier_reason="Negative unseen result.",
+            family="INTRADAY",
+            split_metrics={
+                "validation": {"cagr": -0.021},
+                "unseen": {"cagr": -0.001292, "trade_count": 22},
+            },
+            data_manifest={"source": "synthetic", "years": 0.7, "fallback_used": False},
+        ),
+    ]
+
+    write_daily_report(path, results)
+
+    text = path.read_text(encoding="utf-8")
+    assert "- data sources: eodhd, synthetic" in text
+    assert "ETF universe: eodhd, no fallback" in text
+    assert "Intraday BTCUSDT: synthetic auxiliary path" in text
+    assert "Synthetic candidates are not promotion-eligible" in text
+    assert "treat guidance as data-quality limited" not in text
+    assert "- promotion blocked by data quality: false" in text
+
+
+def test_next_research_guidance_does_not_treat_structural_intraday_synthetic_as_broad_data_quality_failure():
+    results = [
+        _result(
+            strategy_id="LONGTERM_ETF_1D_REAL_20260626_001",
+            tier="Rejected",
+            tier_reason="Unseen max drawdown exceeds 15%.",
+            family="LONGTERM",
+            data_manifest={"source": "eodhd", "years": 33.3, "fallback_used": False},
+        ),
+        _result(
+            strategy_id="INTRADAY_BTCUSDT_15M_VWAP_RSI_RECLAIM_20260626_004",
+            tier="Rejected",
+            tier_reason="Negative unseen result.",
+            family="INTRADAY",
+            split_metrics={
+                "validation": {"cagr": -0.021},
+                "unseen": {"cagr": -0.001292, "trade_count": 22},
+            },
+            data_manifest={"source": "synthetic", "years": 0.7, "fallback_used": False},
+        ),
+    ]
+
+    assert build_next_research_guidance(results) == [
+        "- dominant blocker category: unseen return weakness (2 signals across 1 strategy)",
+        "- next research direction: prioritize ideas with positive validation and unseen CAGR before relaxing any risk or promotion gates.",
+        "- blocker mix: unseen return weakness=2; walk-forward robustness=1",
+        "- data quality: mixed-source run: ETF universe uses real EOD data without fallback; intraday synthetic auxiliary candidates remain promotion-blocked.",
+        "- confidence: enough diagnostic signals for conservative next-step guidance.",
+    ]
+
+
 def test_next_research_guidance_is_inconclusive_without_usable_rejection_diagnostics():
     accepted_only = [
         _result(

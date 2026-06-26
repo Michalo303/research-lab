@@ -75,6 +75,34 @@ def test_guidance_marks_synthetic_fallback_as_data_quality_limited():
     assert guidance.data_quality_limitations == ("synthetic/fallback data present; do not promote affected candidates",)
 
 
+def test_guidance_does_not_treat_structural_intraday_synthetic_as_broad_provider_failure():
+    results = [
+        _result(
+            "LONGTERM_ETF_1D_REAL_20260626_001",
+            family="LONGTERM",
+            short_name="REAL",
+            builder="long_term_trend_filter",
+            data_manifest={"source": "eodhd", "years": 33.3},
+        ),
+        _result(
+            "INTRADAY_BTCUSDT_15M_AUX_20260626_004",
+            family="INTRADAY",
+            short_name="VWAP_RSI_RECLAIM",
+            builder="intraday_vwap_rsi_reclaim",
+            unseen_cagr=-0.02,
+            validation_cagr=-0.01,
+            unseen_trades=22,
+            data_manifest={"source": "synthetic", "years": 0.7},
+        ),
+    ]
+
+    guidance = build_research_guidance(summarize_recent_failures(results))
+
+    assert guidance.data_quality_limited is False
+    assert guidance.promotion_blocked is False
+    assert guidance.data_quality_limitations == ()
+
+
 def test_score_candidate_direction_penalizes_unrepaired_repeated_patterns_more_than_repairs():
     memory = summarize_recent_failures(
         [
