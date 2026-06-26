@@ -86,6 +86,7 @@ def write_daily_report(path: Path, results: list[dict], report_date: date | None
     rejected = [r for r in results if r["tier"] == "Rejected"]
     best = max(results, key=lambda r: r["split_metrics"]["unseen"]["mar"]) if results else None
     sources = sorted({r["data_manifest"]["source"] for r in results})
+    data_source_summary = _data_source_summary(results)
     source_note = _source_note(results)
     next_actions = _next_actions(results)
     rejection_diagnostics = _rejection_diagnostics_rows(non_accepted)
@@ -123,6 +124,7 @@ def write_daily_report(path: Path, results: list[dict], report_date: date | None
         f"- best research result: {best['strategy_id'] if best else 'none'}",
         f"- data sources: {', '.join(sources) if sources else 'none'}",
         f"- biggest risk discovered: {source_note}",
+        f"- data-source summary: {data_source_summary['summary_text']}",
         "",
         *_hermes_report_lines(run_metadata.get("hermes") if run_metadata else None),
         "",
@@ -134,6 +136,7 @@ def write_daily_report(path: Path, results: list[dict], report_date: date | None
         "",
         "- The deterministic runner, registry, leaderboard, and strategy-card pipeline are now operational.",
         f"- {source_note}",
+        f"- {data_source_summary['summary_text']}",
         "- Negative unseen results, excessive drawdown, failed cost stress, or too few trades are rejected even during smoke tests.",
         "",
         "## Rejections",
@@ -204,6 +207,7 @@ def write_daily_report_artifacts(
             "latest_report_path": _relative_posix(root, latest_report_path),
             "run_report_path": _relative_posix(root, run_report_path),
             "data_sources": _data_sources(results),
+            "data_source_summary": _data_source_summary(results),
             "provider_history_summary": _provider_history_summary(results),
             "hermes": _hermes_metadata(latest_hermes_artifact(root, before=timestamp_utc)),
             **(extra_metadata or {}),
@@ -465,12 +469,13 @@ def build_rejection_diagnostics(result: dict) -> list[str]:
 
 def build_next_research_guidance(results: list[dict]) -> list[str]:
     signals = _next_research_guidance_signals(results)
+    source_summary = _data_source_summary(results)
     if not signals:
         return [
             "- dominant blocker category: inconclusive",
             "- next research direction: guidance is limited because there are no rejected or non-accepted strategies with usable diagnostics.",
             "- blocker mix: none",
-            "- data quality: no synthetic/fallback data signal in rejection diagnostics.",
+            f"- data quality: {_guidance_data_quality_note(0, source_summary)}",
             "- confidence: insufficient diagnostic signal; do not infer a research direction from this run.",
         ]
 
@@ -496,7 +501,7 @@ def build_next_research_guidance(results: list[dict]) -> list[str]:
         ),
         f"- next research direction: {_guidance_direction(dominant)}",
         f"- blocker mix: {_guidance_blocker_mix(counts)}",
-        f"- data quality: {_guidance_data_quality_note(data_quality_strategy_count)}",
+        f"- data quality: {_guidance_data_quality_note(data_quality_strategy_count, source_summary)}",
         "- confidence: enough diagnostic signals for conservative next-step guidance.",
     ]
     near_miss = _best_near_miss_mutation_target(results)
@@ -515,11 +520,13 @@ def build_next_research_guidance(results: list[dict]) -> list[str]:
 
 def _orchestrator_guidance_lines(results: list[dict]) -> list[str]:
     guidance = build_research_guidance(summarize_recent_failures(results))
+    source_summary = _data_source_summary(results)
     lines = [
         f"- dominant blocker category: {guidance.dominant_blocker_category}",
         f"- blocker mix: {_format_orchestrator_blocker_mix(guidance.blocker_mix)}",
         f"- promotion blocked by data quality: {str(guidance.promotion_blocked).lower()}",
         f"- confidence: {guidance.confidence}",
+        f"- data-source summary: {source_summary['summary_text']}",
     ]
     for direction in guidance.prioritized_next_directions:
         features = ", ".join(direction.required_features) if direction.required_features else "none"
@@ -552,6 +559,8 @@ def _next_research_guidance_signals(results: list[dict]) -> list[dict[str, str]]
         strategy_id = str(result.get("strategy_id") or "unknown")
         for failure in _rejection_failures(result):
             category = _guidance_category_for_failure(failure)
+            if category == "data quality/fallback" and _is_structural_intraday_synthetic_auxiliary_result(result):
+                continue
             if category:
                 signals.append({"strategy_id": strategy_id, "category": category})
     return signals
@@ -595,7 +604,9 @@ def _guidance_blocker_mix(counts: dict[str, int]) -> str:
     return "; ".join(f"{category}={counts[category]}" for category in ordered)
 
 
-def _guidance_data_quality_note(strategy_count: int) -> str:
+def _guidance_data_quality_note(strategy_count: int, source_summary: dict[str, Any]) -> str:
+    if source_summary.get("classification") == "mixed_real_eod_with_synthetic_intraday_auxiliary":
+        return "mixed-source run: ETF universe uses real EOD data without fallback; intraday synthetic auxiliary candidates remain promotion-blocked."
     if strategy_count:
         return (
             f"synthetic/fallback diagnostics present in {strategy_count} "
@@ -852,6 +863,13 @@ def _format_recovery_date(diagnostic: dict[str, Any]) -> str:
 
 
 def _source_note(results: list[dict]) -> str:
+    source_summary = _data_source_summary(results)
+    if source_summary["classification"] == "mixed_real_eod_with_synthetic_intraday_auxiliary":
+        years = max(float(r["data_manifest"].get("years", 0.0)) for r in results if r["data_manifest"]["source"] == "eodhd")
+        return (
+            f"EODHD real EOD data is enabled with {years:.1f} years of available history for the ETF universe; "
+            "the synthetic intraday auxiliary path remains promotion-blocked."
+        )
     sources = {r["data_manifest"]["source"] for r in results}
     if "massive" in sources:
         years = max(float(r["data_manifest"].get("years", 0.0)) for r in results if r["data_manifest"]["source"] == "massive")
@@ -883,6 +901,67 @@ def _next_actions(results: list[dict]) -> list[str]:
         "- Add walk-forward and parameter-neighborhood stability for the weekly deep run.",
         "- Add data integrity checks before any strategy can rise above paper-only research.",
     ]
+
+
+def _data_source_summary(results: list[dict]) -> dict[str, Any]:
+    real_eod_candidate_count = 0
+    synthetic_candidate_count = 0
+    synthetic_intraday_auxiliary_count = 0
+    provider_fallback_candidate_count = 0
+    for result in results:
+        manifest = result.get("data_manifest", {})
+        source = str(manifest.get("source") or result.get("data_source") or "").strip().lower()
+        if source in REAL_EOD_DATA_SOURCES:
+            real_eod_candidate_count += 1
+        else:
+            synthetic_candidate_count += 1
+            if _is_structural_intraday_synthetic_auxiliary_result(result):
+                synthetic_intraday_auxiliary_count += 1
+        if bool(manifest.get("fallback_used") or result.get("fallback_used")) or manifest.get("fallback_reason") or result.get("fallback_reason"):
+            provider_fallback_candidate_count += 1
+
+    data_quality_promotion_block_count = synthetic_candidate_count + provider_fallback_candidate_count
+    classification = "all_synthetic"
+    summary_text = "Synthetic data cannot validate capital allocation; real-provider evidence is still required."
+    if real_eod_candidate_count and synthetic_intraday_auxiliary_count and synthetic_candidate_count == synthetic_intraday_auxiliary_count and provider_fallback_candidate_count == 0:
+        classification = "mixed_real_eod_with_synthetic_intraday_auxiliary"
+        summary_text = (
+            "ETF universe: eodhd, no fallback; "
+            "Intraday BTCUSDT: synthetic auxiliary path; "
+            "Synthetic candidates are not promotion-eligible."
+        )
+    elif provider_fallback_candidate_count > 0:
+        classification = "provider_fallback_present"
+        summary_text = "Provider fallback detected; affected candidates are not promotion-eligible until real-provider coverage is restored."
+    elif real_eod_candidate_count and synthetic_candidate_count == 0:
+        classification = "all_real_eod"
+        summary_text = "ETF universe: eodhd, no fallback."
+
+    return {
+        "classification": classification,
+        "summary_text": summary_text,
+        "real_eod_candidate_count": real_eod_candidate_count,
+        "synthetic_candidate_count": synthetic_candidate_count,
+        "synthetic_intraday_auxiliary_count": synthetic_intraday_auxiliary_count,
+        "provider_fallback_candidate_count": provider_fallback_candidate_count,
+        "data_quality_promotion_block_count": data_quality_promotion_block_count,
+    }
+
+
+def _is_structural_intraday_synthetic_auxiliary_result(result: dict[str, Any]) -> bool:
+    if str(result.get("family") or "") != "INTRADAY":
+        return False
+    data_manifest = result.get("data_manifest", {})
+    source = str(data_manifest.get("source") or result.get("data_source") or "").strip().lower()
+    if source in REAL_EOD_DATA_SOURCES:
+        return False
+    if bool(data_manifest.get("fallback_used") or result.get("fallback_used")):
+        return False
+    if data_manifest.get("fallback_reason") or result.get("fallback_reason"):
+        return False
+    if data_manifest.get("missing_symbols") or result.get("missing_symbols"):
+        return False
+    return True
 
 
 def _run_metadata_lines(metadata: dict[str, Any]) -> list[str]:

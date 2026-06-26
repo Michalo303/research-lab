@@ -154,6 +154,26 @@ def test_metadata_includes_provider_history_summary_without_secrets(tmp_path):
     assert metadata["command"] == ["python", "scripts/run_daily_research.py", "--api-key", "<redacted>", "--token=<redacted>"]
 
 
+def test_metadata_includes_mixed_source_summary(tmp_path):
+    outcome = write_daily_report_artifacts(
+        tmp_path,
+        [_result("eodhd"), _intraday_result("synthetic")],
+        timestamp=datetime(2026, 6, 3, 12, 3, 4, tzinfo=timezone.utc),
+        git_info={"commit": "abcdef1234567890", "branch": "main", "dirty": False},
+    )
+
+    metadata = json.loads(outcome["metadata_path"].read_text(encoding="utf-8"))
+    assert metadata["data_source_summary"] == {
+        "classification": "mixed_real_eod_with_synthetic_intraday_auxiliary",
+        "summary_text": "ETF universe: eodhd, no fallback; Intraday BTCUSDT: synthetic auxiliary path; Synthetic candidates are not promotion-eligible.",
+        "real_eod_candidate_count": 1,
+        "synthetic_candidate_count": 1,
+        "synthetic_intraday_auxiliary_count": 1,
+        "provider_fallback_candidate_count": 0,
+        "data_quality_promotion_block_count": 1,
+    }
+
+
 def test_existing_caller_can_still_read_latest_daily_report_path(tmp_path):
     outcome = write_daily_report_artifacts(
         tmp_path,
@@ -436,3 +456,18 @@ def _result(source: str) -> dict:
         "average_exposure": 1.0,
         "average_turnover": 0.1,
     }
+
+
+def _intraday_result(source: str) -> dict:
+    result = _result(source)
+    result["strategy_id"] = "BTC1"
+    result["family"] = "INTRADAY"
+    result["asset_class"] = "BTCUSDT"
+    result["timeframe"] = "15M"
+    result["short_name"] = "VWAP_RSI_RECLAIM"
+    result["data_manifest"]["symbols"] = ["BTCUSDT"]
+    result["split_metrics"]["validation"]["cagr"] = -0.01
+    result["split_metrics"]["unseen"]["cagr"] = -0.02
+    result["split_metrics"]["unseen"]["trade_count"] = 22
+    result["cost_stress"]["double_unseen_cagr"] = -0.03
+    return result
