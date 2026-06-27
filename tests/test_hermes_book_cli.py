@@ -427,3 +427,54 @@ def test_audit_cli_does_not_modify_private_files_or_feedback(tmp_path):
 
     assert extracted.read_bytes() == before_notes
     assert feedback_dir.exists() is before_feedback_exists
+
+
+def test_audit_cli_reports_safe_backfill_plan_aggregates_only(tmp_path, monkeypatch, capsys):
+    base = _private_fixture(tmp_path)
+    extracted = base / "extracted_notes" / "notes.jsonl"
+    extracted.parent.mkdir(parents=True)
+    backfillable = {
+        "book_id": "book-aaaaaaaaaaaa",
+        "source_title": "Trading Systems and Methods",
+        "source_path": "private-book:book-aaaaaaaaaaaa",
+        "source_sha256": "a" * 64,
+        "concept": "Volatility targeting",
+        "hypothesis": "Lower exposure when realized volatility rises.",
+        "summary": "Prefer lower risk in unstable regimes.",
+        "source_excerpt": "short phrase",
+        "testable_rules": ["Target eight percent annualized volatility."],
+        "compatible_builders": ["long_term_vol_target_cap"],
+        "asset_classes": ["ETF"],
+        "timeframes": ["1D"],
+        "expected_edge": "Contain drawdown in unstable regimes.",
+        "known_failure_modes": ["Fast reversals may cause underexposure."],
+        "addresses_blockers": ["drawdown_fail"],
+        "priority_score": 90,
+        "source_location": "page:10",
+        "source_passage_id": "passage-1111111111111111",
+        "implementation_hint": "Lower exposure as realized volatility rises.",
+    }
+    extracted.write_text(json.dumps(backfillable) + "\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "hermes_knowledge.cli.invoke_provider",
+        lambda *_args, **_kwargs: pytest.fail("audit must not invoke providers"),
+    )
+
+    assert main(["audit", "--base-dir", str(base)]) == 1
+
+    output = capsys.readouterr().out
+    assert "total_rows=1" in output
+    assert "rows_with_deterministic_source_file_metadata=1" in output
+    assert "rows_with_deterministic_passage_id_source=1" in output
+    assert "rows_backfillable_all_required_fields=1" in output
+    assert "rows_not_backfillable=0" in output
+    assert (
+        "not_backfillable_reasons=legacy_format:0,missing_source_file_metadata:0,"
+        "ambiguous_source_location:0,missing_passage_anchor:0,duplicate_candidate_identity:0"
+    ) in output
+    assert "proposed_backfill_fields=note_id:1,source_location:0,source_passage_id:0" in output
+    assert (
+        "safety_verdict=plan_only,no_write_performed,generation_still_blocked"
+    ) in output
+    assert "short phrase" not in output
+    assert "Trading Systems and Methods" not in output

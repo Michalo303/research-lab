@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from hermes_knowledge.runtime import audit_note_inventory
+from hermes_knowledge.runtime import audit_note_inventory, plan_note_provenance_backfill
 from hermes_knowledge.note_generator import generate_proposed_notes
 from hermes_knowledge.passage_extractor import PassageCandidate
 from hermes_knowledge.schema import (
@@ -749,6 +749,140 @@ def test_audit_inventory_treats_walk_forward_fail_alias_as_promoted_evidence_eli
     assert audit.rows_excluded_from_promoted_used_note_ids == 0
     assert audit.normalized_blocker_counts == {"walk_forward_robustness": 1}
     assert audit.unknown_blocker_ids == {}
+
+
+def test_provenance_backfill_plan_reports_fully_backfillable_note_id_only_rows(tmp_path):
+    notes_dir = tmp_path / "extracted_notes"
+    notes_dir.mkdir(parents=True)
+    backfillable = _audit_entry(
+        note_id="note-2222222222222222",
+        source_location="page:22",
+        source_passage_id="passage-2222222222222222",
+        addresses_blockers=["walk_forward_fail"],
+    )
+    backfillable.pop("note_id")
+    (notes_dir / "notes.jsonl").write_text(
+        json.dumps(backfillable) + "\n",
+        encoding="utf-8",
+    )
+
+    plan = plan_note_provenance_backfill(notes_dir)
+
+    assert plan.total_rows == 1
+    assert plan.rows_missing_note_id == 1
+    assert plan.rows_missing_source_location == 0
+    assert plan.rows_missing_source_passage_id == 0
+    assert plan.rows_with_deterministic_source_file_metadata == 1
+    assert plan.rows_with_deterministic_passage_id_source == 1
+    assert plan.rows_backfillable_all_required_fields == 1
+    assert plan.rows_not_backfillable == 0
+    assert plan.not_backfillable_reasons == {
+        "legacy_format": 0,
+        "missing_source_file_metadata": 0,
+        "ambiguous_source_location": 0,
+        "missing_passage_anchor": 0,
+        "duplicate_candidate_identity": 0,
+    }
+    assert plan.proposed_backfill_fields == {
+        "note_id": 1,
+        "source_location": 0,
+        "source_passage_id": 0,
+    }
+    assert plan.safety_verdict == (
+        "plan_only",
+        "no_write_performed",
+        "generation_still_blocked",
+    )
+
+
+def test_provenance_backfill_plan_reports_legacy_and_missing_anchor_rows_as_not_backfillable(
+    tmp_path,
+):
+    notes_dir = tmp_path / "extracted_notes"
+    notes_dir.mkdir(parents=True)
+    missing_anchor = _audit_entry(
+        note_id="note-3333333333333333",
+        source_location="page:33",
+        addresses_blockers=["drawdown_fail"],
+    )
+    missing_anchor.pop("source_passage_id")
+    legacy_row = {
+        "book_id": "book-aaaaaaaaaaaa",
+        "summary": "legacy row",
+        "addresses_blockers": ["drawdown_fail"],
+    }
+    (notes_dir / "notes.jsonl").write_text(
+        "\n".join([json.dumps(missing_anchor), json.dumps(legacy_row)]) + "\n",
+        encoding="utf-8",
+    )
+
+    plan = plan_note_provenance_backfill(notes_dir)
+
+    assert plan.total_rows == 2
+    assert plan.rows_missing_source_passage_id == 2
+    assert plan.rows_with_deterministic_source_file_metadata == 1
+    assert plan.rows_with_deterministic_passage_id_source == 0
+    assert plan.rows_backfillable_all_required_fields == 0
+    assert plan.rows_not_backfillable == 2
+    assert plan.not_backfillable_reasons == {
+        "legacy_format": 1,
+        "missing_source_file_metadata": 0,
+        "ambiguous_source_location": 0,
+        "missing_passage_anchor": 1,
+        "duplicate_candidate_identity": 0,
+    }
+
+
+def test_provenance_backfill_plan_reports_duplicate_candidate_identity_as_not_backfillable(
+    tmp_path,
+):
+    notes_dir = tmp_path / "extracted_notes"
+    notes_dir.mkdir(parents=True)
+    duplicate = _audit_entry(
+        note_id="note-4444444444444444",
+        source_location="page:44",
+        source_passage_id="passage-4444444444444444",
+        addresses_blockers=["drawdown_fail"],
+    )
+    duplicate.pop("note_id")
+    (notes_dir / "notes.jsonl").write_text(
+        "\n".join([json.dumps(duplicate), json.dumps(duplicate)]) + "\n",
+        encoding="utf-8",
+    )
+
+    plan = plan_note_provenance_backfill(notes_dir)
+
+    assert plan.rows_backfillable_all_required_fields == 0
+    assert plan.rows_not_backfillable == 2
+    assert plan.not_backfillable_reasons == {
+        "legacy_format": 0,
+        "missing_source_file_metadata": 0,
+        "ambiguous_source_location": 0,
+        "missing_passage_anchor": 0,
+        "duplicate_candidate_identity": 2,
+    }
+
+
+def test_provenance_backfill_plan_does_not_modify_private_note_files(tmp_path):
+    notes_dir = tmp_path / "extracted_notes"
+    notes_dir.mkdir(parents=True)
+    path = notes_dir / "notes.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "book_id": "book-aaaaaaaaaaaa",
+                "summary": "legacy row",
+                "addresses_blockers": ["drawdown_fail"],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    before = path.read_bytes()
+
+    _ = plan_note_provenance_backfill(notes_dir)
+
+    assert path.read_bytes() == before
 
 
 @pytest.mark.parametrize(

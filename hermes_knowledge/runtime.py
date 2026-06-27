@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -54,6 +55,37 @@ CURRENT_FORMAT_REQUIRED_FIELDS = (
     "priority_score",
     "implementation_hint",
 )
+BACKFILL_REASON_KEYS = (
+    "legacy_format",
+    "missing_source_file_metadata",
+    "ambiguous_source_location",
+    "missing_passage_anchor",
+    "duplicate_candidate_identity",
+)
+BACKFILL_FIELD_KEYS = (
+    "note_id",
+    "source_location",
+    "source_passage_id",
+)
+NOTE_ID_PROVIDER_FIELDS = (
+    "concept",
+    "hypothesis",
+    "summary",
+    "testable_rules",
+    "compatible_builders",
+    "asset_classes",
+    "timeframes",
+    "expected_edge",
+    "known_failure_modes",
+    "implementation_hint",
+    "priority_score",
+)
+SOURCE_FILE_METADATA_FIELDS = (
+    "book_id",
+    "source_title",
+    "source_path",
+    "source_sha256",
+)
 
 
 @dataclass(frozen=True)
@@ -88,6 +120,25 @@ class NoteInventoryAudit:
     remediation_readiness: str = "blocked"
     remediation_remaining_blockers: dict[str, int] | None = None
     ready_for_new_knihomol_hypothesis_generation: bool = False
+
+
+@dataclass(frozen=True)
+class NoteProvenanceBackfillPlan:
+    total_rows: int = 0
+    rows_missing_note_id: int = 0
+    rows_missing_source_location: int = 0
+    rows_missing_source_passage_id: int = 0
+    rows_with_deterministic_source_file_metadata: int = 0
+    rows_with_deterministic_passage_id_source: int = 0
+    rows_backfillable_all_required_fields: int = 0
+    rows_not_backfillable: int = 0
+    not_backfillable_reasons: dict[str, int] | None = None
+    proposed_backfill_fields: dict[str, int] | None = None
+    safety_verdict: tuple[str, str, str] = (
+        "plan_only",
+        "no_write_performed",
+        "generation_still_blocked",
+    )
 
 
 def _normalize_retrieval_blocker_id(raw: str) -> str | None:
@@ -137,6 +188,35 @@ def _is_promoted_evidence_eligible(entry: dict[str, Any]) -> bool:
 
 def _looks_like_current_format(entry: dict[str, Any]) -> bool:
     return all(field in entry for field in CURRENT_FORMAT_REQUIRED_FIELDS)
+
+
+def _has_source_file_metadata(entry: dict[str, Any]) -> bool:
+    return all(_has_text(entry.get(field)) for field in SOURCE_FILE_METADATA_FIELDS)
+
+
+def _deterministic_note_id_identity(entry: dict[str, Any]) -> str | None:
+    book_id = entry.get("book_id")
+    source_passage_id = entry.get("source_passage_id")
+    if not (_has_text(book_id) and _has_text(source_passage_id)):
+        return None
+    blockers = entry.get("addresses_blockers")
+    if not isinstance(blockers, list):
+        return None
+    raw_blockers = [str(item).strip() for item in blockers if isinstance(item, str) and item.strip()]
+    if len(raw_blockers) != 1:
+        return None
+    provider_note = {}
+    for field in NOTE_ID_PROVIDER_FIELDS:
+        if field not in entry:
+            return None
+        provider_note[field] = entry[field]
+    normalized = json.dumps(provider_note, sort_keys=True, ensure_ascii=True)
+    digest = hashlib.sha256(
+        "\n".join((raw_blockers[0], str(book_id), str(source_passage_id), normalized)).encode(
+            "utf-8"
+        )
+    ).hexdigest()
+    return f"note-{digest[:16]}"
 
 
 def _previewable_unknown_blockers(
@@ -304,6 +384,109 @@ def audit_note_inventory(notes_dir: str | Path) -> NoteInventoryAudit:
         remediation_readiness="ready" if ready else "blocked",
         remediation_remaining_blockers=remediation_remaining_blockers,
         ready_for_new_knihomol_hypothesis_generation=ready,
+    )
+
+
+def plan_note_provenance_backfill(notes_dir: str | Path) -> NoteProvenanceBackfillPlan:
+    notes_path = Path(notes_dir)
+    if notes_path.name.casefold() != "extracted_notes" or not notes_path.is_dir():
+        return NoteProvenanceBackfillPlan(
+            not_backfillable_reasons={key: 0 for key in BACKFILL_REASON_KEYS},
+            proposed_backfill_fields={key: 0 for key in BACKFILL_FIELD_KEYS},
+        )
+
+    reason_counts = {key: 0 for key in BACKFILL_REASON_KEYS}
+    proposed_counts = {key: 0 for key in BACKFILL_FIELD_KEYS}
+    total_rows = 0
+    rows_missing_note_id = 0
+    rows_missing_source_location = 0
+    rows_missing_source_passage_id = 0
+    rows_with_deterministic_source_file_metadata = 0
+    rows_with_deterministic_passage_id_source = 0
+    rows_not_backfillable = 0
+    candidate_rows: dict[str, int] = {}
+
+    for path in sorted(notes_path.glob("*.jsonl")):
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            if not line.strip():
+                continue
+            total_rows += 1
+            try:
+                raw = json.loads(line)
+            except json.JSONDecodeError:
+                rows_not_backfillable += 1
+                reason_counts["legacy_format"] += 1
+                continue
+            if not isinstance(raw, dict):
+                rows_not_backfillable += 1
+                reason_counts["legacy_format"] += 1
+                continue
+
+            missing_fields = _blank_reason_fields(raw)
+            if "note_id" in missing_fields:
+                rows_missing_note_id += 1
+            if "source_location" in missing_fields:
+                rows_missing_source_location += 1
+            if "source_passage_id" in missing_fields:
+                rows_missing_source_passage_id += 1
+            if not missing_fields:
+                continue
+            if not _looks_like_current_format(raw):
+                rows_not_backfillable += 1
+                reason_counts["legacy_format"] += 1
+                continue
+            if not _has_source_file_metadata(raw):
+                rows_not_backfillable += 1
+                reason_counts["missing_source_file_metadata"] += 1
+                continue
+
+            rows_with_deterministic_source_file_metadata += 1
+            if _has_text(raw.get("source_passage_id")):
+                rows_with_deterministic_passage_id_source += 1
+            if "source_passage_id" in missing_fields:
+                rows_not_backfillable += 1
+                reason_counts["missing_passage_anchor"] += 1
+                continue
+            if "source_location" in missing_fields:
+                rows_not_backfillable += 1
+                reason_counts["ambiguous_source_location"] += 1
+                continue
+            if missing_fields != ("note_id",):
+                rows_not_backfillable += 1
+                reason_counts["duplicate_candidate_identity"] += 1
+                continue
+
+            candidate_identity = _deterministic_note_id_identity(raw)
+            if candidate_identity is None:
+                rows_not_backfillable += 1
+                reason_counts["duplicate_candidate_identity"] += 1
+                continue
+            candidate_rows[candidate_identity] = candidate_rows.get(candidate_identity, 0) + 1
+
+    rows_backfillable_all_required_fields = 0
+    for count in candidate_rows.values():
+        if count == 1:
+            rows_backfillable_all_required_fields += 1
+            proposed_counts["note_id"] += 1
+        else:
+            rows_not_backfillable += count
+            reason_counts["duplicate_candidate_identity"] += count
+
+    return NoteProvenanceBackfillPlan(
+        total_rows=total_rows,
+        rows_missing_note_id=rows_missing_note_id,
+        rows_missing_source_location=rows_missing_source_location,
+        rows_missing_source_passage_id=rows_missing_source_passage_id,
+        rows_with_deterministic_source_file_metadata=rows_with_deterministic_source_file_metadata,
+        rows_with_deterministic_passage_id_source=rows_with_deterministic_passage_id_source,
+        rows_backfillable_all_required_fields=rows_backfillable_all_required_fields,
+        rows_not_backfillable=rows_not_backfillable,
+        not_backfillable_reasons=reason_counts,
+        proposed_backfill_fields=proposed_counts,
     )
 
 
