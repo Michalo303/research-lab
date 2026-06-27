@@ -239,6 +239,38 @@ def _audit(args: argparse.Namespace) -> int:
     return 0 if audit.ready_for_new_knihomol_hypothesis_generation else 1
 
 
+def _reextract_plan() -> int:
+    print(
+        " ".join(
+            [
+                "command=reextract-plan",
+                "design_only=true",
+                "dry_run_default=true",
+                "provider_allowed=false",
+                "provider_attempted=false",
+                "current_pr_provider_calls_allowed=false",
+                "provider_required_for_future_execution=true",
+                "max_books_required=true",
+                "max_passages_per_book_required=true",
+                "max_notes_required=true",
+                "max_provider_calls_required=true",
+                "no_overwrite_default=true",
+                "output_path_required=true",
+                "timestamped_output_required=true",
+                "schema_validation_required=true",
+                "post_generation_audit_required=true",
+                "promotion_allowed=false",
+                "queue_insertion_allowed=false",
+                "selected_note_ids_unchanged=true",
+                "audit_command_unchanged=true",
+                "generation_still_blocked=true",
+                "next_execution_mode=separate_explicit_reextraction_execution_pr",
+            ]
+        )
+    )
+    return 0
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Hermes blocker-first book learning agent.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -278,6 +310,10 @@ def _parser() -> argparse.ArgumentParser:
     audit.add_argument("--notes-dir", type=Path)
 
     subparsers.add_parser(
+        "reextract-plan",
+        help="Print the read-only future controlled re-extraction execution contract.",
+    )
+    subparsers.add_parser(
         "preflight", help="Check the optional PDF text extraction dependency."
     )
     return parser
@@ -301,6 +337,8 @@ def main(
         return _feedback(args)
     if args.command == "audit":
         return _audit(args)
+    if args.command == "reextract-plan":
+        return _reextract_plan()
     if args.command == "preflight":
         return _preflight()
     raise ValueError(f"unsupported command: {args.command}")
