@@ -32,7 +32,7 @@ from hermes_knowledge.passage_extractor import (
     extract_passages,
     pdf_extractor_status,
 )
-from hermes_knowledge.runtime import audit_note_inventory
+from hermes_knowledge.runtime import audit_note_inventory, plan_note_provenance_backfill
 from research_lab.hermes.providers import invoke_provider
 
 
@@ -172,6 +172,7 @@ def _audit(args: argparse.Namespace) -> int:
     base = Path(args.base_dir)
     notes_dir = Path(getattr(args, "notes_dir", None) or base / "extracted_notes")
     audit = audit_note_inventory(notes_dir)
+    plan = plan_note_provenance_backfill(notes_dir)
     print(
         " ".join(
             [
@@ -193,6 +194,14 @@ def _audit(args: argparse.Namespace) -> int:
                 f"canonical_blocker_preview={_format_counts(audit.canonical_blocker_preview or {})}",
                 f"remediation_readiness={audit.remediation_readiness}",
                 f"remediation_remaining_blockers={_format_counts(audit.remediation_remaining_blockers or {})}",
+                f"total_rows={plan.total_rows}",
+                f"rows_with_deterministic_source_file_metadata={plan.rows_with_deterministic_source_file_metadata}",
+                f"rows_with_deterministic_passage_id_source={plan.rows_with_deterministic_passage_id_source}",
+                f"rows_backfillable_all_required_fields={plan.rows_backfillable_all_required_fields}",
+                f"rows_not_backfillable={plan.rows_not_backfillable}",
+                f"not_backfillable_reasons={_format_counts(plan.not_backfillable_reasons or {})}",
+                f"proposed_backfill_fields={_format_counts(plan.proposed_backfill_fields or {})}",
+                f"safety_verdict={','.join(plan.safety_verdict)}",
                 "ready_for_new_knihomol_hypothesis_generation="
                 f"{'yes' if audit.ready_for_new_knihomol_hypothesis_generation else 'no'}",
             ]
