@@ -382,12 +382,26 @@ def test_audit_cli_reports_safe_provenance_counts_without_provider_calls(
     assert "legacy_note_rows=1" in output
     assert "rows_eligible_for_provenance_aware_retrieval=1" in output
     assert "rows_excluded_from_promoted_used_note_ids=1" in output
+    assert (
+        "excluded_by_reason=legacy_format:1,missing_note_id:1,missing_source_location:1,"
+        "missing_source_passage_id:1,no_recognized_blocker:0,unknown_only_blockers:0"
+    ) in output
+    assert "missing_field_counts=note_id:1,source_location:1,source_passage_id:1" in output
     assert "feedback_overlay=missing" in output
+    assert "feedback_overlay_expected_path=feedback/priorities.json" in output
+    assert "canonical_blocker_preview=none" in output
+    assert (
+        "remediation_remaining_blockers=legacy_format:1,missing_note_id:1,"
+        "missing_source_location:1,missing_source_passage_id:1,no_recognized_blocker:0,"
+        "unknown_only_blockers:0,feedback_overlay_missing:1"
+    ) in output
+    assert "remediation_readiness=blocked" in output
     assert "ready_for_new_knihomol_hypothesis_generation=no" in output
     assert "normalized_blocker_counts=drawdown:1,walk_forward_robustness:1" in output
     assert "unknown_blocker_ids=unknown_blocker:1" in output
     assert "short phrase" not in output
     assert "Trading Systems and Methods" not in output
+    assert "private-book:book-aaaaaaaaaaaa" not in output
 
 
 def test_audit_cli_does_not_modify_private_files_or_feedback(tmp_path):

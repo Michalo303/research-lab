@@ -187,6 +187,12 @@ def _audit(args: argparse.Namespace) -> int:
                 f"rows_eligible_for_provenance_aware_retrieval={audit.rows_eligible_for_provenance_aware_retrieval}",
                 f"rows_excluded_from_promoted_used_note_ids={audit.rows_excluded_from_promoted_used_note_ids}",
                 f"feedback_overlay={'present' if audit.feedback_overlay_present else 'missing'}",
+                f"feedback_overlay_expected_path={audit.feedback_overlay_expected_path or 'none'}",
+                f"excluded_by_reason={_format_counts(audit.excluded_by_reason or {})}",
+                f"missing_field_counts={_format_counts(audit.missing_field_counts or {})}",
+                f"canonical_blocker_preview={_format_counts(audit.canonical_blocker_preview or {})}",
+                f"remediation_readiness={audit.remediation_readiness}",
+                f"remediation_remaining_blockers={_format_counts(audit.remediation_remaining_blockers or {})}",
                 "ready_for_new_knihomol_hypothesis_generation="
                 f"{'yes' if audit.ready_for_new_knihomol_hypothesis_generation else 'no'}",
             ]
