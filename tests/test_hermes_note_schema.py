@@ -2,7 +2,11 @@ import json
 
 import pytest
 
-from hermes_knowledge.runtime import audit_note_inventory, plan_note_provenance_backfill
+from hermes_knowledge.runtime import (
+    audit_note_inventory,
+    plan_note_provenance_backfill,
+    plan_note_reextraction,
+)
 from hermes_knowledge.note_generator import generate_proposed_notes
 from hermes_knowledge.passage_extractor import PassageCandidate
 from hermes_knowledge.schema import (
@@ -883,6 +887,104 @@ def test_provenance_backfill_plan_does_not_modify_private_note_files(tmp_path):
     _ = plan_note_provenance_backfill(notes_dir)
 
     assert path.read_bytes() == before
+
+
+def test_reextraction_plan_reports_safe_aggregate_counts_and_flags(tmp_path):
+    notes_dir = tmp_path / "extracted_notes"
+    notes_dir.mkdir(parents=True)
+    complete = _audit_entry()
+    unsalvageable_drawdown = _audit_entry(
+        note_id="note-2222222222222222",
+        source_location="page:22",
+        source_passage_id="passage-2222222222222222",
+        addresses_blockers=["drawdown_fail"],
+    )
+    unsalvageable_drawdown.pop("note_id")
+    unsalvageable_walk_forward = _audit_entry(
+        book_id="book-bbbbbbbbbbbb",
+        source_title="Other Private Book",
+        source_path="private-book:book-bbbbbbbbbbbb",
+        source_sha256="b" * 64,
+        note_id="note-3333333333333333",
+        source_location="page:33",
+        source_passage_id="passage-3333333333333333",
+        addresses_blockers=["walk_forward_fail"],
+    )
+    unsalvageable_walk_forward.pop("source_location")
+    legacy_row = {
+        "book_id": "book-cccccccccccc",
+        "summary": "legacy row",
+        "addresses_blockers": ["drawdown_fail"],
+    }
+    (notes_dir / "notes.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps(complete),
+                json.dumps(unsalvageable_drawdown),
+                json.dumps(unsalvageable_walk_forward),
+                json.dumps(legacy_row),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    plan = plan_note_reextraction(notes_dir)
+
+    assert plan.existing_total_rows == 4
+    assert plan.existing_provenance_complete_rows == 1
+    assert plan.existing_unsalvageable_rows == 3
+    assert plan.candidate_source_count == 2
+    assert plan.rows_with_book_id == 3
+    assert plan.rows_missing_book_id == 0
+    assert plan.rows_with_ambiguous_source_identity == 0
+    assert plan.candidate_blocker_counts == {
+        "drawdown": 1,
+        "walk_forward_robustness": 1,
+    }
+    assert plan.target_schema_required_fields == (
+        "note_id",
+        "source_location",
+        "source_passage_id",
+        "blocker_tags",
+        "thesis",
+        "evidence_summary",
+        "risk_control_hint",
+    )
+    assert plan.future_write_required is True
+    assert plan.current_pr_write_allowed is False
+    assert plan.provider_required_for_future_execution is True
+    assert plan.current_pr_provider_calls_allowed is False
+    assert plan.generation_still_blocked is True
+    assert plan.next_execution_mode == "separate_explicit_reextraction_pr"
+
+
+def test_reextraction_plan_never_exposes_source_identity_values_and_does_not_write(tmp_path):
+    notes_dir = tmp_path / "extracted_notes"
+    notes_dir.mkdir(parents=True)
+    path = notes_dir / "notes.jsonl"
+    row = _audit_entry(
+        book_id="book-secretsecret",
+        source_title="Very Private Book",
+        source_path="private-book:book-secretsecret",
+        source_sha256="f" * 64,
+        note_id="note-4444444444444444",
+        source_location="page:44",
+        source_passage_id="passage-4444444444444444",
+    )
+    row.pop("note_id")
+    path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+    before = path.read_bytes()
+
+    plan = plan_note_reextraction(notes_dir)
+
+    assert path.read_bytes() == before
+    assert plan.candidate_source_count == 1
+    assert plan.rows_with_book_id == 1
+    assert "book-secretsecret" not in repr(plan)
+    assert "Very Private Book" not in repr(plan)
+    assert "private-book:book-secretsecret" not in repr(plan)
+    assert "f" * 64 not in repr(plan)
 
 
 @pytest.mark.parametrize(

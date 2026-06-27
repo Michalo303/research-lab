@@ -478,3 +478,73 @@ def test_audit_cli_reports_safe_backfill_plan_aggregates_only(tmp_path, monkeypa
     ) in output
     assert "short phrase" not in output
     assert "Trading Systems and Methods" not in output
+
+
+def test_audit_cli_reports_safe_reextraction_plan_aggregates_only(tmp_path, monkeypatch, capsys):
+    base = _private_fixture(tmp_path)
+    extracted = base / "extracted_notes" / "notes.jsonl"
+    extracted.parent.mkdir(parents=True)
+    complete = {
+        "book_id": "book-aaaaaaaaaaaa",
+        "source_title": "Trading Systems and Methods",
+        "source_path": "private-book:book-aaaaaaaaaaaa",
+        "source_sha256": "a" * 64,
+        "concept": "Volatility targeting",
+        "hypothesis": "Lower exposure when realized volatility rises.",
+        "summary": "Prefer lower risk in unstable regimes.",
+        "source_excerpt": "short phrase",
+        "testable_rules": ["Target eight percent annualized volatility."],
+        "compatible_builders": ["long_term_vol_target_cap"],
+        "asset_classes": ["ETF"],
+        "timeframes": ["1D"],
+        "expected_edge": "Contain drawdown in unstable regimes.",
+        "known_failure_modes": ["Fast reversals may cause underexposure."],
+        "addresses_blockers": ["drawdown_fail"],
+        "priority_score": 90,
+        "note_id": "note-1111111111111111",
+        "source_location": "page:10",
+        "source_passage_id": "passage-1111111111111111",
+        "implementation_hint": "Lower exposure as realized volatility rises.",
+    }
+    unsalvageable = dict(complete)
+    unsalvageable["book_id"] = "book-bbbbbbbbbbbb"
+    unsalvageable["source_title"] = "Private Inventory Book"
+    unsalvageable["source_path"] = "private-book:book-bbbbbbbbbbbb"
+    unsalvageable["source_sha256"] = "b" * 64
+    unsalvageable["addresses_blockers"] = ["walk_forward_fail"]
+    unsalvageable.pop("note_id")
+    extracted.write_text(
+        json.dumps(complete) + "\n" + json.dumps(unsalvageable) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "hermes_knowledge.cli.invoke_provider",
+        lambda *_args, **_kwargs: pytest.fail("audit must not invoke providers"),
+    )
+
+    assert main(["audit", "--base-dir", str(base)]) == 1
+
+    output = capsys.readouterr().out
+    assert "reextraction_existing_total_rows=2" in output
+    assert "reextraction_existing_provenance_complete_rows=1" in output
+    assert "reextraction_existing_unsalvageable_rows=1" in output
+    assert "reextraction_candidate_source_count=1" in output
+    assert "reextraction_rows_with_book_id=1" in output
+    assert "reextraction_rows_missing_book_id=0" in output
+    assert "reextraction_candidate_blocker_counts=walk_forward_robustness:1" in output
+    assert (
+        "reextraction_target_schema_required_fields="
+        "note_id,source_location,source_passage_id,blocker_tags,thesis,evidence_summary,risk_control_hint"
+    ) in output
+    assert "reextraction_future_write_required=true" in output
+    assert "reextraction_current_pr_write_allowed=false" in output
+    assert "reextraction_provider_required_for_future_execution=true" in output
+    assert "reextraction_current_pr_provider_calls_allowed=false" in output
+    assert "reextraction_generation_still_blocked=true" in output
+    assert "reextraction_next_execution_mode=separate_explicit_reextraction_pr" in output
+    assert "book-aaaaaaaaaaaa" not in output
+    assert "book-bbbbbbbbbbbb" not in output
+    assert "Trading Systems and Methods" not in output
+    assert "Private Inventory Book" not in output
+    assert "private-book:book-bbbbbbbbbbbb" not in output
+    assert "short phrase" not in output
