@@ -548,3 +548,60 @@ def test_audit_cli_reports_safe_reextraction_plan_aggregates_only(tmp_path, monk
     assert "Private Inventory Book" not in output
     assert "private-book:book-bbbbbbbbbbbb" not in output
     assert "short phrase" not in output
+
+
+def test_reextract_plan_cli_reports_flat_safe_execution_contract(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "hermes_knowledge.cli.invoke_provider",
+        lambda *_args, **_kwargs: pytest.fail("reextract-plan must not invoke providers"),
+    )
+
+    assert main(["reextract-plan"]) == 0
+
+    output = capsys.readouterr().out.strip()
+    assert "command=reextract-plan" in output
+    assert "design_only=true" in output
+    assert "dry_run_default=true" in output
+    assert "provider_allowed=false" in output
+    assert "provider_attempted=false" in output
+    assert "current_pr_provider_calls_allowed=false" in output
+    assert "provider_required_for_future_execution=true" in output
+    assert "max_books_required=true" in output
+    assert "max_passages_per_book_required=true" in output
+    assert "max_notes_required=true" in output
+    assert "max_provider_calls_required=true" in output
+    assert "no_overwrite_default=true" in output
+    assert "output_path_required=true" in output
+    assert "timestamped_output_required=true" in output
+    assert "schema_validation_required=true" in output
+    assert "post_generation_audit_required=true" in output
+    assert "promotion_allowed=false" in output
+    assert "queue_insertion_allowed=false" in output
+    assert "selected_note_ids_unchanged=true" in output
+    assert "audit_command_unchanged=true" in output
+    assert "generation_still_blocked=true" in output
+    assert "next_execution_mode=separate_explicit_reextraction_execution_pr" in output
+    assert "Trading Systems and Methods" not in output
+    assert "private-book:" not in output
+    assert "book-" not in output
+    assert "source_location=" not in output
+    assert "source_passage_id=" not in output
+
+
+def test_reextract_plan_cli_does_not_write_private_or_feedback_files(tmp_path):
+    base = _private_fixture(tmp_path)
+    feedback_dir = base / "feedback"
+    extracted_dir = base / "extracted_notes"
+    proposed_dir = base / "proposed_notes"
+    candidates_dir = base / "passage_candidates"
+    before_feedback = feedback_dir.exists()
+    before_extracted = extracted_dir.exists()
+    before_proposed = proposed_dir.exists()
+    before_candidates = candidates_dir.exists()
+
+    assert main(["reextract-plan"]) == 0
+
+    assert feedback_dir.exists() is before_feedback
+    assert extracted_dir.exists() is before_extracted
+    assert proposed_dir.exists() is before_proposed
+    assert candidates_dir.exists() is before_candidates
