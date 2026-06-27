@@ -612,6 +612,42 @@ def test_provenance_backfill_planning_does_not_change_selected_note_ids(tmp_path
     assert context.selected_note_ids == ("note-2222222222222222",)
 
 
+def test_reextraction_planning_does_not_change_selected_note_ids(tmp_path):
+    index_path = _write_index(tmp_path)
+    notes_dir = tmp_path / "extracted_notes"
+    notes_dir.mkdir()
+    unsalvageable = _note(
+        note_id="note-3333333333333333",
+        source_location="page:33",
+        source_passage_id="passage-3333333333333333",
+        addresses_blockers=["drawdown_fail"],
+    )
+    unsalvageable.pop("note_id")
+    eligible_note = _note(
+        note_id="note-2222222222222222",
+        source_passage_id="passage-2222222222222222",
+        concept="Eligible drawdown note",
+        addresses_blockers=["drawdown_fail"],
+    )
+    (notes_dir / "notes.jsonl").write_text(
+        json.dumps(unsalvageable) + "\n" + json.dumps(eligible_note) + "\n",
+        encoding="utf-8",
+    )
+
+    from hermes_knowledge.runtime import plan_note_reextraction
+
+    plan = plan_note_reextraction(notes_dir)
+    context = load_book_knowledge_context(
+        index_path,
+        notes_dir,
+        dominant_blocker="drawdown",
+        limit=5,
+    )
+
+    assert plan.existing_unsalvageable_rows == 1
+    assert context.selected_note_ids == ("note-2222222222222222",)
+
+
 def test_orchestrator_artifact_diagnoses_unrecognized_book_blocker(tmp_path):
     index_path = _write_index(tmp_path / "private")
     notes_dir = _write_note(tmp_path / "private")

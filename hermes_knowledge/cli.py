@@ -32,7 +32,11 @@ from hermes_knowledge.passage_extractor import (
     extract_passages,
     pdf_extractor_status,
 )
-from hermes_knowledge.runtime import audit_note_inventory, plan_note_provenance_backfill
+from hermes_knowledge.runtime import (
+    audit_note_inventory,
+    plan_note_provenance_backfill,
+    plan_note_reextraction,
+)
 from research_lab.hermes.providers import invoke_provider
 
 
@@ -173,6 +177,7 @@ def _audit(args: argparse.Namespace) -> int:
     notes_dir = Path(getattr(args, "notes_dir", None) or base / "extracted_notes")
     audit = audit_note_inventory(notes_dir)
     plan = plan_note_provenance_backfill(notes_dir)
+    reextraction = plan_note_reextraction(notes_dir)
     print(
         " ".join(
             [
@@ -202,6 +207,30 @@ def _audit(args: argparse.Namespace) -> int:
                 f"not_backfillable_reasons={_format_counts(plan.not_backfillable_reasons or {})}",
                 f"proposed_backfill_fields={_format_counts(plan.proposed_backfill_fields or {})}",
                 f"safety_verdict={','.join(plan.safety_verdict)}",
+                f"reextraction_existing_total_rows={reextraction.existing_total_rows}",
+                "reextraction_existing_provenance_complete_rows="
+                f"{reextraction.existing_provenance_complete_rows}",
+                f"reextraction_existing_unsalvageable_rows={reextraction.existing_unsalvageable_rows}",
+                f"reextraction_candidate_source_count={reextraction.candidate_source_count}",
+                f"reextraction_rows_with_book_id={reextraction.rows_with_book_id}",
+                f"reextraction_rows_missing_book_id={reextraction.rows_missing_book_id}",
+                "reextraction_rows_with_ambiguous_source_identity="
+                f"{reextraction.rows_with_ambiguous_source_identity}",
+                "reextraction_candidate_blocker_counts="
+                f"{_format_counts(reextraction.candidate_blocker_counts or {})}",
+                "reextraction_target_schema_required_fields="
+                f"{','.join(reextraction.target_schema_required_fields)}",
+                "reextraction_future_write_required="
+                f"{str(reextraction.future_write_required).lower()}",
+                "reextraction_current_pr_write_allowed="
+                f"{str(reextraction.current_pr_write_allowed).lower()}",
+                "reextraction_provider_required_for_future_execution="
+                f"{str(reextraction.provider_required_for_future_execution).lower()}",
+                "reextraction_current_pr_provider_calls_allowed="
+                f"{str(reextraction.current_pr_provider_calls_allowed).lower()}",
+                "reextraction_generation_still_blocked="
+                f"{str(reextraction.generation_still_blocked).lower()}",
+                f"reextraction_next_execution_mode={reextraction.next_execution_mode}",
                 "ready_for_new_knihomol_hypothesis_generation="
                 f"{'yes' if audit.ready_for_new_knihomol_hypothesis_generation else 'no'}",
             ]

@@ -55,6 +55,15 @@ CURRENT_FORMAT_REQUIRED_FIELDS = (
     "priority_score",
     "implementation_hint",
 )
+REEXTRACTION_TARGET_SCHEMA_REQUIRED_FIELDS = (
+    "note_id",
+    "source_location",
+    "source_passage_id",
+    "blocker_tags",
+    "thesis",
+    "evidence_summary",
+    "risk_control_hint",
+)
 BACKFILL_REASON_KEYS = (
     "legacy_format",
     "missing_source_file_metadata",
@@ -139,6 +148,25 @@ class NoteProvenanceBackfillPlan:
         "no_write_performed",
         "generation_still_blocked",
     )
+
+
+@dataclass(frozen=True)
+class NoteReextractionPlan:
+    existing_total_rows: int = 0
+    existing_provenance_complete_rows: int = 0
+    existing_unsalvageable_rows: int = 0
+    candidate_source_count: int = 0
+    rows_with_book_id: int = 0
+    rows_missing_book_id: int = 0
+    rows_with_ambiguous_source_identity: int = 0
+    candidate_blocker_counts: dict[str, int] | None = None
+    target_schema_required_fields: tuple[str, ...] = REEXTRACTION_TARGET_SCHEMA_REQUIRED_FIELDS
+    future_write_required: bool = True
+    current_pr_write_allowed: bool = False
+    provider_required_for_future_execution: bool = True
+    current_pr_provider_calls_allowed: bool = False
+    generation_still_blocked: bool = True
+    next_execution_mode: str = "separate_explicit_reextraction_pr"
 
 
 def _normalize_retrieval_blocker_id(raw: str) -> str | None:
@@ -487,6 +515,96 @@ def plan_note_provenance_backfill(notes_dir: str | Path) -> NoteProvenanceBackfi
         rows_not_backfillable=rows_not_backfillable,
         not_backfillable_reasons=reason_counts,
         proposed_backfill_fields=proposed_counts,
+    )
+
+
+def plan_note_reextraction(notes_dir: str | Path) -> NoteReextractionPlan:
+    notes_path = Path(notes_dir)
+    if notes_path.name.casefold() != "extracted_notes" or not notes_path.is_dir():
+        return NoteReextractionPlan(candidate_blocker_counts={})
+
+    existing_total_rows = 0
+    existing_provenance_complete_rows = 0
+    existing_unsalvageable_rows = 0
+    rows_with_book_id = 0
+    rows_missing_book_id = 0
+    rows_with_ambiguous_source_identity = 0
+    blocker_counts: Counter[str] = Counter()
+    source_signatures: dict[str, set[tuple[str, str, str]]] = {}
+
+    for path in sorted(notes_path.glob("*.jsonl")):
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            if not line.strip():
+                continue
+            existing_total_rows += 1
+            try:
+                raw = json.loads(line)
+            except json.JSONDecodeError:
+                existing_unsalvageable_rows += 1
+                continue
+            if not isinstance(raw, dict):
+                existing_unsalvageable_rows += 1
+                continue
+
+            missing_fields = _blank_reason_fields(raw)
+            is_current_format = _looks_like_current_format(raw)
+            has_book_id = _has_text(raw.get("book_id"))
+            if not missing_fields and is_current_format:
+                existing_provenance_complete_rows += 1
+                continue
+
+            existing_unsalvageable_rows += 1
+            if has_book_id:
+                rows_with_book_id += 1
+            else:
+                rows_missing_book_id += 1
+            if not is_current_format:
+                continue
+            if not has_book_id:
+                continue
+
+            blockers = raw.get("addresses_blockers")
+            if isinstance(blockers, list):
+                seen_for_row: set[str] = set()
+                for blocker in blockers:
+                    if not isinstance(blocker, str) or not blocker.strip():
+                        continue
+                    normalized = _normalize_retrieval_blocker_id(blocker)
+                    if normalized is None or normalized in seen_for_row:
+                        continue
+                    blocker_counts[normalized] += 1
+                    seen_for_row.add(normalized)
+
+            if _has_source_file_metadata(raw):
+                book_id = str(raw["book_id"]).strip()
+                signature = (
+                    str(raw.get("source_title", "")).strip(),
+                    str(raw.get("source_path", "")).strip(),
+                    str(raw.get("source_sha256", "")).strip(),
+                )
+                signatures = source_signatures.setdefault(book_id, set())
+                signatures.add(signature)
+
+    candidate_source_count = 0
+    for signatures in source_signatures.values():
+        if len(signatures) == 1:
+            candidate_source_count += 1
+        else:
+            rows_with_ambiguous_source_identity += 1
+
+    return NoteReextractionPlan(
+        existing_total_rows=existing_total_rows,
+        existing_provenance_complete_rows=existing_provenance_complete_rows,
+        existing_unsalvageable_rows=existing_unsalvageable_rows,
+        candidate_source_count=candidate_source_count,
+        rows_with_book_id=rows_with_book_id,
+        rows_missing_book_id=rows_missing_book_id,
+        rows_with_ambiguous_source_identity=rows_with_ambiguous_source_identity,
+        candidate_blocker_counts=dict(sorted(blocker_counts.items())),
     )
 
 
