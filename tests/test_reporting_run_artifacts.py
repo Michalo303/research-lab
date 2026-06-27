@@ -174,6 +174,347 @@ def test_metadata_includes_mixed_source_summary(tmp_path):
     }
 
 
+def test_metadata_includes_bounded_walk_forward_diagnostics_for_etf_tier_c_near_miss(tmp_path):
+    outcome = write_daily_report_artifacts(
+        tmp_path,
+        [
+            _result(
+                "eodhd",
+                strategy_id="LONGTERM_ETF_1D_TREND_VOL_CAP_20260626_006",
+                family="LONGTERM",
+                short_name="TREND_VOL_CAP",
+                tier="C",
+                tier_reason="Positive unseen result, but rolling walk-forward is not strong enough for promotion.",
+                split_metrics={
+                    "train": {"cagr": 0.0340},
+                    "validation": {"cagr": 0.0545},
+                    "unseen": {"cagr": 0.0399, "max_drawdown": -0.1339},
+                },
+                walk_forward={
+                    "method": "true_rolling_oos",
+                    "status": "ok",
+                    "window_count": 7,
+                    "passed_windows": 4,
+                    "pass_rate": 0.5714,
+                    "median_test_cagr": 0.01,
+                    "worst_test_drawdown": -0.18,
+                    "regime_summary": "bull:2/3;bear:1/2;sideways:1/2",
+                    "windows": [
+                        {
+                            "window": 1,
+                            "test_start": "2019-01-01",
+                            "test_end": "2019-12-31",
+                            "test_cagr": 0.12,
+                            "test_max_drawdown": -0.05,
+                            "regime": "bull",
+                            "passed": True,
+                        },
+                        {
+                            "window": 2,
+                            "test_start": "2020-01-01",
+                            "test_end": "2020-12-31",
+                            "test_cagr": -0.03,
+                            "test_max_drawdown": -0.23,
+                            "regime": "crisis",
+                            "passed": False,
+                        },
+                        {
+                            "window": 3,
+                            "test_start": "2021-01-01",
+                            "test_end": "2021-12-31",
+                            "test_cagr": 0.02,
+                            "test_max_drawdown": -0.11,
+                            "regime": "bull",
+                            "passed": True,
+                        },
+                        {
+                            "window": 4,
+                            "test_start": "2022-01-01",
+                            "test_end": "2022-12-31",
+                            "test_cagr": -0.01,
+                            "test_max_drawdown": -0.21,
+                            "regime": "bear",
+                            "passed": False,
+                        },
+                        {
+                            "window": 5,
+                            "test_start": "2023-01-01",
+                            "test_end": "2023-12-31",
+                            "test_cagr": -0.04,
+                            "test_max_drawdown": -0.24,
+                            "regime": "sideways",
+                            "passed": False,
+                        },
+                        {
+                            "window": 6,
+                            "test_start": "2024-01-01",
+                            "test_end": "2024-12-31",
+                            "test_cagr": 0.01,
+                            "test_max_drawdown": -0.08,
+                            "regime": "bull",
+                            "passed": True,
+                        },
+                        {
+                            "window": 7,
+                            "test_start": "2025-01-01",
+                            "test_end": "2025-12-31",
+                            "test_cagr": 0.03,
+                            "test_max_drawdown": -0.10,
+                            "regime": "sideways",
+                            "passed": True,
+                        },
+                    ],
+                },
+            )
+        ],
+        timestamp=datetime(2026, 6, 3, 12, 3, 4, tzinfo=timezone.utc),
+        git_info={"commit": "abcdef1234567890", "branch": "main", "dirty": False},
+    )
+
+    metadata = json.loads(outcome["metadata_path"].read_text(encoding="utf-8"))
+    assert metadata["walk_forward_diagnostics"] == [
+        {
+            "strategy_id": "LONGTERM_ETF_1D_TREND_VOL_CAP_20260626_006",
+            "window_count": 7,
+            "passed_windows": 4,
+            "total_windows": 7,
+            "pass_rate": 0.5714,
+            "required_pass_rate": 0.67,
+            "median_test_cagr": 0.01,
+            "worst_test_drawdown": -0.18,
+            "failed_window_count": 3,
+            "worst_failed_windows": [
+                {
+                    "window": 5,
+                    "test_start": "2023-01-01",
+                    "test_end": "2023-12-31",
+                    "regime": "sideways",
+                    "test_cagr": -0.04,
+                    "test_max_drawdown": -0.24,
+                },
+                {
+                    "window": 2,
+                    "test_start": "2020-01-01",
+                    "test_end": "2020-12-31",
+                    "regime": "crisis",
+                    "test_cagr": -0.03,
+                    "test_max_drawdown": -0.23,
+                },
+                {
+                    "window": 4,
+                    "test_start": "2022-01-01",
+                    "test_end": "2022-12-31",
+                    "regime": "bear",
+                    "test_cagr": -0.01,
+                    "test_max_drawdown": -0.21,
+                },
+            ],
+            "regime_summary": "bull:2/3;bear:1/2;sideways:1/2",
+        }
+    ]
+    assert "windows" not in metadata["walk_forward_diagnostics"][0]
+    assert len(metadata["walk_forward_diagnostics"][0]["worst_failed_windows"]) == 3
+
+
+def test_metadata_derives_failed_window_count_from_aggregate_counts_without_windows(tmp_path):
+    outcome = write_daily_report_artifacts(
+        tmp_path,
+        [
+            _result(
+                "eodhd",
+                strategy_id="LONGTERM_ETF_1D_TREND_VOL_CAP_20260626_006",
+                family="LONGTERM",
+                short_name="TREND_VOL_CAP",
+                tier="C",
+                tier_reason="Positive unseen result, but rolling walk-forward is not strong enough for promotion.",
+                split_metrics={
+                    "train": {"cagr": 0.0340},
+                    "validation": {"cagr": 0.0545},
+                    "unseen": {"cagr": 0.0399, "max_drawdown": -0.1339},
+                },
+                walk_forward={
+                    "method": "true_rolling_oos",
+                    "status": "ok",
+                    "window_count": 7,
+                    "passed_windows": 4,
+                    "pass_rate": 0.5714,
+                    "median_test_cagr": 0.01,
+                    "worst_test_drawdown": -0.18,
+                },
+            )
+        ],
+        timestamp=datetime(2026, 6, 3, 12, 3, 4, tzinfo=timezone.utc),
+        git_info={"commit": "abcdef1234567890", "branch": "main", "dirty": False},
+    )
+
+    metadata = json.loads(outcome["metadata_path"].read_text(encoding="utf-8"))
+    assert metadata["walk_forward_diagnostics"] == [
+        {
+            "strategy_id": "LONGTERM_ETF_1D_TREND_VOL_CAP_20260626_006",
+            "window_count": 7,
+            "passed_windows": 4,
+            "total_windows": 7,
+            "pass_rate": 0.5714,
+            "required_pass_rate": 0.67,
+            "median_test_cagr": 0.01,
+            "worst_test_drawdown": -0.18,
+            "failed_window_count": 3,
+            "worst_failed_windows": [],
+        }
+    ]
+    assert "windows" not in metadata["walk_forward_diagnostics"][0]
+
+
+def test_metadata_omits_bounded_walk_forward_diagnostics_for_unrelated_etf_tier_c_reject(tmp_path):
+    outcome = write_daily_report_artifacts(
+        tmp_path,
+        [
+            _result(
+                "eodhd",
+                strategy_id="ROTATION_ETF_1D_DUAL_MOMENTUM_20260626_002",
+                family="ROTATION",
+                short_name="DUAL_MOMENTUM",
+                tier="C",
+                tier_reason="Positive unseen result, but rolling walk-forward is not strong enough for promotion.",
+                split_metrics={
+                    "train": {"cagr": 0.0340},
+                    "validation": {"cagr": 0.0545},
+                    "unseen": {"cagr": 0.0399, "max_drawdown": -0.1339},
+                },
+                walk_forward={
+                    "method": "true_rolling_oos",
+                    "status": "ok",
+                    "window_count": 7,
+                    "pass_rate": 0.5714,
+                    "median_test_cagr": 0.01,
+                    "worst_test_drawdown": -0.18,
+                },
+            )
+        ],
+        timestamp=datetime(2026, 6, 3, 12, 3, 4, tzinfo=timezone.utc),
+        git_info={"commit": "abcdef1234567890", "branch": "main", "dirty": False},
+    )
+
+    metadata = json.loads(outcome["metadata_path"].read_text(encoding="utf-8"))
+    assert metadata["walk_forward_diagnostics"] == []
+
+
+def test_metadata_omits_bounded_walk_forward_diagnostics_for_non_etf_auxiliary_candidate(tmp_path):
+    outcome = write_daily_report_artifacts(
+        tmp_path,
+        [
+            _result(
+                "synthetic",
+                strategy_id="INTRADAY_BTCUSDT_15M_VWAP_RSI_RECLAIM_20260626_004",
+                family="INTRADAY",
+                asset_class="CRYPTO",
+                timeframe="15M",
+                short_name="VWAP_RSI_RECLAIM",
+                tier="C",
+                tier_reason="Positive unseen result, but rolling walk-forward is not strong enough for promotion.",
+                split_metrics={
+                    "train": {"cagr": 0.0340},
+                    "validation": {"cagr": 0.0545},
+                    "unseen": {"cagr": 0.0399, "max_drawdown": -0.1339},
+                },
+                walk_forward={
+                    "method": "true_rolling_oos",
+                    "status": "ok",
+                    "window_count": 7,
+                    "pass_rate": 0.5714,
+                    "median_test_cagr": 0.01,
+                    "worst_test_drawdown": -0.18,
+                },
+            )
+        ],
+        timestamp=datetime(2026, 6, 3, 12, 3, 4, tzinfo=timezone.utc),
+        git_info={"commit": "abcdef1234567890", "branch": "main", "dirty": False},
+    )
+
+    metadata = json.loads(outcome["metadata_path"].read_text(encoding="utf-8"))
+    assert metadata["walk_forward_diagnostics"] == []
+
+
+def test_metadata_counts_all_failed_windows_while_bounding_worst_window_details(tmp_path):
+    outcome = write_daily_report_artifacts(
+        tmp_path,
+        [
+            _result(
+                "eodhd",
+                strategy_id="LONGTERM_ETF_1D_TREND_VOL_CAP_20260626_006",
+                family="LONGTERM",
+                short_name="TREND_VOL_CAP",
+                tier="C",
+                tier_reason="Positive unseen result, but rolling walk-forward is not strong enough for promotion.",
+                split_metrics={
+                    "train": {"cagr": 0.0340},
+                    "validation": {"cagr": 0.0545},
+                    "unseen": {"cagr": 0.0399, "max_drawdown": -0.1339},
+                },
+                walk_forward={
+                    "method": "true_rolling_oos",
+                    "status": "ok",
+                    "window_count": 7,
+                    "passed_windows": 3,
+                    "pass_rate": 0.5714,
+                    "median_test_cagr": 0.01,
+                    "worst_test_drawdown": -0.18,
+                    "windows": [
+                        {"window": 1, "test_start": "2019-01-01", "test_end": "2019-12-31", "test_cagr": 0.12, "test_max_drawdown": -0.05, "regime": "bull", "passed": True},
+                        {"window": 2, "test_start": "2020-01-01", "test_end": "2020-12-31", "test_cagr": -0.03, "test_max_drawdown": -0.23, "regime": "crisis", "passed": False},
+                        {"window": 3, "test_start": "2021-01-01", "test_end": "2021-12-31", "test_cagr": -0.02, "test_max_drawdown": -0.22, "regime": "bear", "passed": False},
+                        {"window": 4, "test_start": "2022-01-01", "test_end": "2022-12-31", "test_cagr": -0.01, "test_max_drawdown": -0.21, "regime": "bear", "passed": False},
+                        {"window": 5, "test_start": "2023-01-01", "test_end": "2023-12-31", "test_cagr": -0.04, "test_max_drawdown": -0.24, "regime": "sideways", "passed": False},
+                        {"window": 6, "test_start": "2024-01-01", "test_end": "2024-12-31", "test_cagr": 0.01, "test_max_drawdown": -0.08, "regime": "bull", "passed": True},
+                        {"window": 7, "test_start": "2025-01-01", "test_end": "2025-12-31", "test_cagr": 0.03, "test_max_drawdown": -0.10, "regime": "sideways", "passed": True},
+                    ],
+                },
+            )
+        ],
+        timestamp=datetime(2026, 6, 3, 12, 3, 4, tzinfo=timezone.utc),
+        git_info={"commit": "abcdef1234567890", "branch": "main", "dirty": False},
+    )
+
+    metadata = json.loads(outcome["metadata_path"].read_text(encoding="utf-8"))
+    assert metadata["walk_forward_diagnostics"][0]["failed_window_count"] == 4
+    assert len(metadata["walk_forward_diagnostics"][0]["worst_failed_windows"]) == 3
+    assert [window["window"] for window in metadata["walk_forward_diagnostics"][0]["worst_failed_windows"]] == [5, 2, 3]
+
+
+def test_metadata_omits_bounded_walk_forward_diagnostics_for_partial_legacy_payload(tmp_path):
+    outcome = write_daily_report_artifacts(
+        tmp_path,
+        [
+            _result(
+                "eodhd",
+                strategy_id="LONGTERM_ETF_1D_TREND_VOL_CAP_20260626_006",
+                family="LONGTERM",
+                short_name="TREND_VOL_CAP",
+                tier="C",
+                tier_reason="Positive unseen result, but rolling walk-forward is not strong enough for promotion.",
+                split_metrics={
+                    "train": {"cagr": 0.0340},
+                    "validation": {"cagr": 0.0545},
+                    "unseen": {"cagr": 0.0399, "max_drawdown": -0.1339},
+                },
+                walk_forward={
+                    "method": "true_rolling_oos",
+                    "status": "ok",
+                    "window_count": None,
+                    "pass_rate": None,
+                    "median_test_cagr": None,
+                    "worst_test_drawdown": None,
+                },
+            )
+        ],
+        timestamp=datetime(2026, 6, 3, 12, 3, 4, tzinfo=timezone.utc),
+        git_info={"commit": "abcdef1234567890", "branch": "main", "dirty": False},
+    )
+
+    metadata = json.loads(outcome["metadata_path"].read_text(encoding="utf-8"))
+    assert metadata["walk_forward_diagnostics"] == []
+
+
 def test_existing_caller_can_still_read_latest_daily_report_path(tmp_path):
     outcome = write_daily_report_artifacts(
         tmp_path,
@@ -414,16 +755,45 @@ def test_dirty_metadata_classifies_raw_git_short_status(status_lines, expected):
     assert classify_git_dirty_paths(dirty_paths) == expected
 
 
-def _result(source: str) -> dict:
+def _result(
+    source: str,
+    *,
+    strategy_id: str = "S1",
+    family: str = "LONGTERM",
+    asset_class: str = "ETF",
+    timeframe: str = "1D",
+    short_name: str | None = None,
+    builder: str = "",
+    tier: str = "C",
+    tier_reason: str = "test",
+    split_metrics: dict | None = None,
+    walk_forward: dict | None = None,
+) -> dict:
+    metrics = {
+        "train": {"cagr": 0.1},
+        "validation": {"cagr": 0.1},
+        "unseen": {
+            "cagr": 0.1,
+            "sharpe": 1.0,
+            "mar": 1.0,
+            "max_drawdown": -0.05,
+            "profit_factor": 1.2,
+            "trade_count": 10,
+        },
+    }
+    for split_name, overrides in (split_metrics or {}).items():
+        metrics[split_name].update(overrides)
+
     return {
-        "strategy_id": "S1",
-        "family": "LONGTERM",
-        "asset_class": "ETF",
-        "timeframe": "1D",
-        "short_name": "TREND",
+        "strategy_id": strategy_id,
+        "family": family,
+        "asset_class": asset_class,
+        "timeframe": timeframe,
+        "short_name": short_name if short_name is not None else "TREND",
         "hypothesis": "test",
         "rules": "test",
         "parameters": {},
+        "builder": builder,
         "data_manifest": {
             "source": source,
             "start": "1993-01-29",
@@ -439,20 +809,10 @@ def _result(source: str) -> dict:
             "survives_double_cost": True,
             "double_unseen_cagr": 0.05,
         },
-        "split_metrics": {
-            "train": {"cagr": 0.1},
-            "validation": {"cagr": 0.1},
-            "unseen": {
-                "cagr": 0.1,
-                "sharpe": 1.0,
-                "mar": 1.0,
-                "max_drawdown": -0.05,
-                "profit_factor": 1.2,
-                "trade_count": 10,
-            },
-        },
-        "tier": "C",
-        "tier_reason": "test",
+        "split_metrics": metrics,
+        "walk_forward": walk_forward,
+        "tier": tier,
+        "tier_reason": tier_reason,
         "average_exposure": 1.0,
         "average_turnover": 0.1,
     }
