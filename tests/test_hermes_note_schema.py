@@ -566,6 +566,41 @@ def test_audit_inventory_reports_unknown_blocker_current_note_but_excludes_it_fr
     assert audit.unknown_blocker_ids == {"mystery_blocker": 1}
 
 
+@pytest.mark.parametrize("blocker", ["slippage stress", "max drawdown breach"])
+def test_audit_inventory_reports_broad_phrase_alias_as_unknown_and_excluded(
+    tmp_path,
+    blocker,
+):
+    notes_dir = tmp_path / "extracted_notes"
+    notes_dir.mkdir(parents=True)
+    (notes_dir / "notes.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    _audit_entry(
+                        addresses_blockers=[blocker],
+                    )
+                ),
+                json.dumps(
+                    _audit_entry(
+                        note_id="note-2222222222222222",
+                        source_passage_id="passage-2222222222222222",
+                    )
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    audit = audit_note_inventory(notes_dir)
+
+    assert audit.current_format_note_rows == 2
+    assert audit.rows_eligible_for_provenance_aware_retrieval == 1
+    assert audit.rows_excluded_from_promoted_used_note_ids == 1
+    assert audit.unknown_blocker_ids == {blocker: 1}
+
+
 def test_audit_inventory_treats_drawdown_fail_alias_as_promoted_evidence_eligible(
     tmp_path,
 ):

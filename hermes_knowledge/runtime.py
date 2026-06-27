@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any
 
 from hermes_knowledge.books import load_book_index
-from hermes_knowledge.blocker_taxonomy import canonicalize_blocker_id
 from hermes_knowledge.prompt import build_hermes_knowledge_prompt
 from hermes_knowledge.retriever import retrieve_for_blocker
 from hermes_knowledge.schema import KnowledgeValidationError, load_knowledge_jsonl, validate_entry
@@ -59,12 +58,11 @@ def _normalize_retrieval_blocker_id(raw: str) -> str | None:
         return "walk_forward_robustness"
     if normalized == "cost_stress":
         return "cost_stress"
-    canonical = canonicalize_blocker_id(raw)
-    if canonical == "drawdown_fail":
+    if normalized == "drawdown_fail":
         return "drawdown"
-    if canonical == "walk_forward_fail":
+    if normalized == "walk_forward_fail":
         return "walk_forward_robustness"
-    return canonical
+    return None
 
 
 def _has_text(value: Any) -> bool:
@@ -94,12 +92,7 @@ def _is_promoted_evidence_eligible(entry: dict[str, Any]) -> bool:
 
 def _blocker_diagnostic(raw: str, normalized: str) -> str:
     raw_value = str(raw).strip().casefold()
-    accepted_exact = {
-        normalized,
-        "drawdown_fail" if normalized == "drawdown" else "",
-        "walk_forward_fail" if normalized == "walk_forward_robustness" else "",
-    }
-    return "exact" if raw_value in accepted_exact else "canonicalized"
+    return "exact" if raw_value == normalized else "canonicalized"
 
 
 def audit_note_inventory(notes_dir: str | Path) -> NoteInventoryAudit:
