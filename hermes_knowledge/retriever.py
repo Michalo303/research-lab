@@ -43,6 +43,15 @@ def _entry_text(entry: dict[str, Any]) -> str:
     return " ".join(str(value) for value in fields).casefold()
 
 
+def _normalize_blocker_tag(value: str) -> str:
+    normalized = str(value).strip().casefold()
+    if normalized == "drawdown_fail":
+        return "drawdown"
+    if normalized == "walk_forward_fail":
+        return "walk_forward_robustness"
+    return normalized
+
+
 def retrieve_for_blocker(
     entries: Iterable[dict[str, Any]],
     blocker: str,
@@ -59,13 +68,13 @@ def retrieve_for_blocker(
         entry
         for entry in validated
         if normalized_blocker
-        in {value.casefold() for value in entry["addresses_blockers"]}
+        in {_normalize_blocker_tag(value) for value in entry["addresses_blockers"]}
     ]
     candidates = direct_matches or validated
     scored: list[tuple[float, str, dict[str, Any]]] = []
     overlays = note_priority_overlays or {}
     for entry in candidates:
-        blockers = {value.casefold() for value in entry["addresses_blockers"]}
+        blockers = {_normalize_blocker_tag(value) for value in entry["addresses_blockers"]}
         text = _entry_text(entry)
         blocker_match = 40.0 if normalized_blocker in blockers else 0.0
         preference_match = sum(8.0 for phrase in preferences if phrase in text)
