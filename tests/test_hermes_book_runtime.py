@@ -541,6 +541,38 @@ def test_runtime_excludes_broad_phrase_alias_note_from_selected_note_ids(
     assert context.selected_note_ids == ("note-2222222222222222",)
 
 
+def test_runtime_excludes_preview_only_unknown_canonical_blocker_from_selected_note_ids(
+    tmp_path,
+):
+    index_path = _write_index(tmp_path)
+    notes_dir = tmp_path / "extracted_notes"
+    notes_dir.mkdir()
+    preview_only_note = _note(
+        note_id="note-1111111111111111",
+        source_passage_id="passage-1111111111111111",
+        addresses_blockers=["portfolio_concentration"],
+    )
+    eligible_note = _note(
+        note_id="note-2222222222222222",
+        source_passage_id="passage-2222222222222222",
+        concept="Eligible drawdown note",
+        addresses_blockers=["drawdown_fail"],
+    )
+    (notes_dir / "notes.jsonl").write_text(
+        json.dumps(preview_only_note) + "\n" + json.dumps(eligible_note) + "\n",
+        encoding="utf-8",
+    )
+
+    context = load_book_knowledge_context(
+        index_path,
+        notes_dir,
+        dominant_blocker="drawdown",
+        limit=5,
+    )
+
+    assert context.selected_note_ids == ("note-2222222222222222",)
+
+
 def test_orchestrator_artifact_diagnoses_unrecognized_book_blocker(tmp_path):
     index_path = _write_index(tmp_path / "private")
     notes_dir = _write_note(tmp_path / "private")

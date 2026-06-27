@@ -502,6 +502,90 @@ def test_audit_inventory_reports_mixed_legacy_current_and_normalized_blockers(tm
     assert audit.ready_for_new_knihomol_hypothesis_generation is False
 
 
+def test_audit_inventory_reports_remediation_diagnostics_without_changing_eligibility(
+    tmp_path,
+):
+    notes_dir = tmp_path / "extracted_notes"
+    notes_dir.mkdir(parents=True)
+    missing_location = _audit_entry(
+        note_id="note-2222222222222222",
+        source_passage_id="passage-2222222222222222",
+        addresses_blockers=["walk_forward_fail"],
+    )
+    missing_location.pop("source_location")
+    missing_note_id = _audit_entry(
+        source_passage_id="passage-3333333333333333",
+        addresses_blockers=["drawdown_fail"],
+    )
+    missing_note_id.pop("note_id")
+    unknown_only_complete = _audit_entry(
+        note_id="note-4444444444444444",
+        source_passage_id="passage-4444444444444444",
+        addresses_blockers=["portfolio_concentration"],
+    )
+    unknown_only_missing_passage = _audit_entry(
+        note_id="note-5555555555555555",
+        addresses_blockers=["regime_instability"],
+    )
+    unknown_only_missing_passage.pop("source_passage_id")
+    legacy_row = {
+        "book_id": "book-aaaaaaaaaaaa",
+        "summary": "legacy row",
+        "addresses_blockers": ["drawdown_fail"],
+    }
+    (notes_dir / "notes.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps(_audit_entry()),
+                json.dumps(missing_location),
+                json.dumps(missing_note_id),
+                json.dumps(unknown_only_complete),
+                json.dumps(unknown_only_missing_passage),
+                json.dumps(legacy_row),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    audit = audit_note_inventory(notes_dir)
+
+    assert audit.total_note_rows == 6
+    assert audit.current_format_note_rows == 5
+    assert audit.legacy_note_rows == 1
+    assert audit.rows_eligible_for_provenance_aware_retrieval == 1
+    assert audit.rows_excluded_from_promoted_used_note_ids == 5
+    assert audit.excluded_by_reason == {
+        "legacy_format": 1,
+        "missing_note_id": 2,
+        "missing_source_location": 2,
+        "missing_source_passage_id": 2,
+        "no_recognized_blocker": 2,
+        "unknown_only_blockers": 2,
+    }
+    assert audit.missing_field_counts == {
+        "note_id": 2,
+        "source_location": 2,
+        "source_passage_id": 2,
+    }
+    assert audit.unknown_blocker_ids == {
+        "portfolio_concentration": 1,
+        "regime_instability": 1,
+    }
+    assert audit.canonical_blocker_preview == {"portfolio_concentration": 1}
+    assert audit.feedback_overlay_expected_path == "feedback/priorities.json"
+    assert audit.remediation_readiness == "blocked"
+    assert audit.remediation_remaining_blockers == {
+        "legacy_format": 1,
+        "missing_note_id": 2,
+        "missing_source_location": 2,
+        "missing_source_passage_id": 2,
+        "no_recognized_blocker": 2,
+        "unknown_only_blockers": 2,
+        "feedback_overlay_missing": 1,
+    }
+
+
 def test_audit_inventory_only_counts_provenance_complete_notes_as_promoted_evidence(tmp_path):
     notes_dir = tmp_path / "extracted_notes"
     notes_dir.mkdir(parents=True)
@@ -531,6 +615,36 @@ def test_audit_inventory_only_counts_provenance_complete_notes_as_promoted_evide
 
     assert audit.rows_eligible_for_provenance_aware_retrieval == 2
     assert audit.rows_excluded_from_promoted_used_note_ids == 1
+
+
+def test_audit_inventory_preview_does_not_change_actual_eligibility(tmp_path):
+    notes_dir = tmp_path / "extracted_notes"
+    notes_dir.mkdir(parents=True)
+    (notes_dir / "notes.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    _audit_entry(
+                        addresses_blockers=["portfolio_concentration"],
+                    )
+                ),
+                json.dumps(
+                    _audit_entry(
+                        note_id="note-2222222222222222",
+                        source_passage_id="passage-2222222222222222",
+                    )
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    audit = audit_note_inventory(notes_dir)
+
+    assert audit.rows_eligible_for_provenance_aware_retrieval == 1
+    assert audit.rows_excluded_from_promoted_used_note_ids == 1
+    assert audit.canonical_blocker_preview == {"portfolio_concentration": 1}
 
 
 def test_audit_inventory_reports_unknown_blocker_current_note_but_excludes_it_from_promoted_evidence(

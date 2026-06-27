@@ -6,6 +6,7 @@ from collections import Counter
 from dataclasses import dataclass
 import json
 from pathlib import Path
+import re
 from typing import Any
 
 from hermes_knowledge.books import load_book_index
@@ -19,6 +20,39 @@ DEFAULT_BOOK_INDEX_PATH = Path(
 )
 DEFAULT_BOOK_NOTES_DIR = Path(
     "/opt/trading/private/hermes_books/extracted_notes"
+)
+FEEDBACK_OVERLAY_RELATIVE_PATH = "feedback/priorities.json"
+EXCLUDED_BY_REASON_KEYS = (
+    "legacy_format",
+    "missing_note_id",
+    "missing_source_location",
+    "missing_source_passage_id",
+    "no_recognized_blocker",
+    "unknown_only_blockers",
+)
+MISSING_FIELD_KEYS = (
+    "note_id",
+    "source_location",
+    "source_passage_id",
+)
+CURRENT_FORMAT_REQUIRED_FIELDS = (
+    "book_id",
+    "source_title",
+    "source_path",
+    "source_sha256",
+    "concept",
+    "hypothesis",
+    "summary",
+    "source_excerpt",
+    "testable_rules",
+    "compatible_builders",
+    "asset_classes",
+    "timeframes",
+    "expected_edge",
+    "known_failure_modes",
+    "addresses_blockers",
+    "priority_score",
+    "implementation_hint",
 )
 
 
@@ -46,7 +80,13 @@ class NoteInventoryAudit:
     unknown_blocker_ids: dict[str, int] | None = None
     rows_eligible_for_provenance_aware_retrieval: int = 0
     rows_excluded_from_promoted_used_note_ids: int = 0
+    excluded_by_reason: dict[str, int] | None = None
+    missing_field_counts: dict[str, int] | None = None
+    canonical_blocker_preview: dict[str, int] | None = None
     feedback_overlay_present: bool = False
+    feedback_overlay_expected_path: str = FEEDBACK_OVERLAY_RELATIVE_PATH
+    remediation_readiness: str = "blocked"
+    remediation_remaining_blockers: dict[str, int] | None = None
     ready_for_new_knihomol_hypothesis_generation: bool = False
 
 
@@ -69,11 +109,16 @@ def _has_text(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
+def _blank_reason_fields(entry: dict[str, Any]) -> tuple[str, ...]:
+    missing = []
+    for field in MISSING_FIELD_KEYS:
+        if not _has_text(entry.get(field)):
+            missing.append(field)
+    return tuple(missing)
+
+
 def _has_provenance(entry: dict[str, Any]) -> bool:
-    return all(
-        _has_text(entry.get(field))
-        for field in ("note_id", "source_location", "source_passage_id")
-    )
+    return not _blank_reason_fields(entry)
 
 
 def _has_recognized_blocker_tag(entry: dict[str, Any]) -> bool:
@@ -90,6 +135,29 @@ def _is_promoted_evidence_eligible(entry: dict[str, Any]) -> bool:
     return _has_provenance(entry) and _has_recognized_blocker_tag(entry)
 
 
+def _looks_like_current_format(entry: dict[str, Any]) -> bool:
+    return all(field in entry for field in CURRENT_FORMAT_REQUIRED_FIELDS)
+
+
+def _previewable_unknown_blockers(
+    parsed_blockers: list[str],
+    *,
+    has_provenance: bool,
+    has_recognized_blocker: bool,
+    is_current_format: bool,
+) -> tuple[str, ...]:
+    if not (has_provenance and not has_recognized_blocker and is_current_format):
+        return ()
+    previewable = []
+    for blocker in parsed_blockers:
+        if _normalize_retrieval_blocker_id(blocker) is not None:
+            continue
+        normalized = blocker.strip().casefold()
+        if re.fullmatch(r"[a-z0-9_]+", normalized):
+            previewable.append(normalized)
+    return tuple(dict.fromkeys(previewable))
+
+
 def _blocker_diagnostic(raw: str, normalized: str) -> str:
     raw_value = str(raw).strip().casefold()
     return "exact" if raw_value == normalized else "canonicalized"
@@ -104,6 +172,7 @@ def audit_note_inventory(notes_dir: str | Path) -> NoteInventoryAudit:
         )
     normalized_counts: Counter[str] = Counter()
     unknown_counts: Counter[str] = Counter()
+    preview_counts: Counter[str] = Counter()
     total_note_rows = 0
     current_format_note_rows = 0
     rows_with_note_id = 0
@@ -112,6 +181,8 @@ def audit_note_inventory(notes_dir: str | Path) -> NoteInventoryAudit:
     rows_with_blocker_tags = 0
     rows_eligible = 0
     excluded_from_promoted = 0
+    excluded_by_reason = {key: 0 for key in EXCLUDED_BY_REASON_KEYS}
+    missing_field_counts = {key: 0 for key in MISSING_FIELD_KEYS}
     for path in sorted(notes_path.glob("*.jsonl")):
         try:
             lines = path.read_text(encoding="utf-8").splitlines()
@@ -129,6 +200,9 @@ def audit_note_inventory(notes_dir: str | Path) -> NoteInventoryAudit:
             if not isinstance(raw, dict):
                 excluded_from_promoted += 1
                 continue
+            missing_fields = _blank_reason_fields(raw)
+            for field in missing_fields:
+                missing_field_counts[field] += 1
             if _has_text(raw.get("note_id")):
                 rows_with_note_id += 1
             if _has_text(raw.get("source_location")):
@@ -151,18 +225,58 @@ def audit_note_inventory(notes_dir: str | Path) -> NoteInventoryAudit:
                         unknown_counts[blocker] += 1
                     else:
                         normalized_counts[normalized] += 1
+            has_recognized_blocker = _has_recognized_blocker_tag(raw)
+            has_unknown_blocker = bool(parsed_blockers) and any(
+                _normalize_retrieval_blocker_id(blocker) is None
+                for blocker in parsed_blockers
+            )
+            has_provenance = not missing_fields
+            is_current_format = _looks_like_current_format(raw)
+            for blocker in _previewable_unknown_blockers(
+                parsed_blockers,
+                has_provenance=has_provenance,
+                has_recognized_blocker=has_recognized_blocker,
+                is_current_format=is_current_format,
+            ):
+                preview_counts[blocker] += 1
             try:
                 validate_entry(raw)
                 current_format_note_rows += 1
             except KnowledgeValidationError:
+                if not is_current_format:
+                    excluded_by_reason["legacy_format"] += 1
+                if "note_id" in missing_fields:
+                    excluded_by_reason["missing_note_id"] += 1
+                if "source_location" in missing_fields:
+                    excluded_by_reason["missing_source_location"] += 1
+                if "source_passage_id" in missing_fields:
+                    excluded_by_reason["missing_source_passage_id"] += 1
+                if parsed_blockers and not has_recognized_blocker:
+                    excluded_by_reason["no_recognized_blocker"] += 1
+                if parsed_blockers and has_unknown_blocker and not has_recognized_blocker:
+                    excluded_by_reason["unknown_only_blockers"] += 1
                 excluded_from_promoted += 1
                 continue
             if _is_promoted_evidence_eligible(raw):
                 rows_eligible += 1
             else:
+                if "note_id" in missing_fields:
+                    excluded_by_reason["missing_note_id"] += 1
+                if "source_location" in missing_fields:
+                    excluded_by_reason["missing_source_location"] += 1
+                if "source_passage_id" in missing_fields:
+                    excluded_by_reason["missing_source_passage_id"] += 1
+                if parsed_blockers and not has_recognized_blocker:
+                    excluded_by_reason["no_recognized_blocker"] += 1
+                if parsed_blockers and has_unknown_blocker and not has_recognized_blocker:
+                    excluded_by_reason["unknown_only_blockers"] += 1
                 excluded_from_promoted += 1
     legacy_note_rows = total_note_rows - current_format_note_rows
     feedback_overlay_present = (notes_path.parent / "feedback" / "priorities.json").exists()
+    remediation_remaining_blockers = {
+        **excluded_by_reason,
+        "feedback_overlay_missing": 0 if feedback_overlay_present else 1,
+    }
     ready = bool(
         total_note_rows
         and current_format_note_rows == total_note_rows
@@ -182,7 +296,13 @@ def audit_note_inventory(notes_dir: str | Path) -> NoteInventoryAudit:
         unknown_blocker_ids=dict(sorted(unknown_counts.items())),
         rows_eligible_for_provenance_aware_retrieval=rows_eligible,
         rows_excluded_from_promoted_used_note_ids=excluded_from_promoted,
+        excluded_by_reason=excluded_by_reason,
+        missing_field_counts=missing_field_counts,
+        canonical_blocker_preview=dict(sorted(preview_counts.items())),
         feedback_overlay_present=feedback_overlay_present,
+        feedback_overlay_expected_path=FEEDBACK_OVERLAY_RELATIVE_PATH,
+        remediation_readiness="ready" if ready else "blocked",
+        remediation_remaining_blockers=remediation_remaining_blockers,
         ready_for_new_knihomol_hypothesis_generation=ready,
     )
 
