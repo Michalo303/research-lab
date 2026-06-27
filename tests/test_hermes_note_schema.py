@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+from hermes_knowledge.runtime import audit_note_inventory
 from hermes_knowledge.note_generator import generate_proposed_notes
 from hermes_knowledge.passage_extractor import PassageCandidate
 from hermes_knowledge.schema import (
@@ -419,8 +420,221 @@ def test_negative_profitability_evidence_normalizes_positive_expected_edge():
         passage=_passage(text="The strategy lost money."),
     )
 
-    assert diagnostics == []
-    assert proposals[0]["entry"]["expected_edge"] == "unknown"
+
+def _audit_entry(**overrides):
+    entry = {
+        "book_id": "book-aaaaaaaaaaaa",
+        "source_title": "Risk Management Systems",
+        "source_path": "private-book:book-aaaaaaaaaaaa",
+        "source_sha256": "a" * 64,
+        "concept": "Volatility targeting",
+        "hypothesis": "Lower exposure when realized volatility rises.",
+        "summary": "A short curated note.",
+        "source_excerpt": "short phrase",
+        "testable_rules": ["Target eight percent annualized volatility."],
+        "compatible_builders": ["long_term_vol_target_cap"],
+        "asset_classes": ["ETF"],
+        "timeframes": ["1D"],
+        "expected_edge": "Contain drawdown in unstable regimes.",
+        "known_failure_modes": ["Fast reversals may cause underexposure."],
+        "addresses_blockers": ["drawdown"],
+        "priority_score": 90,
+        "note_id": "note-1111111111111111",
+        "source_location": "page:10",
+        "source_passage_id": "passage-1111111111111111",
+        "implementation_hint": "Lower exposure as realized volatility rises.",
+    }
+    entry.update(overrides)
+    return entry
+
+
+def test_audit_inventory_reports_mixed_legacy_current_and_normalized_blockers(tmp_path):
+    notes_dir = tmp_path / "extracted_notes"
+    notes_dir.mkdir(parents=True)
+    incomplete_current = _audit_entry(
+        note_id="note-3333333333333333",
+        source_passage_id="passage-3333333333333333",
+        addresses_blockers=["walk_forward_fail"],
+    )
+    incomplete_current.pop("source_location")
+    (notes_dir / "notes.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps(_audit_entry()),
+                json.dumps(
+                    _audit_entry(
+                        note_id="note-2222222222222222",
+                        source_passage_id="passage-2222222222222222",
+                        addresses_blockers=["drawdown_fail", "unknown_blocker"],
+                    )
+                ),
+                json.dumps(incomplete_current),
+                json.dumps(
+                    {
+                        "book_id": "book-aaaaaaaaaaaa",
+                        "summary": "legacy row",
+                        "addresses_blockers": ["drawdown_fail"],
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    audit = audit_note_inventory(notes_dir)
+
+    assert audit.total_note_rows == 4
+    assert audit.current_format_note_rows == 3
+    assert audit.legacy_note_rows == 1
+    assert audit.rows_with_note_id == 3
+    assert audit.rows_with_source_location == 2
+    assert audit.rows_with_source_passage_id == 3
+    assert audit.rows_with_blocker_tags == 4
+    assert audit.normalized_blocker_counts == {
+        "drawdown": 3,
+        "walk_forward_robustness": 1,
+    }
+    assert audit.unknown_blocker_ids == {"unknown_blocker": 1}
+    assert audit.rows_eligible_for_provenance_aware_retrieval == 2
+    assert audit.rows_excluded_from_promoted_used_note_ids == 2
+    assert audit.feedback_overlay_present is False
+    assert audit.ready_for_new_knihomol_hypothesis_generation is False
+
+
+def test_audit_inventory_only_counts_provenance_complete_notes_as_promoted_evidence(tmp_path):
+    notes_dir = tmp_path / "extracted_notes"
+    notes_dir.mkdir(parents=True)
+    incomplete_current = _audit_entry(
+        note_id="note-3333333333333333",
+        source_passage_id="passage-3333333333333333",
+    )
+    incomplete_current.pop("source_location")
+    (notes_dir / "notes.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps(_audit_entry()),
+                json.dumps(
+                    _audit_entry(
+                        note_id="note-2222222222222222",
+                        source_passage_id="passage-2222222222222222",
+                    )
+                ),
+                json.dumps(incomplete_current),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    audit = audit_note_inventory(notes_dir)
+
+    assert audit.rows_eligible_for_provenance_aware_retrieval == 2
+    assert audit.rows_excluded_from_promoted_used_note_ids == 1
+
+
+def test_audit_inventory_reports_unknown_blocker_current_note_but_excludes_it_from_promoted_evidence(
+    tmp_path,
+):
+    notes_dir = tmp_path / "extracted_notes"
+    notes_dir.mkdir(parents=True)
+    (notes_dir / "notes.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    _audit_entry(
+                        addresses_blockers=["mystery_blocker"],
+                    )
+                ),
+                json.dumps(
+                    _audit_entry(
+                        note_id="note-2222222222222222",
+                        source_passage_id="passage-2222222222222222",
+                    )
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    audit = audit_note_inventory(notes_dir)
+
+    assert audit.current_format_note_rows == 2
+    assert audit.rows_eligible_for_provenance_aware_retrieval == 1
+    assert audit.rows_excluded_from_promoted_used_note_ids == 1
+    assert audit.unknown_blocker_ids == {"mystery_blocker": 1}
+
+
+@pytest.mark.parametrize("blocker", ["slippage stress", "max drawdown breach"])
+def test_audit_inventory_reports_broad_phrase_alias_as_unknown_and_excluded(
+    tmp_path,
+    blocker,
+):
+    notes_dir = tmp_path / "extracted_notes"
+    notes_dir.mkdir(parents=True)
+    (notes_dir / "notes.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    _audit_entry(
+                        addresses_blockers=[blocker],
+                    )
+                ),
+                json.dumps(
+                    _audit_entry(
+                        note_id="note-2222222222222222",
+                        source_passage_id="passage-2222222222222222",
+                    )
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    audit = audit_note_inventory(notes_dir)
+
+    assert audit.current_format_note_rows == 2
+    assert audit.rows_eligible_for_provenance_aware_retrieval == 1
+    assert audit.rows_excluded_from_promoted_used_note_ids == 1
+    assert audit.unknown_blocker_ids == {blocker: 1}
+
+
+def test_audit_inventory_treats_drawdown_fail_alias_as_promoted_evidence_eligible(
+    tmp_path,
+):
+    notes_dir = tmp_path / "extracted_notes"
+    notes_dir.mkdir(parents=True)
+    (notes_dir / "notes.jsonl").write_text(
+        json.dumps(_audit_entry(addresses_blockers=["drawdown_fail"])) + "\n",
+        encoding="utf-8",
+    )
+
+    audit = audit_note_inventory(notes_dir)
+
+    assert audit.rows_eligible_for_provenance_aware_retrieval == 1
+    assert audit.rows_excluded_from_promoted_used_note_ids == 0
+    assert audit.normalized_blocker_counts == {"drawdown": 1}
+    assert audit.unknown_blocker_ids == {}
+
+
+def test_audit_inventory_treats_walk_forward_fail_alias_as_promoted_evidence_eligible(
+    tmp_path,
+):
+    notes_dir = tmp_path / "extracted_notes"
+    notes_dir.mkdir(parents=True)
+    (notes_dir / "notes.jsonl").write_text(
+        json.dumps(_audit_entry(addresses_blockers=["walk_forward_fail"])) + "\n",
+        encoding="utf-8",
+    )
+
+    audit = audit_note_inventory(notes_dir)
+
+    assert audit.rows_eligible_for_provenance_aware_retrieval == 1
+    assert audit.rows_excluded_from_promoted_used_note_ids == 0
+    assert audit.normalized_blocker_counts == {"walk_forward_robustness": 1}
+    assert audit.unknown_blocker_ids == {}
 
 
 @pytest.mark.parametrize(

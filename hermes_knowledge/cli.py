@@ -32,6 +32,7 @@ from hermes_knowledge.passage_extractor import (
     extract_passages,
     pdf_extractor_status,
 )
+from hermes_knowledge.runtime import audit_note_inventory
 from research_lab.hermes.providers import invoke_provider
 
 
@@ -161,6 +162,39 @@ def _preflight() -> int:
     return 0 if available else 1
 
 
+def _format_counts(value: Mapping[str, int]) -> str:
+    if not value:
+        return "none"
+    return ",".join(f"{key}:{count}" for key, count in value.items())
+
+
+def _audit(args: argparse.Namespace) -> int:
+    base = Path(args.base_dir)
+    notes_dir = Path(getattr(args, "notes_dir", None) or base / "extracted_notes")
+    audit = audit_note_inventory(notes_dir)
+    print(
+        " ".join(
+            [
+                f"total_note_rows={audit.total_note_rows}",
+                f"current_format_note_rows={audit.current_format_note_rows}",
+                f"legacy_note_rows={audit.legacy_note_rows}",
+                f"rows_with_note_id={audit.rows_with_note_id}",
+                f"rows_with_source_location={audit.rows_with_source_location}",
+                f"rows_with_source_passage_id={audit.rows_with_source_passage_id}",
+                f"rows_with_blocker_tags={audit.rows_with_blocker_tags}",
+                f"normalized_blocker_counts={_format_counts(audit.normalized_blocker_counts or {})}",
+                f"unknown_blocker_ids={_format_counts(audit.unknown_blocker_ids or {})}",
+                f"rows_eligible_for_provenance_aware_retrieval={audit.rows_eligible_for_provenance_aware_retrieval}",
+                f"rows_excluded_from_promoted_used_note_ids={audit.rows_excluded_from_promoted_used_note_ids}",
+                f"feedback_overlay={'present' if audit.feedback_overlay_present else 'missing'}",
+                "ready_for_new_knihomol_hypothesis_generation="
+                f"{'yes' if audit.ready_for_new_knihomol_hypothesis_generation else 'no'}",
+            ]
+        )
+    )
+    return 0 if audit.ready_for_new_knihomol_hypothesis_generation else 1
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Hermes blocker-first book learning agent.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -195,6 +229,10 @@ def _parser() -> argparse.ArgumentParser:
     feedback.add_argument("--base-dir", type=Path, default=DEFAULT_BASE_DIR)
     feedback.add_argument("--input", type=Path, required=True)
 
+    audit = subparsers.add_parser("audit")
+    audit.add_argument("--base-dir", type=Path, default=DEFAULT_BASE_DIR)
+    audit.add_argument("--notes-dir", type=Path)
+
     subparsers.add_parser(
         "preflight", help="Check the optional PDF text extraction dependency."
     )
@@ -217,6 +255,8 @@ def main(
         return _promote(args)
     if args.command == "feedback":
         return _feedback(args)
+    if args.command == "audit":
+        return _audit(args)
     if args.command == "preflight":
         return _preflight()
     raise ValueError(f"unsupported command: {args.command}")

@@ -165,7 +165,7 @@ def test_orchestrator_artifact_logs_only_safe_book_metadata(tmp_path):
         "selected_book_ids": ["book-aaaaaaaaaaaa"],
         "selected_note_ids": ["note-1111111111111111"],
         "canonical_blocker_id": "drawdown",
-        "blocker_diagnostic": "exact",
+        "blocker_diagnostic": "canonicalized",
     }
     artifact_text = outcome["artifact_path"].read_text(encoding="utf-8")
     assert "Dominant blocker: drawdown" in prompts[0]
@@ -222,6 +222,37 @@ def test_orchestrator_adds_selected_note_ids_to_queue_provenance(tmp_path):
         "note-1111111111111111"
     ]
     assert queued[0]["used_note_ids"] == ["note-1111111111111111"]
+
+
+def test_runtime_excludes_incomplete_provenance_note_ids_from_promoted_evidence(tmp_path):
+    index_path = _write_index(tmp_path / "private")
+    notes_dir = tmp_path / "private" / "extracted_notes"
+    notes_dir.mkdir(parents=True)
+    incomplete_note = _note(
+        note_id="note-2222222222222222",
+        source_passage_id="passage-2222222222222222",
+        concept="Incomplete provenance note",
+        priority_score=89,
+    )
+    incomplete_note.pop("source_location")
+    notes = [
+        _note(),
+        incomplete_note,
+    ]
+    (notes_dir / "notes.jsonl").write_text(
+        "".join(json.dumps(note) + "\n" for note in notes),
+        encoding="utf-8",
+    )
+
+    context = load_book_knowledge_context(
+        index_path,
+        notes_dir,
+        dominant_blocker="drawdown",
+        limit=5,
+    )
+
+    assert context.note_count == 2
+    assert context.selected_note_ids == ("note-1111111111111111",)
 
 
 def _write_three_attribution_notes(root):
@@ -402,7 +433,7 @@ def test_runtime_rejects_proposed_notes_directory(tmp_path):
     assert context.selected_note_ids == ()
 
 
-def test_runtime_canonicalizes_raw_walk_forward_blocker_without_global_fallback(
+def test_runtime_canonicalizes_walk_forward_fail_alias_without_global_fallback(
     tmp_path,
 ):
     index_path = _write_index(tmp_path)
@@ -430,11 +461,11 @@ def test_runtime_canonicalizes_raw_walk_forward_blocker_without_global_fallback(
     context = load_book_knowledge_context(
         index_path,
         notes_dir,
-        dominant_blocker="insufficient rolling walk-forward robustness",
+        dominant_blocker="walk_forward_fail",
         limit=1,
     )
 
-    assert context.canonical_blocker_id == "walk_forward_fail"
+    assert context.canonical_blocker_id == "walk_forward_robustness"
     assert context.blocker_diagnostic == "canonicalized"
     assert context.selected_note_ids == ("note-1111111111111111",)
     assert "High priority unrelated note" not in context.prompt
@@ -453,6 +484,61 @@ def test_runtime_rejects_unrecognized_blocker_instead_of_global_fallback(tmp_pat
     assert context.prompt == ""
     assert context.canonical_blocker_id == ""
     assert context.blocker_diagnostic == "unrecognized_blocker"
+
+
+def test_runtime_excludes_unknown_only_blocker_note_from_selected_note_ids(tmp_path):
+    index_path = _write_index(tmp_path)
+    notes_dir = tmp_path / "extracted_notes"
+    notes_dir.mkdir()
+    unknown_blocker_note = _note(
+        addresses_blockers=["mystery_blocker"],
+    )
+    (notes_dir / "notes.jsonl").write_text(
+        json.dumps(unknown_blocker_note) + "\n",
+        encoding="utf-8",
+    )
+
+    context = load_book_knowledge_context(
+        index_path,
+        notes_dir,
+        dominant_blocker="drawdown",
+        limit=5,
+    )
+
+    assert context.note_count == 1
+    assert context.selected_note_ids == ()
+
+
+@pytest.mark.parametrize("blocker", ["slippage stress", "max drawdown breach"])
+def test_runtime_excludes_broad_phrase_alias_note_from_selected_note_ids(
+    tmp_path,
+    blocker,
+):
+    index_path = _write_index(tmp_path)
+    notes_dir = tmp_path / "extracted_notes"
+    notes_dir.mkdir()
+    broad_alias_note = _note(
+        addresses_blockers=[blocker],
+    )
+    eligible_note = _note(
+        note_id="note-2222222222222222",
+        source_passage_id="passage-2222222222222222",
+        concept="Eligible drawdown note",
+        addresses_blockers=["drawdown_fail"],
+    )
+    (notes_dir / "notes.jsonl").write_text(
+        json.dumps(broad_alias_note) + "\n" + json.dumps(eligible_note) + "\n",
+        encoding="utf-8",
+    )
+
+    context = load_book_knowledge_context(
+        index_path,
+        notes_dir,
+        dominant_blocker="drawdown",
+        limit=5,
+    )
+
+    assert context.selected_note_ids == ("note-2222222222222222",)
 
 
 def test_orchestrator_artifact_diagnoses_unrecognized_book_blocker(tmp_path):
