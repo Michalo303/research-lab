@@ -169,6 +169,33 @@ class NoteReextractionPlan:
     next_execution_mode: str = "separate_explicit_reextraction_pr"
 
 
+@dataclass(frozen=True)
+class ControlledReextractionRunPlan:
+    command: str = "reextract-run"
+    dry_run: bool = True
+    aborted: bool = False
+    abort_reason: str = "none"
+    provider_allowed: bool = False
+    provider_attempted: bool = False
+    provider_calls_used: int = 0
+    max_books: int = 0
+    max_passages_per_book: int = 0
+    max_notes: int = 0
+    max_provider_calls: int = 0
+    output_path: str = ""
+    timestamped_output_required: bool = True
+    overwrite_allowed: bool = False
+    notes_generated: int = 0
+    notes_written: int = 0
+    notes_schema_valid: int = 0
+    notes_schema_invalid: int = 0
+    post_generation_audit_required: bool = True
+    post_generation_audit_run: bool = False
+    promotion_allowed: bool = False
+    queue_insertion_allowed: bool = False
+    generation_still_blocked: bool = True
+
+
 def _normalize_retrieval_blocker_id(raw: str) -> str | None:
     normalized = str(raw).strip().casefold()
     if normalized == "drawdown":
@@ -606,6 +633,55 @@ def plan_note_reextraction(notes_dir: str | Path) -> NoteReextractionPlan:
         rows_with_ambiguous_source_identity=rows_with_ambiguous_source_identity,
         candidate_blocker_counts=dict(sorted(blocker_counts.items())),
     )
+
+
+def plan_controlled_reextraction_run(
+    *,
+    output_path: str | Path | None = None,
+    max_books: int = 0,
+    max_passages_per_book: int = 0,
+    max_notes: int = 0,
+    max_provider_calls: int = 0,
+    dry_run: bool = True,
+    provider_allowed: bool = False,
+    overwrite_requested: bool = False,
+    promotion_requested: bool = False,
+    queue_insertion_requested: bool = False,
+) -> ControlledReextractionRunPlan:
+    output = "" if output_path is None else str(output_path).strip()
+    plan = ControlledReextractionRunPlan(
+        dry_run=bool(dry_run),
+        max_books=int(max_books),
+        max_passages_per_book=int(max_passages_per_book),
+        max_notes=int(max_notes),
+        max_provider_calls=int(max_provider_calls),
+        output_path=output,
+    )
+
+    if not output:
+        return ControlledReextractionRunPlan(**{**plan.__dict__, "aborted": True, "abort_reason": "output_path_required"})
+    if not dry_run:
+        return ControlledReextractionRunPlan(**{**plan.__dict__, "aborted": True, "abort_reason": "dry_run_required"})
+    if provider_allowed or max_provider_calls > 0:
+        return ControlledReextractionRunPlan(
+            **{
+                **plan.__dict__,
+                "aborted": True,
+                "abort_reason": "provider_execution_forbidden",
+                "provider_allowed": False,
+                "provider_attempted": False,
+                "provider_calls_used": 0,
+            }
+        )
+    if overwrite_requested:
+        return ControlledReextractionRunPlan(**{**plan.__dict__, "aborted": True, "abort_reason": "overwrite_forbidden"})
+    if promotion_requested:
+        return ControlledReextractionRunPlan(**{**plan.__dict__, "aborted": True, "abort_reason": "promotion_forbidden"})
+    if queue_insertion_requested:
+        return ControlledReextractionRunPlan(
+            **{**plan.__dict__, "aborted": True, "abort_reason": "queue_insertion_forbidden"}
+        )
+    return plan
 
 
 def _priority_overlays(notes_dir: Path) -> dict[str, float]:
