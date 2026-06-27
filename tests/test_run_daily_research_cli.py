@@ -61,6 +61,8 @@ def test_help_exits_without_running_daily_research(tmp_path, monkeypatch, capsys
 
 def test_preflight_only_exits_without_running_daily_research(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("RESEARCH_LAB_DATA_PROVIDER", raising=False)
+    monkeypatch.delenv("EODHD_API_KEY", raising=False)
     call_log = _install_fake_runner(monkeypatch)
     module = _load_script_module()
 
@@ -72,6 +74,29 @@ def test_preflight_only_exits_without_running_daily_research(tmp_path, monkeypat
     assert str(tmp_path.resolve()) in output
     assert "entrypoint=research_lab.runner.run_daily_research" in output
     assert "root_exists=True" in output
+    assert "data_provider=synthetic" in output
+    assert "eodhd_credentials_present=false" in output
+    assert "manual_cli_loads_dotenv=false" in output
+    assert "systemd_service_loads_environmentfile=if_configured" in output
+    assert call_log == []
+    _assert_no_runtime_artifacts(tmp_path)
+
+
+def test_preflight_only_does_not_print_eodhd_secret_value(tmp_path, monkeypatch, capsys):
+    secret = "super-secret-eodhd-token"
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("RESEARCH_LAB_DATA_PROVIDER", "eodhd")
+    monkeypatch.setenv("EODHD_API_KEY", secret)
+    call_log = _install_fake_runner(monkeypatch)
+    module = _load_script_module()
+
+    exit_code = module.main(["--root", str(tmp_path), "--preflight-only"])
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert "data_provider=eodhd" in output
+    assert "eodhd_credentials_present=true" in output
+    assert secret not in output
     assert call_log == []
     _assert_no_runtime_artifacts(tmp_path)
 
