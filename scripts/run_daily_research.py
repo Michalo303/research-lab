@@ -26,10 +26,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _print_preflight(root: Path) -> None:
+    from research_lab.config import LabConfig
+
     resolved_root = root.resolve()
+    config = LabConfig.from_env(resolved_root)
     print(f"preflight_only=true root={resolved_root}")
     print("entrypoint=research_lab.runner.run_daily_research")
     print(f"root_exists={resolved_root.exists()}")
+    print(f"data_provider={config.data_provider}")
+    print(f"eodhd_credentials_present={str(bool(config.eodhd_api_key)).lower()}")
+    print("manual_cli_loads_dotenv=false")
+    print("systemd_service_loads_environmentfile=if_configured")
 
 
 def main(argv: list[str] | None = None) -> int:
