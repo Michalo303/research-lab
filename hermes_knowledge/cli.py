@@ -34,6 +34,7 @@ from hermes_knowledge.passage_extractor import (
 )
 from hermes_knowledge.runtime import (
     audit_note_inventory,
+    plan_controlled_reextraction_run,
     plan_note_provenance_backfill,
     plan_note_reextraction,
 )
@@ -53,6 +54,15 @@ def _bounded_int(name: str, maximum: int):
         return number
 
     return parse
+
+
+def _bool_arg(value: str) -> bool:
+    normalized = str(value).strip().casefold()
+    if normalized in {"true", "1", "yes"}:
+        return True
+    if normalized in {"false", "0", "no"}:
+        return False
+    raise argparse.ArgumentTypeError("expected true or false")
 
 
 def _paths(args: argparse.Namespace) -> tuple[Path, Path, Path, Path, Path]:
@@ -271,6 +281,53 @@ def _reextract_plan() -> int:
     return 0
 
 
+def _reextract_run(args: argparse.Namespace) -> int:
+    plan = plan_controlled_reextraction_run(
+        output_path=args.output_path,
+        max_books=args.max_books,
+        max_passages_per_book=args.max_passages_per_book,
+        max_notes=args.max_notes,
+        max_provider_calls=args.max_provider_calls,
+        dry_run=args.dry_run,
+        provider_allowed=args.provider_allowed,
+        overwrite_requested=args.overwrite,
+        promotion_requested=args.promotion,
+        queue_insertion_requested=args.queue_insertion,
+    )
+    print(
+        " ".join(
+            [
+                f"command={plan.command}",
+                f"dry_run={str(plan.dry_run).lower()}",
+                f"aborted={str(plan.aborted).lower()}",
+                f"abort_reason={plan.abort_reason}",
+                f"provider_allowed={str(plan.provider_allowed).lower()}",
+                f"provider_attempted={str(plan.provider_attempted).lower()}",
+                f"provider_calls_used={plan.provider_calls_used}",
+                f"max_books={plan.max_books}",
+                f"max_passages_per_book={plan.max_passages_per_book}",
+                f"max_notes={plan.max_notes}",
+                f"max_provider_calls={plan.max_provider_calls}",
+                "output_path_required=true",
+                f"output_path_provided={'true' if bool(plan.output_path) else 'false'}",
+                "output_path_redacted=true",
+                f"timestamped_output_required={str(plan.timestamped_output_required).lower()}",
+                f"overwrite_allowed={str(plan.overwrite_allowed).lower()}",
+                f"notes_generated={plan.notes_generated}",
+                f"notes_written={plan.notes_written}",
+                f"notes_schema_valid={plan.notes_schema_valid}",
+                f"notes_schema_invalid={plan.notes_schema_invalid}",
+                f"post_generation_audit_required={str(plan.post_generation_audit_required).lower()}",
+                f"post_generation_audit_run={str(plan.post_generation_audit_run).lower()}",
+                f"promotion_allowed={str(plan.promotion_allowed).lower()}",
+                f"queue_insertion_allowed={str(plan.queue_insertion_allowed).lower()}",
+                f"generation_still_blocked={str(plan.generation_still_blocked).lower()}",
+            ]
+        )
+    )
+    return 1 if plan.aborted else 0
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Hermes blocker-first book learning agent.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -313,6 +370,24 @@ def _parser() -> argparse.ArgumentParser:
         "reextract-plan",
         help="Print the read-only future controlled re-extraction execution contract.",
     )
+    reextract_run = subparsers.add_parser(
+        "reextract-run",
+        help="Print the fail-closed controlled re-extraction runner skeleton result.",
+    )
+    reextract_run.add_argument("--dry-run", type=_bool_arg, default=True)
+    reextract_run.add_argument("--provider-allowed", action="store_true")
+    reextract_run.add_argument("--max-books", type=_bounded_int("max-books", MAX_BOOKS), default=MAX_BOOKS)
+    reextract_run.add_argument(
+        "--max-passages-per-book",
+        type=_bounded_int("max-passages-per-book", MAX_PASSAGES_PER_BOOK),
+        default=MAX_PASSAGES_PER_BOOK,
+    )
+    reextract_run.add_argument("--max-notes", type=_bounded_int("max-notes", 100), default=10)
+    reextract_run.add_argument("--max-provider-calls", type=int, default=0)
+    reextract_run.add_argument("--output-path")
+    reextract_run.add_argument("--overwrite", action="store_true")
+    reextract_run.add_argument("--promotion", action="store_true")
+    reextract_run.add_argument("--queue-insertion", action="store_true")
     subparsers.add_parser(
         "preflight", help="Check the optional PDF text extraction dependency."
     )
@@ -339,6 +414,8 @@ def main(
         return _audit(args)
     if args.command == "reextract-plan":
         return _reextract_plan()
+    if args.command == "reextract-run":
+        return _reextract_run(args)
     if args.command == "preflight":
         return _preflight()
     raise ValueError(f"unsupported command: {args.command}")

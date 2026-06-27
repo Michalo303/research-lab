@@ -4,6 +4,7 @@ import pytest
 
 from hermes_knowledge.runtime import (
     audit_note_inventory,
+    plan_controlled_reextraction_run,
     plan_note_provenance_backfill,
     plan_note_reextraction,
 )
@@ -985,6 +986,94 @@ def test_reextraction_plan_never_exposes_source_identity_values_and_does_not_wri
     assert "Very Private Book" not in repr(plan)
     assert "private-book:book-secretsecret" not in repr(plan)
     assert "f" * 64 not in repr(plan)
+
+
+def test_controlled_reextraction_run_plan_reports_safe_default_dry_run_noop():
+    plan = plan_controlled_reextraction_run(
+        output_path="candidate-output.jsonl",
+        max_books=2,
+        max_passages_per_book=3,
+        max_notes=4,
+    )
+
+    assert plan.command == "reextract-run"
+    assert plan.dry_run is True
+    assert plan.aborted is False
+    assert plan.abort_reason == "none"
+    assert plan.provider_allowed is False
+    assert plan.provider_attempted is False
+    assert plan.provider_calls_used == 0
+    assert plan.max_books == 2
+    assert plan.max_passages_per_book == 3
+    assert plan.max_notes == 4
+    assert plan.max_provider_calls == 0
+    assert plan.output_path == "candidate-output.jsonl"
+    assert plan.timestamped_output_required is True
+    assert plan.overwrite_allowed is False
+    assert plan.notes_generated == 0
+    assert plan.notes_written == 0
+    assert plan.notes_schema_valid == 0
+    assert plan.notes_schema_invalid == 0
+    assert plan.post_generation_audit_required is True
+    assert plan.post_generation_audit_run is False
+    assert plan.promotion_allowed is False
+    assert plan.queue_insertion_allowed is False
+    assert plan.generation_still_blocked is True
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "reason"),
+    [
+        ({"dry_run": False}, "dry_run_required"),
+        ({"provider_allowed": True}, "provider_execution_forbidden"),
+        ({"max_provider_calls": 1}, "provider_execution_forbidden"),
+        ({}, "output_path_required"),
+        ({"overwrite_requested": True}, "overwrite_forbidden"),
+        ({"promotion_requested": True}, "promotion_forbidden"),
+        ({"queue_insertion_requested": True}, "queue_insertion_forbidden"),
+    ],
+)
+def test_controlled_reextraction_run_plan_fails_closed(kwargs, reason):
+    base_kwargs = {
+        "output_path": "candidate-output.jsonl",
+        "max_books": 2,
+        "max_passages_per_book": 3,
+        "max_notes": 4,
+    }
+    if reason == "output_path_required":
+        base_kwargs.pop("output_path")
+    base_kwargs.update(kwargs)
+
+    plan = plan_controlled_reextraction_run(**base_kwargs)
+
+    assert plan.aborted is True
+    assert plan.abort_reason == reason
+    assert plan.provider_attempted is False
+    assert plan.provider_calls_used == 0
+    assert plan.notes_generated == 0
+    assert plan.notes_written == 0
+    assert plan.notes_schema_valid == 0
+    assert plan.notes_schema_invalid == 0
+
+
+def test_controlled_reextraction_run_plan_does_not_write_or_expose_private_values(tmp_path):
+    notes_dir = tmp_path / "extracted_notes"
+    notes_dir.mkdir(parents=True)
+    path = notes_dir / "notes.jsonl"
+    path.write_text(json.dumps(_audit_entry()) + "\n", encoding="utf-8")
+    before = path.read_bytes()
+
+    plan = plan_controlled_reextraction_run(
+        output_path="candidate-output.jsonl",
+        max_books=2,
+        max_passages_per_book=3,
+        max_notes=4,
+    )
+
+    assert path.read_bytes() == before
+    assert "book-aaaaaaaaaaaa" not in repr(plan)
+    assert "Risk Management Systems" not in repr(plan)
+    assert "private-book:book-aaaaaaaaaaaa" not in repr(plan)
 
 
 @pytest.mark.parametrize(

@@ -605,3 +605,138 @@ def test_reextract_plan_cli_does_not_write_private_or_feedback_files(tmp_path):
     assert extracted_dir.exists() is before_extracted
     assert proposed_dir.exists() is before_proposed
     assert candidates_dir.exists() is before_candidates
+
+
+def test_reextract_run_cli_reports_safe_default_noop(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "hermes_knowledge.cli.invoke_provider",
+        lambda *_args, **_kwargs: pytest.fail("reextract-run must not invoke providers"),
+    )
+
+    assert (
+        main(
+            [
+                "reextract-run",
+                "--output-path",
+                "candidate-output.jsonl",
+            ]
+        )
+        == 0
+    )
+
+    captured = capsys.readouterr()
+    output = captured.out.strip()
+    assert "command=reextract-run" in output
+    assert "dry_run=true" in output
+    assert "aborted=false" in output
+    assert "abort_reason=none" in output
+    assert "provider_allowed=false" in output
+    assert "provider_attempted=false" in output
+    assert "provider_calls_used=0" in output
+    assert "max_provider_calls=0" in output
+    assert "output_path_required=true" in output
+    assert "output_path_provided=true" in output
+    assert "output_path_redacted=true" in output
+    assert "timestamped_output_required=true" in output
+    assert "overwrite_allowed=false" in output
+    assert "notes_generated=0" in output
+    assert "notes_written=0" in output
+    assert "notes_schema_valid=0" in output
+    assert "notes_schema_invalid=0" in output
+    assert "post_generation_audit_required=true" in output
+    assert "post_generation_audit_run=false" in output
+    assert "promotion_allowed=false" in output
+    assert "queue_insertion_allowed=false" in output
+    assert "generation_still_blocked=true" in output
+    assert "private-book:" not in output
+    assert "book-" not in output
+    assert "Trading Systems and Methods" not in output
+    assert "candidate-output.jsonl" not in output
+    assert "candidate-output.jsonl" not in captured.err
+
+
+@pytest.mark.parametrize(
+    ("args", "reason"),
+    [
+        (
+            ["--output-path", "candidate-output.jsonl", "--dry-run", "false"],
+            "dry_run_required",
+        ),
+        (
+            ["--output-path", "candidate-output.jsonl", "--provider-allowed"],
+            "provider_execution_forbidden",
+        ),
+        (
+            ["--output-path", "candidate-output.jsonl", "--max-provider-calls", "1"],
+            "provider_execution_forbidden",
+        ),
+        (
+            [],
+            "output_path_required",
+        ),
+        (
+            ["--output-path", "candidate-output.jsonl", "--overwrite"],
+            "overwrite_forbidden",
+        ),
+        (
+            ["--output-path", "candidate-output.jsonl", "--promotion"],
+            "promotion_forbidden",
+        ),
+        (
+            ["--output-path", "candidate-output.jsonl", "--queue-insertion"],
+            "queue_insertion_forbidden",
+        ),
+    ],
+)
+def test_reextract_run_cli_fails_closed(monkeypatch, capsys, args, reason):
+    monkeypatch.setattr(
+        "hermes_knowledge.cli.invoke_provider",
+        lambda *_args, **_kwargs: pytest.fail("reextract-run must not invoke providers"),
+    )
+
+    assert main(["reextract-run", *args]) == 1
+
+    captured = capsys.readouterr()
+    output = captured.out.strip()
+    assert "command=reextract-run" in output
+    assert "aborted=true" in output
+    assert f"abort_reason={reason}" in output
+    assert "provider_attempted=false" in output
+    assert "provider_calls_used=0" in output
+    assert "output_path_required=true" in output
+    assert (
+        "output_path_provided=false" in output
+        if reason == "output_path_required"
+        else "output_path_provided=true" in output
+    )
+    assert "output_path_redacted=true" in output
+    assert "candidate-output.jsonl" not in output
+    assert "candidate-output.jsonl" not in captured.err
+
+
+def test_reextract_run_cli_does_not_write_private_or_feedback_files(tmp_path):
+    base = _private_fixture(tmp_path)
+    feedback_dir = base / "feedback"
+    extracted_dir = base / "extracted_notes"
+    proposed_dir = base / "proposed_notes"
+    candidates_dir = base / "passage_candidates"
+    before_feedback = feedback_dir.exists()
+    before_extracted = extracted_dir.exists()
+    before_proposed = proposed_dir.exists()
+    before_candidates = candidates_dir.exists()
+
+    assert (
+        main(
+            [
+                "reextract-run",
+                "--output-path",
+                "candidate-output.jsonl",
+            ]
+        )
+        == 0
+    )
+
+    assert feedback_dir.exists() is before_feedback
+    assert extracted_dir.exists() is before_extracted
+    assert proposed_dir.exists() is before_proposed
+    assert candidates_dir.exists() is before_candidates
