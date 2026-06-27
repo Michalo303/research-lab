@@ -681,21 +681,20 @@ def _bounded_walk_forward_diagnostic(result: dict[str, Any]) -> dict[str, Any] |
     if walk_forward.get("method") != "true_rolling_oos" or walk_forward.get("status") != "ok":
         return None
 
-    window_count = _safe_int(walk_forward.get("window_count"), 0)
     pass_rate_raw = walk_forward.get("pass_rate")
     median_test_cagr_raw = walk_forward.get("median_test_cagr")
     worst_test_drawdown_raw = walk_forward.get("worst_test_drawdown")
-    if window_count <= 0 or not _is_number(pass_rate_raw) or not _is_number(median_test_cagr_raw) or not _is_number(worst_test_drawdown_raw):
+    if not _is_number(pass_rate_raw) or not _is_number(median_test_cagr_raw) or not _is_number(worst_test_drawdown_raw):
         return None
 
     windows = walk_forward.get("windows")
+    window_count = _resolved_total_windows(walk_forward)
+    passed_windows = _resolved_passed_windows(walk_forward, windows)
+    if window_count <= 0 or passed_windows < 0:
+        return None
+
     all_failed_windows = _failed_windows(windows if isinstance(windows, list) else [])
     failed_windows = _worst_failed_windows(all_failed_windows)
-    passed_windows = _safe_int(walk_forward.get("passed_windows"), -1)
-    if passed_windows < 0 and isinstance(windows, list):
-        passed_windows = sum(1 for window in windows if bool(window.get("passed")))
-    if passed_windows < 0:
-        return None
 
     diagnostic: dict[str, Any] = {
         "strategy_id": str(result.get("strategy_id") or ""),
@@ -706,13 +705,29 @@ def _bounded_walk_forward_diagnostic(result: dict[str, Any]) -> dict[str, Any] |
         "required_pass_rate": 0.67,
         "median_test_cagr": float(median_test_cagr_raw),
         "worst_test_drawdown": float(worst_test_drawdown_raw),
-        "failed_window_count": len(all_failed_windows),
+        "failed_window_count": max(window_count - passed_windows, 0),
         "worst_failed_windows": failed_windows,
     }
     regime_summary = walk_forward.get("regime_summary")
     if isinstance(regime_summary, str) and regime_summary.strip():
         diagnostic["regime_summary"] = regime_summary.strip()
     return diagnostic
+
+
+def _resolved_total_windows(walk_forward: dict[str, Any]) -> int:
+    total_windows = _safe_int(walk_forward.get("total_windows"), 0)
+    if total_windows > 0:
+        return total_windows
+    return _safe_int(walk_forward.get("window_count"), 0)
+
+
+def _resolved_passed_windows(walk_forward: dict[str, Any], windows: Any) -> int:
+    passed_windows = _safe_int(walk_forward.get("passed_windows"), -1)
+    if passed_windows >= 0:
+        return passed_windows
+    if isinstance(windows, list):
+        return sum(1 for window in windows if bool(window.get("passed")))
+    return -1
 
 
 def _failed_windows(windows: list[dict[str, Any]]) -> list[dict[str, Any]]:

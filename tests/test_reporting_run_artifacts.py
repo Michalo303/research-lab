@@ -316,6 +316,55 @@ def test_metadata_includes_bounded_walk_forward_diagnostics_for_etf_tier_c_near_
     assert len(metadata["walk_forward_diagnostics"][0]["worst_failed_windows"]) == 3
 
 
+def test_metadata_derives_failed_window_count_from_aggregate_counts_without_windows(tmp_path):
+    outcome = write_daily_report_artifacts(
+        tmp_path,
+        [
+            _result(
+                "eodhd",
+                strategy_id="LONGTERM_ETF_1D_TREND_VOL_CAP_20260626_006",
+                family="LONGTERM",
+                short_name="TREND_VOL_CAP",
+                tier="C",
+                tier_reason="Positive unseen result, but rolling walk-forward is not strong enough for promotion.",
+                split_metrics={
+                    "train": {"cagr": 0.0340},
+                    "validation": {"cagr": 0.0545},
+                    "unseen": {"cagr": 0.0399, "max_drawdown": -0.1339},
+                },
+                walk_forward={
+                    "method": "true_rolling_oos",
+                    "status": "ok",
+                    "window_count": 7,
+                    "passed_windows": 4,
+                    "pass_rate": 0.5714,
+                    "median_test_cagr": 0.01,
+                    "worst_test_drawdown": -0.18,
+                },
+            )
+        ],
+        timestamp=datetime(2026, 6, 3, 12, 3, 4, tzinfo=timezone.utc),
+        git_info={"commit": "abcdef1234567890", "branch": "main", "dirty": False},
+    )
+
+    metadata = json.loads(outcome["metadata_path"].read_text(encoding="utf-8"))
+    assert metadata["walk_forward_diagnostics"] == [
+        {
+            "strategy_id": "LONGTERM_ETF_1D_TREND_VOL_CAP_20260626_006",
+            "window_count": 7,
+            "passed_windows": 4,
+            "total_windows": 7,
+            "pass_rate": 0.5714,
+            "required_pass_rate": 0.67,
+            "median_test_cagr": 0.01,
+            "worst_test_drawdown": -0.18,
+            "failed_window_count": 3,
+            "worst_failed_windows": [],
+        }
+    ]
+    assert "windows" not in metadata["walk_forward_diagnostics"][0]
+
+
 def test_metadata_omits_bounded_walk_forward_diagnostics_for_unrelated_etf_tier_c_reject(tmp_path):
     outcome = write_daily_report_artifacts(
         tmp_path,
