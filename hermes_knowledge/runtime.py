@@ -207,6 +207,19 @@ class ControlledReextractionRunPlan:
     active_generation_still_blocked: bool = True
 
 
+@dataclass(frozen=True)
+class ReextractCandidateReview:
+    review_valid: bool = False
+    total_candidates: int = 0
+    valid_candidates: int = 0
+    invalid_candidates: int = 0
+    duplicate_note_ids: tuple[str, ...] = ()
+    blocker_tags_seen: tuple[str, ...] = ()
+    promotion_allowed: bool = False
+    queue_insertion_allowed: bool = False
+    active_generation_still_blocked: bool = True
+
+
 def _normalize_retrieval_blocker_id(raw: str) -> str | None:
     normalized = str(raw).strip().casefold()
     if normalized == "drawdown":
@@ -220,6 +233,58 @@ def _normalize_retrieval_blocker_id(raw: str) -> str | None:
     if normalized == "walk_forward_fail":
         return "walk_forward_robustness"
     return None
+
+
+def review_reextract_candidate_file(path: str | Path) -> ReextractCandidateReview:
+    candidate_path = Path(path)
+    total_candidates = 0
+    valid_candidates = 0
+    invalid_candidates = 0
+    seen_note_ids: set[str] = set()
+    duplicate_note_ids: set[str] = set()
+    blocker_tags_seen: set[str] = set()
+    with candidate_path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            total_candidates += 1
+            try:
+                raw = json.loads(line)
+            except json.JSONDecodeError:
+                invalid_candidates += 1
+                continue
+            try:
+                entry = validate_reextract_candidate_entry(raw)
+            except KnowledgeValidationError:
+                invalid_candidates += 1
+                continue
+
+            blockers = tuple(
+                blocker
+                for blocker in entry["blocker_tags"]
+                if _normalize_retrieval_blocker_id(blocker) is not None
+            )
+            blocker_tags_seen.update(blockers)
+            if len(blockers) != len(entry["blocker_tags"]):
+                invalid_candidates += 1
+                continue
+
+            note_id = entry["note_id"]
+            if note_id in seen_note_ids:
+                duplicate_note_ids.add(note_id)
+                invalid_candidates += 1
+                continue
+            seen_note_ids.add(note_id)
+            valid_candidates += 1
+
+    return ReextractCandidateReview(
+        review_valid=(invalid_candidates == 0 and total_candidates > 0),
+        total_candidates=total_candidates,
+        valid_candidates=valid_candidates,
+        invalid_candidates=invalid_candidates,
+        duplicate_note_ids=tuple(sorted(duplicate_note_ids)),
+        blocker_tags_seen=tuple(sorted(blocker_tags_seen)),
+    )
 
 
 def _has_text(value: Any) -> bool:

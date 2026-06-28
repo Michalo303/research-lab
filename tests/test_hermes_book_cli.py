@@ -84,6 +84,20 @@ def _write_reextract_source(base):
     return path
 
 
+def _candidate_review_entry(**overrides):
+    entry = {
+        "note_id": "note-1111111111111111",
+        "source_location": "page:12",
+        "source_passage_id": "passage-1111111111111111",
+        "blocker_tags": ["walk_forward_fail"],
+        "thesis": "Stable parameter neighborhoods improve walk-forward reliability.",
+        "evidence_summary": "Prefer broad stable regions over isolated optima.",
+        "risk_control_hint": "Measure adjacent parameter dispersion.",
+    }
+    entry.update(overrides)
+    return entry
+
+
 def test_extract_validate_and_promote_flow(tmp_path, capsys):
     base = _private_fixture(tmp_path)
 
@@ -1205,3 +1219,69 @@ def test_reextract_run_cli_does_not_write_private_or_feedback_files(tmp_path):
     assert extracted_dir.exists() is before_extracted
     assert proposed_dir.exists() is before_proposed
     assert candidates_dir.exists() is before_candidates
+
+
+def test_reextract_review_cli_emits_deterministic_valid_report(tmp_path, capsys):
+    input_path = tmp_path / "candidate-output.jsonl"
+    input_path.write_text(json.dumps(_candidate_review_entry()) + "\n", encoding="utf-8")
+
+    assert main(["reextract-review", "--input-path", str(input_path)]) == 0
+
+    report = json.loads(capsys.readouterr().out)
+    assert report == {
+        "active_generation_still_blocked": True,
+        "blocker_tags_seen": ["walk_forward_fail"],
+        "duplicate_note_ids": [],
+        "invalid_candidates": 0,
+        "promotion_allowed": False,
+        "queue_insertion_allowed": False,
+        "review_valid": True,
+        "total_candidates": 1,
+        "valid_candidates": 1,
+    }
+    assert str(input_path) not in json.dumps(report)
+
+
+def test_reextract_review_cli_rejects_empty_candidate_file(tmp_path, capsys):
+    input_path = tmp_path / "candidate-output.jsonl"
+    input_path.write_text("", encoding="utf-8")
+
+    assert main(["reextract-review", "--input-path", str(input_path)]) == 1
+
+    report = json.loads(capsys.readouterr().out)
+    assert report == {
+        "active_generation_still_blocked": True,
+        "blocker_tags_seen": [],
+        "duplicate_note_ids": [],
+        "invalid_candidates": 0,
+        "promotion_allowed": False,
+        "queue_insertion_allowed": False,
+        "review_valid": False,
+        "total_candidates": 0,
+        "valid_candidates": 0,
+    }
+
+
+def test_reextract_review_cli_emits_failed_report_without_touching_active_notes(tmp_path, capsys):
+    base = _private_fixture(tmp_path)
+    active_path = _write_reextract_source(base)
+    before = active_path.read_bytes()
+    input_path = tmp_path / "candidate-output.jsonl"
+    row = _candidate_review_entry(source_excerpt="private excerpt")
+    input_path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+
+    assert main(["reextract-review", "--input-path", str(input_path)]) == 1
+
+    report = json.loads(capsys.readouterr().out)
+    assert report == {
+        "active_generation_still_blocked": True,
+        "blocker_tags_seen": [],
+        "duplicate_note_ids": [],
+        "invalid_candidates": 1,
+        "promotion_allowed": False,
+        "queue_insertion_allowed": False,
+        "review_valid": False,
+        "total_candidates": 1,
+        "valid_candidates": 0,
+    }
+    assert active_path.read_bytes() == before

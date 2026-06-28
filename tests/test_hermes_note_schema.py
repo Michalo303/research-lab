@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+import hermes_knowledge.runtime as knowledge_runtime
 from hermes_knowledge.runtime import (
     audit_note_inventory,
     plan_controlled_reextraction_run,
@@ -59,6 +60,20 @@ def _provider_note(**overrides):
     }
     note.update(overrides)
     return note
+
+
+def _candidate_review_entry(**overrides):
+    entry = {
+        "note_id": "note-1111111111111111",
+        "source_location": "page:12",
+        "source_passage_id": "passage-1111111111111111",
+        "blocker_tags": ["walk_forward_fail"],
+        "thesis": "Stable parameter neighborhoods improve walk-forward reliability.",
+        "evidence_summary": "Prefer broad stable regions over isolated optima.",
+        "risk_control_hint": "Measure adjacent parameter dispersion.",
+    }
+    entry.update(overrides)
+    return entry
 
 
 def test_generated_note_has_repository_owned_provenance_and_stable_id():
@@ -986,6 +1001,140 @@ def test_reextraction_plan_never_exposes_source_identity_values_and_does_not_wri
     assert "Very Private Book" not in repr(plan)
     assert "private-book:book-secretsecret" not in repr(plan)
     assert "f" * 64 not in repr(plan)
+
+
+def test_review_reextract_candidate_file_reports_valid_single_row(tmp_path):
+    path = tmp_path / "candidate-output.jsonl"
+    path.write_text(json.dumps(_candidate_review_entry()) + "\n", encoding="utf-8")
+
+    review = knowledge_runtime.review_reextract_candidate_file(path)
+
+    assert review.review_valid is True
+    assert review.total_candidates == 1
+    assert review.valid_candidates == 1
+    assert review.invalid_candidates == 0
+    assert review.duplicate_note_ids == ()
+    assert review.blocker_tags_seen == ("walk_forward_fail",)
+    assert review.promotion_allowed is False
+    assert review.queue_insertion_allowed is False
+    assert review.active_generation_still_blocked is True
+
+
+def test_review_reextract_candidate_file_reports_multiple_valid_rows(tmp_path):
+    path = tmp_path / "candidate-output.jsonl"
+    rows = [
+        _candidate_review_entry(),
+        _candidate_review_entry(
+            note_id="note-2222222222222222",
+            source_location="page:13",
+            source_passage_id="passage-2222222222222222",
+            blocker_tags=["drawdown_fail", "walk_forward_fail"],
+        ),
+    ]
+    path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+
+    review = knowledge_runtime.review_reextract_candidate_file(path)
+
+    assert review.review_valid is True
+    assert review.total_candidates == 2
+    assert review.valid_candidates == 2
+    assert review.invalid_candidates == 0
+    assert review.duplicate_note_ids == ()
+    assert review.blocker_tags_seen == ("drawdown_fail", "walk_forward_fail")
+
+
+def test_review_reextract_candidate_file_rejects_invalid_json(tmp_path):
+    path = tmp_path / "candidate-output.jsonl"
+    path.write_text("{not-json}\n", encoding="utf-8")
+
+    review = knowledge_runtime.review_reextract_candidate_file(path)
+
+    assert review.review_valid is False
+    assert review.total_candidates == 1
+    assert review.valid_candidates == 0
+    assert review.invalid_candidates == 1
+    assert review.duplicate_note_ids == ()
+    assert review.blocker_tags_seen == ()
+
+
+def test_review_reextract_candidate_file_rejects_empty_file(tmp_path):
+    path = tmp_path / "candidate-output.jsonl"
+    path.write_text("", encoding="utf-8")
+
+    review = knowledge_runtime.review_reextract_candidate_file(path)
+
+    assert review.review_valid is False
+    assert review.total_candidates == 0
+    assert review.valid_candidates == 0
+    assert review.invalid_candidates == 0
+    assert review.duplicate_note_ids == ()
+    assert review.blocker_tags_seen == ()
+    assert review.promotion_allowed is False
+    assert review.queue_insertion_allowed is False
+    assert review.active_generation_still_blocked is True
+
+
+def test_review_reextract_candidate_file_rejects_source_excerpt_extra_key(tmp_path):
+    path = tmp_path / "candidate-output.jsonl"
+    row = _candidate_review_entry(source_excerpt="private excerpt")
+    path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+
+    review = knowledge_runtime.review_reextract_candidate_file(path)
+
+    assert review.review_valid is False
+    assert review.total_candidates == 1
+    assert review.valid_candidates == 0
+    assert review.invalid_candidates == 1
+
+
+def test_review_reextract_candidate_file_rejects_missing_required_field(tmp_path):
+    path = tmp_path / "candidate-output.jsonl"
+    row = _candidate_review_entry()
+    row.pop("thesis")
+    path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+
+    review = knowledge_runtime.review_reextract_candidate_file(path)
+
+    assert review.review_valid is False
+    assert review.total_candidates == 1
+    assert review.valid_candidates == 0
+    assert review.invalid_candidates == 1
+
+
+def test_review_reextract_candidate_file_rejects_duplicate_note_ids(tmp_path):
+    path = tmp_path / "candidate-output.jsonl"
+    rows = [
+        _candidate_review_entry(),
+        _candidate_review_entry(
+            source_location="page:99",
+            source_passage_id="passage-9999999999999999",
+        ),
+    ]
+    path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+
+    review = knowledge_runtime.review_reextract_candidate_file(path)
+
+    assert review.review_valid is False
+    assert review.total_candidates == 2
+    assert review.valid_candidates == 1
+    assert review.invalid_candidates == 1
+    assert review.duplicate_note_ids == ("note-1111111111111111",)
+    assert review.blocker_tags_seen == ("walk_forward_fail",)
+
+
+def test_review_reextract_candidate_file_rejects_unknown_blocker_tags(tmp_path):
+    path = tmp_path / "candidate-output.jsonl"
+    row = _candidate_review_entry(blocker_tags=["walk_forward_fail", "mystery_blocker"])
+    path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+
+    review = knowledge_runtime.review_reextract_candidate_file(path)
+
+    assert review.review_valid is False
+    assert review.total_candidates == 1
+    assert review.valid_candidates == 0
+    assert review.invalid_candidates == 1
+    assert review.duplicate_note_ids == ()
+    assert review.blocker_tags_seen == ("walk_forward_fail",)
 
 
 def test_controlled_reextraction_run_plan_reports_safe_default_dry_run_noop():

@@ -39,6 +39,7 @@ from hermes_knowledge.runtime import (
     plan_controlled_reextraction_run,
     plan_note_provenance_backfill,
     plan_note_reextraction,
+    review_reextract_candidate_file,
 )
 from research_lab.hermes.providers import invoke_provider
 
@@ -580,6 +581,27 @@ def _reextract_run(
     return 1 if plan.aborted else 0
 
 
+def _reextract_review(args: argparse.Namespace) -> int:
+    review = review_reextract_candidate_file(args.input_path)
+    print(
+        json.dumps(
+            {
+                "active_generation_still_blocked": review.active_generation_still_blocked,
+                "blocker_tags_seen": list(review.blocker_tags_seen),
+                "duplicate_note_ids": list(review.duplicate_note_ids),
+                "invalid_candidates": review.invalid_candidates,
+                "promotion_allowed": review.promotion_allowed,
+                "queue_insertion_allowed": review.queue_insertion_allowed,
+                "review_valid": review.review_valid,
+                "total_candidates": review.total_candidates,
+                "valid_candidates": review.valid_candidates,
+            },
+            sort_keys=True,
+        )
+    )
+    return 0 if review.review_valid else 1
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Hermes blocker-first book learning agent.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -622,6 +644,11 @@ def _parser() -> argparse.ArgumentParser:
         "reextract-plan",
         help="Print the read-only future controlled re-extraction execution contract.",
     )
+    reextract_review = subparsers.add_parser(
+        "reextract-review",
+        help="Review an isolated re-extraction candidate JSONL file without writing active Hermes state.",
+    )
+    reextract_review.add_argument("--input-path", type=Path, required=True)
     reextract_run = subparsers.add_parser(
         "reextract-run",
         help="Print the fail-closed controlled re-extraction runner skeleton result.",
@@ -670,6 +697,8 @@ def main(
         return _audit(args)
     if args.command == "reextract-plan":
         return _reextract_plan()
+    if args.command == "reextract-review":
+        return _reextract_review(args)
     if args.command == "reextract-run":
         return _reextract_run(args, current_env, provider_invoker)
     if args.command == "preflight":
