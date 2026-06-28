@@ -3,6 +3,8 @@ import json
 import pytest
 
 import hermes_knowledge.cli as book_cli
+from hermes_knowledge.book_selector import SelectedBook
+from hermes_knowledge.books import load_book_index
 from hermes_knowledge.cli import main
 from hermes_knowledge.passage_extractor import extract_passages
 from research_lab.hermes.providers import ProviderResult
@@ -89,6 +91,30 @@ def _candidate_review_entry(**overrides):
         "note_id": "note-1111111111111111",
         "source_location": "page:12",
         "source_passage_id": "passage-1111111111111111",
+        "blocker_tags": ["walk_forward_fail"],
+        "thesis": "Stable parameter neighborhoods improve walk-forward reliability.",
+        "evidence_summary": "Prefer broad stable regions over isolated optima.",
+        "risk_control_hint": "Measure adjacent parameter dispersion.",
+    }
+    entry.update(overrides)
+    return entry
+
+
+def _resolved_candidate_review_entry(base, **overrides):
+    book = load_book_index(base / "index" / "book_index.json")[0]
+    passages, diagnostics = extract_passages(
+        [SelectedBook(book=book, score=0.0, matched_terms=(), reasons=("reextract_candidate",))],
+        "walk_forward_fail",
+        text_dir=base / "text",
+        passages_per_book=1,
+    )
+    assert diagnostics == []
+    assert len(passages) == 1
+    passage = passages[0]
+    entry = {
+        "note_id": "note-1111111111111111",
+        "source_location": passage.location,
+        "source_passage_id": passage.passage_id,
         "blocker_tags": ["walk_forward_fail"],
         "thesis": "Stable parameter neighborhoods improve walk-forward reliability.",
         "evidence_summary": "Prefer broad stable regions over isolated optima.",
@@ -1285,3 +1311,166 @@ def test_reextract_review_cli_emits_failed_report_without_touching_active_notes(
         "valid_candidates": 0,
     }
     assert active_path.read_bytes() == before
+
+
+def test_reextract_promote_cli_rejects_empty_candidate_file(tmp_path, capsys):
+    base = _private_fixture(tmp_path)
+    input_path = tmp_path / "candidate-output.jsonl"
+    input_path.write_text("", encoding="utf-8")
+
+    assert (
+        main(
+            [
+                "reextract-promote",
+                "--base-dir",
+                str(base),
+                "--input-path",
+                str(input_path),
+                "--note-id",
+                "note-1111111111111111",
+            ]
+        )
+        == 1
+    )
+
+    report = json.loads(capsys.readouterr().out)
+    assert report == {
+        "active_generation_still_blocked": True,
+        "explicit_promotion_used": False,
+        "promoted_note_id": None,
+        "promotion_allowed": False,
+        "promotion_attempted": True,
+        "promotion_succeeded": False,
+        "provider_calls_used": 0,
+        "queue_insertion_allowed": False,
+        "target_blocker": None,
+        "target_file_relative": None,
+    }
+
+
+def test_reextract_promote_cli_emits_success_json_and_writes_one_active_note(tmp_path, capsys):
+    base = _private_fixture(tmp_path)
+    extracted_dir = base / "extracted_notes"
+    input_path = tmp_path / "candidate-output.jsonl"
+    input_path.write_text(
+        json.dumps(_resolved_candidate_review_entry(base)) + "\n",
+        encoding="utf-8",
+    )
+
+    assert (
+        main(
+            [
+                "reextract-promote",
+                "--base-dir",
+                str(base),
+                "--input-path",
+                str(input_path),
+                "--note-id",
+                "note-1111111111111111",
+            ]
+        )
+        == 0
+    )
+
+    report = json.loads(capsys.readouterr().out)
+    target_path = extracted_dir / "walk_forward_robustness.jsonl"
+    rows = [
+        json.loads(line)
+        for line in target_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert report == {
+        "active_generation_still_blocked": True,
+        "explicit_promotion_used": True,
+        "promoted_note_id": "note-1111111111111111",
+        "promotion_allowed": True,
+        "promotion_attempted": True,
+        "promotion_succeeded": True,
+        "provider_calls_used": 0,
+        "queue_insertion_allowed": False,
+        "target_blocker": "walk_forward_robustness",
+        "target_file_relative": "extracted_notes/walk_forward_robustness.jsonl",
+    }
+    assert len(rows) == 1
+    assert str(target_path) not in json.dumps(report)
+
+
+def test_reextract_promote_cli_emits_failed_json_for_invalid_candidate_file_without_touching_active_notes(
+    tmp_path, capsys
+):
+    base = _private_fixture(tmp_path)
+    active_path = _write_reextract_source(base)
+    before = active_path.read_bytes()
+    input_path = tmp_path / "candidate-output.jsonl"
+    input_path.write_text(
+        json.dumps(_candidate_review_entry(source_excerpt="private excerpt")) + "\n",
+        encoding="utf-8",
+    )
+
+    assert (
+        main(
+            [
+                "reextract-promote",
+                "--base-dir",
+                str(base),
+                "--input-path",
+                str(input_path),
+                "--note-id",
+                "note-1111111111111111",
+            ]
+        )
+        == 1
+    )
+
+    report = json.loads(capsys.readouterr().out)
+    assert report == {
+        "active_generation_still_blocked": True,
+        "explicit_promotion_used": False,
+        "promoted_note_id": None,
+        "promotion_allowed": False,
+        "promotion_attempted": True,
+        "promotion_succeeded": False,
+        "provider_calls_used": 0,
+        "queue_insertion_allowed": False,
+        "target_blocker": None,
+        "target_file_relative": None,
+    }
+    assert active_path.read_bytes() == before
+
+
+def test_reextract_promote_cli_fails_when_current_source_identity_cannot_be_resolved(
+    tmp_path, capsys
+):
+    base = _private_fixture(tmp_path)
+    input_path = tmp_path / "candidate-output.jsonl"
+    unresolved = _resolved_candidate_review_entry(base, source_passage_id="passage-ffffffffffffffff")
+    input_path.write_text(json.dumps(unresolved) + "\n", encoding="utf-8")
+
+    assert (
+        main(
+            [
+                "reextract-promote",
+                "--base-dir",
+                str(base),
+                "--input-path",
+                str(input_path),
+                "--note-id",
+                "note-1111111111111111",
+            ]
+        )
+        == 1
+    )
+
+    report = json.loads(capsys.readouterr().out)
+    assert report == {
+        "active_generation_still_blocked": True,
+        "explicit_promotion_used": False,
+        "promoted_note_id": None,
+        "promotion_allowed": False,
+        "promotion_attempted": True,
+        "promotion_succeeded": False,
+        "provider_calls_used": 0,
+        "queue_insertion_allowed": False,
+        "target_blocker": None,
+        "target_file_relative": None,
+    }

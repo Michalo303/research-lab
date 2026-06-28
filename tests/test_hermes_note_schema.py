@@ -1,10 +1,17 @@
 import json
+from pathlib import Path
 
 import pytest
 
 import hermes_knowledge.runtime as knowledge_runtime
+
+import hermes_knowledge.runtime as knowledge_runtime
+from hermes_knowledge.book_selector import SelectedBook
+from hermes_knowledge.books import load_book_index
+from hermes_knowledge.passage_extractor import extract_passages
 from hermes_knowledge.runtime import (
     audit_note_inventory,
+    load_book_knowledge_context,
     plan_controlled_reextraction_run,
     plan_note_provenance_backfill,
     plan_note_reextraction,
@@ -67,6 +74,72 @@ def _candidate_review_entry(**overrides):
         "note_id": "note-1111111111111111",
         "source_location": "page:12",
         "source_passage_id": "passage-1111111111111111",
+        "blocker_tags": ["walk_forward_fail"],
+        "thesis": "Stable parameter neighborhoods improve walk-forward reliability.",
+        "evidence_summary": "Prefer broad stable regions over isolated optima.",
+        "risk_control_hint": "Measure adjacent parameter dispersion.",
+    }
+    entry.update(overrides)
+    return entry
+
+
+def _promotion_base(tmp_path):
+    base = tmp_path / "hermes_books"
+    (base / "extracted_notes").mkdir(parents=True)
+    return base
+
+
+def _promotion_fixture(tmp_path):
+    base = _promotion_base(tmp_path)
+    index = base / "index" / "book_index.json"
+    text = base / "text" / "book-aaaaaaaaaaaa.txt"
+    index.parent.mkdir(parents=True, exist_ok=True)
+    text.parent.mkdir(parents=True, exist_ok=True)
+    index.write_text(
+        json.dumps(
+            {
+                "books": [
+                    {
+                        "name": "Trading Systems and Methods.pdf",
+                        "path": str(base / "raw" / "book.pdf"),
+                        "size_bytes": 100,
+                        "sha256": "a" * 64,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    text.write_text(
+        "Parameter stability and walk-forward robustness reduce overfitting.",
+        encoding="utf-8",
+    )
+    return base
+
+
+def _read_jsonl(path: Path):
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+def _resolved_candidate_review_entry(base: Path, **overrides):
+    book = load_book_index(base / "index" / "book_index.json")[0]
+    passages, diagnostics = extract_passages(
+        [SelectedBook(book=book, score=0.0, matched_terms=(), reasons=("reextract_candidate",))],
+        "walk_forward_fail",
+        text_dir=base / "text",
+        passages_per_book=1,
+    )
+    assert diagnostics == []
+    assert len(passages) == 1
+    passage = passages[0]
+    entry = {
+        "note_id": "note-1111111111111111",
+        "source_location": passage.location,
+        "source_passage_id": passage.passage_id,
         "blocker_tags": ["walk_forward_fail"],
         "thesis": "Stable parameter neighborhoods improve walk-forward reliability.",
         "evidence_summary": "Prefer broad stable regions over isolated optima.",
@@ -1135,6 +1208,226 @@ def test_review_reextract_candidate_file_rejects_unknown_blocker_tags(tmp_path):
     assert review.invalid_candidates == 1
     assert review.duplicate_note_ids == ()
     assert review.blocker_tags_seen == ("walk_forward_fail",)
+
+
+def test_promote_reextract_candidate_refuses_empty_candidate_file(tmp_path):
+    base = _promotion_base(tmp_path)
+    candidate_path = tmp_path / "candidate-output.jsonl"
+    candidate_path.write_text("", encoding="utf-8")
+
+    promotion = knowledge_runtime.promote_reextract_candidate(
+        base_dir=base,
+        input_path=candidate_path,
+        note_id="note-1111111111111111",
+    )
+
+    assert promotion.promotion_attempted is True
+    assert promotion.promotion_allowed is False
+    assert promotion.promotion_succeeded is False
+    assert promotion.promoted_note_id is None
+    assert promotion.target_blocker is None
+    assert promotion.target_file_relative is None
+    assert promotion.explicit_promotion_used is False
+    assert promotion.active_generation_still_blocked is True
+    assert promotion.queue_insertion_allowed is False
+    assert promotion.provider_calls_used == 0
+
+
+def test_promote_reextract_candidate_refuses_missing_selected_note_id(tmp_path):
+    base = _promotion_base(tmp_path)
+    candidate_path = tmp_path / "candidate-output.jsonl"
+    candidate_path.write_text(json.dumps(_candidate_review_entry()) + "\n", encoding="utf-8")
+
+    promotion = knowledge_runtime.promote_reextract_candidate(
+        base_dir=base,
+        input_path=candidate_path,
+        note_id="note-ffffffffffffffff",
+    )
+
+    assert promotion.promotion_allowed is False
+    assert promotion.promotion_succeeded is False
+    assert promotion.promoted_note_id is None
+
+
+def test_promote_reextract_candidate_refuses_duplicate_note_id_candidate_file(tmp_path):
+    base = _promotion_base(tmp_path)
+    candidate_path = tmp_path / "candidate-output.jsonl"
+    rows = [
+        _candidate_review_entry(),
+        _candidate_review_entry(
+            source_location="page:22",
+            source_passage_id="passage-2222222222222222",
+        ),
+    ]
+    candidate_path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+
+    promotion = knowledge_runtime.promote_reextract_candidate(
+        base_dir=base,
+        input_path=candidate_path,
+        note_id="note-1111111111111111",
+    )
+
+    assert promotion.promotion_allowed is False
+    assert promotion.promotion_succeeded is False
+
+
+def test_promote_reextract_candidate_refuses_source_excerpt_extra_key(tmp_path):
+    base = _promotion_base(tmp_path)
+    candidate_path = tmp_path / "candidate-output.jsonl"
+    candidate_path.write_text(
+        json.dumps(_candidate_review_entry(source_excerpt="private excerpt")) + "\n",
+        encoding="utf-8",
+    )
+
+    promotion = knowledge_runtime.promote_reextract_candidate(
+        base_dir=base,
+        input_path=candidate_path,
+        note_id="note-1111111111111111",
+    )
+
+    assert promotion.promotion_allowed is False
+    assert promotion.promotion_succeeded is False
+
+
+def test_promote_reextract_candidate_refuses_unknown_blocker_tag(tmp_path):
+    base = _promotion_base(tmp_path)
+    candidate_path = tmp_path / "candidate-output.jsonl"
+    candidate_path.write_text(
+        json.dumps(_candidate_review_entry(blocker_tags=["mystery_blocker"])) + "\n",
+        encoding="utf-8",
+    )
+
+    promotion = knowledge_runtime.promote_reextract_candidate(
+        base_dir=base,
+        input_path=candidate_path,
+        note_id="note-1111111111111111",
+    )
+
+    assert promotion.promotion_allowed is False
+    assert promotion.promotion_succeeded is False
+
+
+def test_promote_reextract_candidate_refuses_empty_blocker_tags(tmp_path):
+    base = _promotion_base(tmp_path)
+    candidate_path = tmp_path / "candidate-output.jsonl"
+    candidate_path.write_text(
+        json.dumps(_candidate_review_entry(blocker_tags=[])) + "\n",
+        encoding="utf-8",
+    )
+
+    promotion = knowledge_runtime.promote_reextract_candidate(
+        base_dir=base,
+        input_path=candidate_path,
+        note_id="note-1111111111111111",
+    )
+
+    assert promotion.promotion_allowed is False
+    assert promotion.promotion_succeeded is False
+
+
+def test_promote_reextract_candidate_refuses_multiple_blocker_tags(tmp_path):
+    base = _promotion_base(tmp_path)
+    candidate_path = tmp_path / "candidate-output.jsonl"
+    candidate_path.write_text(
+        json.dumps(
+            _candidate_review_entry(blocker_tags=["drawdown_fail", "walk_forward_fail"])
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    promotion = knowledge_runtime.promote_reextract_candidate(
+        base_dir=base,
+        input_path=candidate_path,
+        note_id="note-1111111111111111",
+    )
+
+    assert promotion.promotion_allowed is False
+    assert promotion.promotion_succeeded is False
+
+
+def test_promote_reextract_candidate_refuses_existing_active_note_id(tmp_path):
+    base = _promotion_fixture(tmp_path)
+    candidate_path = tmp_path / "candidate-output.jsonl"
+    candidate_path.write_text(
+        json.dumps(_resolved_candidate_review_entry(base)) + "\n",
+        encoding="utf-8",
+    )
+    target_path = base / "extracted_notes" / "walk_forward_robustness.jsonl"
+    target_path.write_text(
+        json.dumps(_audit_entry(addresses_blockers=["walk_forward_robustness"])) + "\n",
+        encoding="utf-8",
+    )
+
+    promotion = knowledge_runtime.promote_reextract_candidate(
+        base_dir=base,
+        input_path=candidate_path,
+        note_id="note-1111111111111111",
+    )
+
+    assert promotion.promotion_allowed is False
+    assert promotion.promotion_succeeded is False
+    assert len(_read_jsonl(target_path)) == 1
+
+
+def test_promote_reextract_candidate_refuses_unresolvable_current_source_identity(tmp_path):
+    base = _promotion_fixture(tmp_path)
+    candidate_path = tmp_path / "candidate-output.jsonl"
+    unresolved = _resolved_candidate_review_entry(base)
+    unresolved["source_passage_id"] = "passage-ffffffffffffffff"
+    candidate_path.write_text(json.dumps(unresolved) + "\n", encoding="utf-8")
+
+    promotion = knowledge_runtime.promote_reextract_candidate(
+        base_dir=base,
+        input_path=candidate_path,
+        note_id="note-1111111111111111",
+    )
+
+    assert promotion.promotion_allowed is False
+    assert promotion.promotion_succeeded is False
+    assert promotion.promoted_note_id is None
+
+
+def test_promote_reextract_candidate_writes_exactly_one_active_note(tmp_path):
+    base = _promotion_fixture(tmp_path)
+    candidate_path = tmp_path / "candidate-output.jsonl"
+    candidate_path.write_text(
+        json.dumps(_resolved_candidate_review_entry(base)) + "\n",
+        encoding="utf-8",
+    )
+
+    promotion = knowledge_runtime.promote_reextract_candidate(
+        base_dir=base,
+        input_path=candidate_path,
+        note_id="note-1111111111111111",
+    )
+
+    target_path = base / "extracted_notes" / "walk_forward_robustness.jsonl"
+    rows = _read_jsonl(target_path)
+    assert promotion.promotion_attempted is True
+    assert promotion.promotion_allowed is True
+    assert promotion.promotion_succeeded is True
+    assert promotion.promoted_note_id == "note-1111111111111111"
+    assert promotion.target_blocker == "walk_forward_robustness"
+    assert promotion.target_file_relative == "extracted_notes/walk_forward_robustness.jsonl"
+    assert promotion.explicit_promotion_used is True
+    assert promotion.active_generation_still_blocked is True
+    assert promotion.queue_insertion_allowed is False
+    assert promotion.provider_calls_used == 0
+    assert len(rows) == 1
+    entry = validate_entry(rows[0])
+    assert entry["note_id"] == "note-1111111111111111"
+    assert entry["hypothesis"] == "Stable parameter neighborhoods improve walk-forward reliability."
+    assert entry["summary"] == "Prefer broad stable regions over isolated optima."
+    assert entry["implementation_hint"] == "Measure adjacent parameter dispersion."
+    assert entry["addresses_blockers"] == ["walk_forward_robustness"]
+    assert entry["source_excerpt"] == ""
+    context = load_book_knowledge_context(
+        book_index_path=base / "index" / "book_index.json",
+        notes_dir=base / "extracted_notes",
+        dominant_blocker="walk_forward_robustness",
+    )
+    assert context.selected_note_ids == ("note-1111111111111111",)
 
 
 def test_controlled_reextraction_run_plan_reports_safe_default_dry_run_noop():

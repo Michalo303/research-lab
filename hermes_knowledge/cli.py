@@ -39,6 +39,7 @@ from hermes_knowledge.runtime import (
     plan_controlled_reextraction_run,
     plan_note_provenance_backfill,
     plan_note_reextraction,
+    promote_reextract_candidate,
     review_reextract_candidate_file,
 )
 from research_lab.hermes.providers import invoke_provider
@@ -602,6 +603,32 @@ def _reextract_review(args: argparse.Namespace) -> int:
     return 0 if review.review_valid else 1
 
 
+def _reextract_promote(args: argparse.Namespace) -> int:
+    promotion = promote_reextract_candidate(
+        base_dir=args.base_dir,
+        input_path=args.input_path,
+        note_id=args.note_id,
+    )
+    print(
+        json.dumps(
+            {
+                "active_generation_still_blocked": promotion.active_generation_still_blocked,
+                "explicit_promotion_used": promotion.explicit_promotion_used,
+                "promoted_note_id": promotion.promoted_note_id,
+                "promotion_allowed": promotion.promotion_allowed,
+                "promotion_attempted": promotion.promotion_attempted,
+                "promotion_succeeded": promotion.promotion_succeeded,
+                "provider_calls_used": promotion.provider_calls_used,
+                "queue_insertion_allowed": promotion.queue_insertion_allowed,
+                "target_blocker": promotion.target_blocker,
+                "target_file_relative": promotion.target_file_relative,
+            },
+            sort_keys=True,
+        )
+    )
+    return 0 if promotion.promotion_succeeded else 1
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Hermes blocker-first book learning agent.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -649,6 +676,13 @@ def _parser() -> argparse.ArgumentParser:
         help="Review an isolated re-extraction candidate JSONL file without writing active Hermes state.",
     )
     reextract_review.add_argument("--input-path", type=Path, required=True)
+    reextract_promote = subparsers.add_parser(
+        "reextract-promote",
+        help="Explicitly promote one reviewed re-extraction candidate into active Hermes notes.",
+    )
+    reextract_promote.add_argument("--base-dir", type=Path, required=True)
+    reextract_promote.add_argument("--input-path", type=Path, required=True)
+    reextract_promote.add_argument("--note-id", required=True)
     reextract_run = subparsers.add_parser(
         "reextract-run",
         help="Print the fail-closed controlled re-extraction runner skeleton result.",
@@ -699,6 +733,8 @@ def main(
         return _reextract_plan()
     if args.command == "reextract-review":
         return _reextract_review(args)
+    if args.command == "reextract-promote":
+        return _reextract_promote(args)
     if args.command == "reextract-run":
         return _reextract_run(args, current_env, provider_invoker)
     if args.command == "preflight":
