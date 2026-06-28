@@ -15,6 +15,7 @@ from hermes_knowledge.passage_extractor import PassageCandidate
 from hermes_knowledge.schema import (
     KnowledgeValidationError,
     load_knowledge_jsonl,
+    validate_reextract_candidate_entry,
     validate_proposed_note,
 )
 
@@ -163,6 +164,21 @@ def validate_proposed_file(path: str | Path) -> ValidationSummary:
         fingerprints.add(fingerprint)
         valid += 1
     return ValidationSummary(valid, invalid, duplicates)
+
+
+def write_candidate_notes(
+    path: str | Path,
+    entries: Iterable[dict[str, Any]],
+    *,
+    overwrite: bool = False,
+) -> WriteSummary:
+    destination = _ensure_private_path(Path(path))
+    if destination.exists() and not overwrite:
+        raise ValueError("candidate output already exists")
+    validated = [validate_reextract_candidate_entry(entry) for entry in entries]
+    if validated:
+        _atomic_jsonl(destination, validated)
+    return WriteSummary(len(validated), 0)
 
 
 def promote_note(

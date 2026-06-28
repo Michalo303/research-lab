@@ -13,7 +13,12 @@ from typing import Any
 from hermes_knowledge.books import load_book_index
 from hermes_knowledge.prompt import build_hermes_knowledge_prompt
 from hermes_knowledge.retriever import retrieve_for_blocker
-from hermes_knowledge.schema import KnowledgeValidationError, load_knowledge_jsonl, validate_entry
+from hermes_knowledge.schema import (
+    KnowledgeValidationError,
+    load_knowledge_jsonl,
+    validate_entry,
+    validate_reextract_candidate_entry,
+)
 
 
 DEFAULT_BOOK_INDEX_PATH = Path(
@@ -176,6 +181,10 @@ class ControlledReextractionRunPlan:
     aborted: bool = False
     abort_reason: str = "none"
     provider_allowed: bool = False
+    provider_name_provided: bool = False
+    provider_name_redacted: bool = True
+    model_name_provided: bool = False
+    model_name_redacted: bool = True
     provider_attempted: bool = False
     provider_calls_used: int = 0
     max_books: int = 0
@@ -191,9 +200,11 @@ class ControlledReextractionRunPlan:
     notes_schema_invalid: int = 0
     post_generation_audit_required: bool = True
     post_generation_audit_run: bool = False
+    candidate_readiness: str = "blocked"
     promotion_allowed: bool = False
     queue_insertion_allowed: bool = False
     generation_still_blocked: bool = True
+    active_generation_still_blocked: bool = True
 
 
 def _normalize_retrieval_blocker_id(raw: str) -> str | None:
@@ -298,9 +309,21 @@ def _blocker_diagnostic(raw: str, normalized: str) -> str:
     return "exact" if raw_value == normalized else "canonicalized"
 
 
-def audit_note_inventory(notes_dir: str | Path) -> NoteInventoryAudit:
+def audit_note_inventory(
+    notes_dir: str | Path,
+    *,
+    feedback_overlay_required: bool = True,
+) -> NoteInventoryAudit:
     notes_path = Path(notes_dir)
-    if notes_path.name.casefold() != "extracted_notes" or not notes_path.is_dir():
+    candidate_file_mode = False
+    if notes_path.is_dir() and notes_path.name.casefold() == "extracted_notes":
+        candidate_paths = sorted(notes_path.glob("*.jsonl"))
+        feedback_root = notes_path.parent
+    elif notes_path.is_file() and notes_path.suffix.casefold() == ".jsonl":
+        candidate_paths = [notes_path]
+        feedback_root = notes_path.parent
+        candidate_file_mode = True
+    else:
         return NoteInventoryAudit(
             normalized_blocker_counts={},
             unknown_blocker_ids={},
@@ -318,7 +341,7 @@ def audit_note_inventory(notes_dir: str | Path) -> NoteInventoryAudit:
     excluded_from_promoted = 0
     excluded_by_reason = {key: 0 for key in EXCLUDED_BY_REASON_KEYS}
     missing_field_counts = {key: 0 for key in MISSING_FIELD_KEYS}
-    for path in sorted(notes_path.glob("*.jsonl")):
+    for path in candidate_paths:
         try:
             lines = path.read_text(encoding="utf-8").splitlines()
         except OSError:
@@ -344,7 +367,7 @@ def audit_note_inventory(notes_dir: str | Path) -> NoteInventoryAudit:
                 rows_with_source_location += 1
             if _has_text(raw.get("source_passage_id")):
                 rows_with_source_passage_id += 1
-            blockers = raw.get("addresses_blockers")
+            blockers = raw.get("blocker_tags") if candidate_file_mode else raw.get("addresses_blockers")
             parsed_blockers = []
             if isinstance(blockers, list):
                 parsed_blockers = [
@@ -360,13 +383,16 @@ def audit_note_inventory(notes_dir: str | Path) -> NoteInventoryAudit:
                         unknown_counts[blocker] += 1
                     else:
                         normalized_counts[normalized] += 1
-            has_recognized_blocker = _has_recognized_blocker_tag(raw)
+            has_recognized_blocker = bool(parsed_blockers) and any(
+                _normalize_retrieval_blocker_id(blocker) is not None
+                for blocker in parsed_blockers
+            )
             has_unknown_blocker = bool(parsed_blockers) and any(
                 _normalize_retrieval_blocker_id(blocker) is None
                 for blocker in parsed_blockers
             )
             has_provenance = not missing_fields
-            is_current_format = _looks_like_current_format(raw)
+            is_current_format = candidate_file_mode or _looks_like_current_format(raw)
             for blocker in _previewable_unknown_blockers(
                 parsed_blockers,
                 has_provenance=has_provenance,
@@ -375,7 +401,10 @@ def audit_note_inventory(notes_dir: str | Path) -> NoteInventoryAudit:
             ):
                 preview_counts[blocker] += 1
             try:
-                validate_entry(raw)
+                if candidate_file_mode:
+                    validate_reextract_candidate_entry(raw)
+                else:
+                    validate_entry(raw)
                 current_format_note_rows += 1
             except KnowledgeValidationError:
                 if not is_current_format:
@@ -392,7 +421,9 @@ def audit_note_inventory(notes_dir: str | Path) -> NoteInventoryAudit:
                     excluded_by_reason["unknown_only_blockers"] += 1
                 excluded_from_promoted += 1
                 continue
-            if _is_promoted_evidence_eligible(raw):
+            if candidate_file_mode:
+                rows_eligible += 1
+            elif _is_promoted_evidence_eligible(raw):
                 rows_eligible += 1
             else:
                 if "note_id" in missing_fields:
@@ -407,17 +438,17 @@ def audit_note_inventory(notes_dir: str | Path) -> NoteInventoryAudit:
                     excluded_by_reason["unknown_only_blockers"] += 1
                 excluded_from_promoted += 1
     legacy_note_rows = total_note_rows - current_format_note_rows
-    feedback_overlay_present = (notes_path.parent / "feedback" / "priorities.json").exists()
+    feedback_overlay_present = (feedback_root / "feedback" / "priorities.json").exists()
     remediation_remaining_blockers = {
         **excluded_by_reason,
-        "feedback_overlay_missing": 0 if feedback_overlay_present else 1,
+        "feedback_overlay_missing": 0 if (feedback_overlay_present or not feedback_overlay_required) else 1,
     }
     ready = bool(
         total_note_rows
         and current_format_note_rows == total_note_rows
         and excluded_from_promoted == 0
         and not unknown_counts
-        and feedback_overlay_present
+        and (feedback_overlay_present or not feedback_overlay_required)
     )
     return NoteInventoryAudit(
         total_note_rows=total_note_rows,
@@ -643,14 +674,21 @@ def plan_controlled_reextraction_run(
     max_notes: int = 0,
     max_provider_calls: int = 0,
     dry_run: bool = True,
-    provider_allowed: bool = False,
+    allow_provider_calls: bool = False,
+    provider: str = "",
+    model: str = "",
     overwrite_requested: bool = False,
     promotion_requested: bool = False,
     queue_insertion_requested: bool = False,
 ) -> ControlledReextractionRunPlan:
     output = "" if output_path is None else str(output_path).strip()
+    provider_name = str(provider).strip()
+    model_name = str(model).strip()
     plan = ControlledReextractionRunPlan(
         dry_run=bool(dry_run),
+        provider_allowed=bool(allow_provider_calls),
+        provider_name_provided=bool(provider_name),
+        model_name_provided=bool(model_name),
         max_books=int(max_books),
         max_passages_per_book=int(max_passages_per_book),
         max_notes=int(max_notes),
@@ -662,24 +700,54 @@ def plan_controlled_reextraction_run(
         return ControlledReextractionRunPlan(**{**plan.__dict__, "aborted": True, "abort_reason": "output_path_required"})
     if not dry_run:
         return ControlledReextractionRunPlan(**{**plan.__dict__, "aborted": True, "abort_reason": "dry_run_required"})
-    if provider_allowed or max_provider_calls > 0:
-        return ControlledReextractionRunPlan(
-            **{
-                **plan.__dict__,
-                "aborted": True,
-                "abort_reason": "provider_execution_forbidden",
-                "provider_allowed": False,
-                "provider_attempted": False,
-                "provider_calls_used": 0,
-            }
-        )
     if overwrite_requested:
         return ControlledReextractionRunPlan(**{**plan.__dict__, "aborted": True, "abort_reason": "overwrite_forbidden"})
     if promotion_requested:
         return ControlledReextractionRunPlan(**{**plan.__dict__, "aborted": True, "abort_reason": "promotion_forbidden"})
     if queue_insertion_requested:
         return ControlledReextractionRunPlan(
-            **{**plan.__dict__, "aborted": True, "abort_reason": "queue_insertion_forbidden"}
+            **{
+                **plan.__dict__,
+                "aborted": True,
+                "abort_reason": "queue_insertion_forbidden",
+            }
+        )
+    if max_provider_calls > 0 and not allow_provider_calls:
+        return ControlledReextractionRunPlan(
+            **{
+                **plan.__dict__,
+                "aborted": True,
+                "abort_reason": "allow_provider_calls_required",
+                "provider_allowed": False,
+                "provider_attempted": False,
+                "provider_calls_used": 0,
+            }
+        )
+    if not allow_provider_calls:
+        return plan
+    if not provider_name:
+        return ControlledReextractionRunPlan(
+            **{**plan.__dict__, "aborted": True, "abort_reason": "provider_required"}
+        )
+    if not model_name:
+        return ControlledReextractionRunPlan(
+            **{**plan.__dict__, "aborted": True, "abort_reason": "model_required"}
+        )
+    if max_provider_calls != 1:
+        return ControlledReextractionRunPlan(
+            **{**plan.__dict__, "aborted": True, "abort_reason": "max_provider_calls_must_equal_one"}
+        )
+    if max_books != 1:
+        return ControlledReextractionRunPlan(
+            **{**plan.__dict__, "aborted": True, "abort_reason": "max_books_must_equal_one"}
+        )
+    if max_passages_per_book not in {1, 3}:
+        return ControlledReextractionRunPlan(
+            **{**plan.__dict__, "aborted": True, "abort_reason": "max_passages_per_book_invalid"}
+        )
+    if max_notes not in {1, 3}:
+        return ControlledReextractionRunPlan(
+            **{**plan.__dict__, "aborted": True, "abort_reason": "max_notes_invalid"}
         )
     return plan
 
