@@ -11,6 +11,7 @@ from typing import Mapping
 
 from hermes_knowledge.book_selector import (
     MAX_BOOKS,
+    SelectedBook,
     load_text_previews,
     select_books_for_blocker,
 )
@@ -24,6 +25,7 @@ from hermes_knowledge.note_generator import ProviderInvoker, generate_proposed_n
 from hermes_knowledge.note_store import (
     promote_note,
     validate_proposed_file,
+    write_candidate_notes,
     write_passage_candidates,
     write_proposed_notes,
 )
@@ -42,6 +44,25 @@ from research_lab.hermes.providers import invoke_provider
 
 
 DEFAULT_BASE_DIR = Path("/opt/trading/private/hermes_books")
+REEXTRACTION_CURRENT_FORMAT_FIELDS = {
+    "book_id",
+    "source_title",
+    "source_path",
+    "source_sha256",
+    "concept",
+    "hypothesis",
+    "summary",
+    "source_excerpt",
+    "testable_rules",
+    "compatible_builders",
+    "asset_classes",
+    "timeframes",
+    "expected_edge",
+    "known_failure_modes",
+    "addresses_blockers",
+    "priority_score",
+    "implementation_hint",
+}
 
 
 def _bounded_int(name: str, maximum: int):
@@ -63,6 +84,12 @@ def _bool_arg(value: str) -> bool:
     if normalized in {"false", "0", "no"}:
         return False
     raise argparse.ArgumentTypeError("expected true or false")
+
+
+def _optional_bool_arg(value: str | None) -> bool:
+    if value is None:
+        return True
+    return _bool_arg(value)
 
 
 def _paths(args: argparse.Namespace) -> tuple[Path, Path, Path, Path, Path]:
@@ -182,6 +209,142 @@ def _format_counts(value: Mapping[str, int]) -> str:
     return ",".join(f"{key}:{count}" for key, count in value.items())
 
 
+def _normalize_reextract_blocker(raw: str) -> str | None:
+    normalized = str(raw).strip().casefold()
+    if normalized in {"drawdown", "drawdown_fail"}:
+        return "drawdown"
+    if normalized in {"walk_forward_robustness", "walk_forward_fail"}:
+        return "walk_forward_fail"
+    if normalized == "cost_stress":
+        return "cost_stress"
+    return None
+
+
+def _candidate_output_isolated(base: Path, output_path: Path) -> bool:
+    try:
+        resolved_base = base.resolve()
+        resolved_output = output_path.resolve()
+    except OSError:
+        return False
+    if resolved_output.suffix.casefold() != ".jsonl":
+        return False
+    if resolved_output == resolved_base or resolved_base in resolved_output.parents:
+        return False
+    blocked_roots = (
+        resolved_base,
+        resolved_base / "extracted_notes",
+        resolved_base / "proposed_notes",
+        resolved_base / "passage_candidates",
+        resolved_base / "feedback",
+        resolved_base / "registry",
+        resolved_base / "reports",
+        resolved_base / "queue",
+        resolved_base / "raw",
+        resolved_base / "text",
+        resolved_base / "index",
+    )
+    return all(resolved_output != root and root not in resolved_output.parents for root in blocked_roots)
+
+
+def _load_reextraction_target(base: Path) -> tuple[str, str, str] | None:
+    notes_dir = base / "extracted_notes"
+    if not notes_dir.is_dir():
+        return None
+    for path in sorted(notes_dir.glob("*.jsonl")):
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                raw = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(raw, dict):
+                continue
+            if not REEXTRACTION_CURRENT_FORMAT_FIELDS.issubset(raw.keys()):
+                continue
+            book_id = str(raw.get("book_id", "")).strip()
+            source_sha256 = str(raw.get("source_sha256", "")).strip()
+            blockers = raw.get("addresses_blockers")
+            if not book_id or not source_sha256 or not isinstance(blockers, list):
+                continue
+            for blocker in blockers:
+                normalized = _normalize_reextract_blocker(str(blocker))
+                if normalized:
+                    return book_id, source_sha256, normalized
+    return None
+
+
+def _candidate_note_entry(entry: dict[str, object]) -> dict[str, object]:
+    blocker_tags = [
+        str(value).strip()
+        for value in entry.get("addresses_blockers", [])
+        if isinstance(value, str) and value.strip()
+    ]
+    return {
+        "note_id": str(entry["note_id"]),
+        "source_location": str(entry["source_location"]),
+        "source_passage_id": str(entry["source_passage_id"]),
+        "blocker_tags": blocker_tags,
+        "thesis": str(entry["hypothesis"]),
+        "evidence_summary": str(entry["summary"]),
+        "risk_control_hint": str(entry["implementation_hint"]),
+    }
+
+
+def _reextract_result_code(diagnostic_code: str) -> str:
+    if diagnostic_code in {"provider_error", "provider_unavailable"}:
+        return "provider_failure"
+    if diagnostic_code == "invalid_json":
+        return "invalid_provider_response"
+    if diagnostic_code in {"schema_violation", "grounding_violation"}:
+        return "schema_validation_failed"
+    return "provider_failure"
+
+
+def _print_reextract_result(plan) -> None:
+    print(
+        " ".join(
+            [
+                f"command={plan.command}",
+                f"dry_run={str(plan.dry_run).lower()}",
+                f"aborted={str(plan.aborted).lower()}",
+                f"abort_reason={plan.abort_reason}",
+                f"provider_allowed={str(plan.provider_allowed).lower()}",
+                f"provider_name_provided={str(plan.provider_name_provided).lower()}",
+                f"provider_name_redacted={str(plan.provider_name_redacted).lower()}",
+                f"model_name_provided={str(plan.model_name_provided).lower()}",
+                f"model_name_redacted={str(plan.model_name_redacted).lower()}",
+                f"provider_attempted={str(plan.provider_attempted).lower()}",
+                f"provider_calls_used={plan.provider_calls_used}",
+                f"max_books={plan.max_books}",
+                f"max_passages_per_book={plan.max_passages_per_book}",
+                f"max_notes={plan.max_notes}",
+                f"max_provider_calls={plan.max_provider_calls}",
+                "output_path_required=true",
+                f"output_path_provided={'true' if bool(plan.output_path) else 'false'}",
+                "output_path_redacted=true",
+                f"timestamped_output_required={str(plan.timestamped_output_required).lower()}",
+                f"overwrite_allowed={str(plan.overwrite_allowed).lower()}",
+                f"notes_generated={plan.notes_generated}",
+                f"notes_written={plan.notes_written}",
+                f"notes_schema_valid={plan.notes_schema_valid}",
+                f"notes_schema_invalid={plan.notes_schema_invalid}",
+                f"post_generation_audit_required={str(plan.post_generation_audit_required).lower()}",
+                f"post_generation_audit_run={str(plan.post_generation_audit_run).lower()}",
+                f"candidate_readiness={plan.candidate_readiness}",
+                f"promotion_allowed={str(plan.promotion_allowed).lower()}",
+                f"queue_insertion_allowed={str(plan.queue_insertion_allowed).lower()}",
+                f"generation_still_blocked={str(plan.generation_still_blocked).lower()}",
+                f"active_generation_still_blocked={str(plan.active_generation_still_blocked).lower()}",
+            ]
+        )
+    )
+
+
 def _audit(args: argparse.Namespace) -> int:
     base = Path(args.base_dir)
     notes_dir = Path(getattr(args, "notes_dir", None) or base / "extracted_notes")
@@ -281,7 +444,11 @@ def _reextract_plan() -> int:
     return 0
 
 
-def _reextract_run(args: argparse.Namespace) -> int:
+def _reextract_run(
+    args: argparse.Namespace,
+    env: Mapping[str, str],
+    provider_invoker: ProviderInvoker,
+) -> int:
     plan = plan_controlled_reextraction_run(
         output_path=args.output_path,
         max_books=args.max_books,
@@ -289,42 +456,127 @@ def _reextract_run(args: argparse.Namespace) -> int:
         max_notes=args.max_notes,
         max_provider_calls=args.max_provider_calls,
         dry_run=args.dry_run,
-        provider_allowed=args.provider_allowed,
+        allow_provider_calls=args.allow_provider_calls,
+        provider=args.provider or "",
+        model=args.model or "",
         overwrite_requested=args.overwrite,
-        promotion_requested=args.promotion,
+        promotion_requested=args.promote,
         queue_insertion_requested=args.queue_insertion,
     )
-    print(
-        " ".join(
-            [
-                f"command={plan.command}",
-                f"dry_run={str(plan.dry_run).lower()}",
-                f"aborted={str(plan.aborted).lower()}",
-                f"abort_reason={plan.abort_reason}",
-                f"provider_allowed={str(plan.provider_allowed).lower()}",
-                f"provider_attempted={str(plan.provider_attempted).lower()}",
-                f"provider_calls_used={plan.provider_calls_used}",
-                f"max_books={plan.max_books}",
-                f"max_passages_per_book={plan.max_passages_per_book}",
-                f"max_notes={plan.max_notes}",
-                f"max_provider_calls={plan.max_provider_calls}",
-                "output_path_required=true",
-                f"output_path_provided={'true' if bool(plan.output_path) else 'false'}",
-                "output_path_redacted=true",
-                f"timestamped_output_required={str(plan.timestamped_output_required).lower()}",
-                f"overwrite_allowed={str(plan.overwrite_allowed).lower()}",
-                f"notes_generated={plan.notes_generated}",
-                f"notes_written={plan.notes_written}",
-                f"notes_schema_valid={plan.notes_schema_valid}",
-                f"notes_schema_invalid={plan.notes_schema_invalid}",
-                f"post_generation_audit_required={str(plan.post_generation_audit_required).lower()}",
-                f"post_generation_audit_run={str(plan.post_generation_audit_run).lower()}",
-                f"promotion_allowed={str(plan.promotion_allowed).lower()}",
-                f"queue_insertion_allowed={str(plan.queue_insertion_allowed).lower()}",
-                f"generation_still_blocked={str(plan.generation_still_blocked).lower()}",
-            ]
-        )
+    if plan.aborted:
+        _print_reextract_result(plan)
+        return 1
+    if not plan.provider_allowed:
+        _print_reextract_result(plan)
+        return 0
+
+    base = Path(args.base_dir)
+    output_path = Path(args.output_path)
+    if not _candidate_output_isolated(base, output_path):
+        plan = type(plan)(**{**plan.__dict__, "aborted": True, "abort_reason": "isolated_output_path_required"})
+        _print_reextract_result(plan)
+        return 1
+    if output_path.exists() and not args.overwrite:
+        plan = type(plan)(**{**plan.__dict__, "aborted": True, "abort_reason": "overwrite_forbidden"})
+        _print_reextract_result(plan)
+        return 1
+
+    target = _load_reextraction_target(base)
+    if target is None:
+        plan = type(plan)(**{**plan.__dict__, "aborted": True, "abort_reason": "no_reextraction_candidate"})
+        _print_reextract_result(plan)
+        return 1
+
+    book_id, source_sha256, blocker = target
+    books = load_book_index(base / "index" / "book_index.json")
+    book = next(
+        (
+            item
+            for item in books
+            if item.book_id == book_id and item.source_sha256.casefold() == source_sha256.casefold()
+        ),
+        None,
     )
+    if book is None:
+        plan = type(plan)(**{**plan.__dict__, "aborted": True, "abort_reason": "no_reextraction_candidate"})
+        _print_reextract_result(plan)
+        return 1
+
+    passages, _diagnostics = extract_passages(
+        [SelectedBook(book=book, score=0.0, matched_terms=(), reasons=("reextract_candidate",))],
+        blocker,
+        text_dir=base / "text",
+        passages_per_book=args.max_passages_per_book,
+    )
+    provider_candidates = passages[: min(plan.max_provider_calls, plan.max_notes)]
+    if not provider_candidates:
+        plan = type(plan)(**{**plan.__dict__, "aborted": True, "abort_reason": "no_passages_extracted"})
+        _print_reextract_result(plan)
+        return 1
+
+    provider_env = dict(env)
+    provider_env["HERMES_OPENAI_MODEL"] = str(args.model or "").strip()
+    proposals, diagnostics = generate_proposed_notes(
+        provider_candidates,
+        provider=str(args.provider or "").strip(),
+        env=provider_env,
+        provider_invoker=provider_invoker,
+    )
+    plan = type(plan)(
+        **{
+            **plan.__dict__,
+            "provider_attempted": True,
+            "provider_calls_used": len(provider_candidates),
+            "notes_generated": len(proposals),
+            "notes_schema_valid": len(proposals),
+            "notes_schema_invalid": len(diagnostics),
+        }
+    )
+    if diagnostics:
+        plan = type(plan)(
+            **{
+                **plan.__dict__,
+                "aborted": True,
+                "abort_reason": _reextract_result_code(diagnostics[0].code),
+            }
+        )
+        _print_reextract_result(plan)
+        return 1
+    if not proposals:
+        plan = type(plan)(**{**plan.__dict__, "aborted": True, "abort_reason": "no_notes_generated"})
+        _print_reextract_result(plan)
+        return 1
+
+    entries = [_candidate_note_entry(proposal["entry"]) for proposal in proposals[: args.max_notes]]
+    try:
+        written = write_candidate_notes(output_path, entries, overwrite=args.overwrite)
+    except ValueError:
+        plan = type(plan)(**{**plan.__dict__, "aborted": True, "abort_reason": "overwrite_forbidden"})
+        _print_reextract_result(plan)
+        return 1
+
+    audit = audit_note_inventory(output_path, feedback_overlay_required=False)
+    candidate_ready = bool(
+        written.written
+        and audit.total_note_rows == written.written
+        and audit.current_format_note_rows == written.written
+        and audit.rows_eligible_for_provenance_aware_retrieval == written.written
+        and audit.rows_excluded_from_promoted_used_note_ids == 0
+        and not audit.unknown_blocker_ids
+    )
+    plan = type(plan)(
+        **{
+            **plan.__dict__,
+            "notes_written": written.written,
+            "post_generation_audit_run": True,
+            "candidate_readiness": "ready" if candidate_ready else "blocked",
+        }
+    )
+    if not candidate_ready:
+        plan = type(plan)(**{**plan.__dict__, "aborted": True, "abort_reason": "post_generation_audit_failed"})
+        _print_reextract_result(plan)
+        return 1
+    _print_reextract_result(plan)
     return 1 if plan.aborted else 0
 
 
@@ -374,8 +626,11 @@ def _parser() -> argparse.ArgumentParser:
         "reextract-run",
         help="Print the fail-closed controlled re-extraction runner skeleton result.",
     )
+    reextract_run.add_argument("--base-dir", type=Path, default=DEFAULT_BASE_DIR)
     reextract_run.add_argument("--dry-run", type=_bool_arg, default=True)
-    reextract_run.add_argument("--provider-allowed", action="store_true")
+    reextract_run.add_argument("--allow-provider-calls", nargs="?", const=True, type=_optional_bool_arg, default=False)
+    reextract_run.add_argument("--provider")
+    reextract_run.add_argument("--model")
     reextract_run.add_argument("--max-books", type=_bounded_int("max-books", MAX_BOOKS), default=MAX_BOOKS)
     reextract_run.add_argument(
         "--max-passages-per-book",
@@ -385,9 +640,10 @@ def _parser() -> argparse.ArgumentParser:
     reextract_run.add_argument("--max-notes", type=_bounded_int("max-notes", 100), default=10)
     reextract_run.add_argument("--max-provider-calls", type=int, default=0)
     reextract_run.add_argument("--output-path")
-    reextract_run.add_argument("--overwrite", action="store_true")
-    reextract_run.add_argument("--promotion", action="store_true")
-    reextract_run.add_argument("--queue-insertion", action="store_true")
+    reextract_run.add_argument("--overwrite", nargs="?", const=True, type=_optional_bool_arg, default=False)
+    reextract_run.add_argument("--promote", nargs="?", const=True, type=_optional_bool_arg, default=False)
+    reextract_run.add_argument("--promotion", dest="promote", nargs="?", const=True, type=_optional_bool_arg)
+    reextract_run.add_argument("--queue-insertion", nargs="?", const=True, type=_optional_bool_arg, default=False)
     subparsers.add_parser(
         "preflight", help="Check the optional PDF text extraction dependency."
     )
@@ -415,7 +671,7 @@ def main(
     if args.command == "reextract-plan":
         return _reextract_plan()
     if args.command == "reextract-run":
-        return _reextract_run(args)
+        return _reextract_run(args, current_env, provider_invoker)
     if args.command == "preflight":
         return _preflight()
     raise ValueError(f"unsupported command: {args.command}")

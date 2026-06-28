@@ -8,8 +8,8 @@ from hermes_knowledge.passage_extractor import extract_passages
 from research_lab.hermes.providers import ProviderResult
 
 
-def _provider_note():
-    return {
+def _provider_note(**overrides):
+    note = {
         "concept": "Parameter neighborhood stability",
         "hypothesis": "Stable parameter regions improve walk-forward reliability.",
         "summary": "Prefer broad stable regions over isolated optima.",
@@ -22,6 +22,8 @@ def _provider_note():
         "implementation_hint": "Measure adjacent parameter dispersion.",
         "priority_score": 70,
     }
+    note.update(overrides)
+    return note
 
 
 def _private_fixture(tmp_path, *, title="Trading Systems and Methods.pdf"):
@@ -50,6 +52,36 @@ def _private_fixture(tmp_path, *, title="Trading Systems and Methods.pdf"):
         encoding="utf-8",
     )
     return base
+
+
+def _legacy_extracted_note():
+    return {
+        "book_id": "book-aaaaaaaaaaaa",
+        "source_title": "Trading Systems and Methods",
+        "source_path": "private-book:book-aaaaaaaaaaaa",
+        "source_sha256": "a" * 64,
+        "concept": "Legacy unstable note",
+        "hypothesis": "Old extracted note missing provenance should be re-extracted safely.",
+        "summary": "This row is intentionally missing modern provenance fields.",
+        "source_excerpt": "Parameter stability and walk-forward robustness reduce overfitting.",
+        "testable_rules": ["Prefer parameter regions that remain stable nearby."],
+        "compatible_builders": ["active_momentum_rotation"],
+        "asset_classes": ["ETF"],
+        "timeframes": ["1D"],
+        "expected_edge": "Improve walk-forward pass rate.",
+        "known_failure_modes": ["Regime changes can still invalidate the thesis."],
+        "addresses_blockers": ["walk_forward_fail"],
+        "priority_score": 70,
+        "implementation_hint": "Re-extract with explicit provenance.",
+    }
+
+
+def _write_reextract_source(base):
+    extracted = base / "extracted_notes"
+    extracted.mkdir(parents=True, exist_ok=True)
+    path = extracted / "walk_forward_fail.jsonl"
+    path.write_text(json.dumps(_legacy_extracted_note()) + "\n", encoding="utf-8")
+    return path
 
 
 def test_extract_validate_and_promote_flow(tmp_path, capsys):
@@ -637,6 +669,10 @@ def test_reextract_run_cli_reports_safe_default_noop(monkeypatch, capsys):
     assert "output_path_required=true" in output
     assert "output_path_provided=true" in output
     assert "output_path_redacted=true" in output
+    assert "provider_name_provided=false" in output
+    assert "provider_name_redacted=true" in output
+    assert "model_name_provided=false" in output
+    assert "model_name_redacted=true" in output
     assert "timestamped_output_required=true" in output
     assert "overwrite_allowed=false" in output
     assert "notes_generated=0" in output
@@ -663,12 +699,17 @@ def test_reextract_run_cli_reports_safe_default_noop(monkeypatch, capsys):
             "dry_run_required",
         ),
         (
-            ["--output-path", "candidate-output.jsonl", "--provider-allowed"],
-            "provider_execution_forbidden",
+            ["--output-path", "candidate-output.jsonl", "--max-provider-calls", "1"],
+            "allow_provider_calls_required",
         ),
         (
-            ["--output-path", "candidate-output.jsonl", "--max-provider-calls", "1"],
-            "provider_execution_forbidden",
+            [
+                "--output-path",
+                "candidate-output.jsonl",
+                "--allow-provider-calls",
+                "true",
+            ],
+            "provider_required",
         ),
         (
             [],
@@ -710,8 +751,432 @@ def test_reextract_run_cli_fails_closed(monkeypatch, capsys, args, reason):
         else "output_path_provided=true" in output
     )
     assert "output_path_redacted=true" in output
+    assert "provider_name_redacted=true" in output
+    assert "model_name_redacted=true" in output
     assert "candidate-output.jsonl" not in output
     assert "candidate-output.jsonl" not in captured.err
+
+
+@pytest.mark.parametrize(
+    "blocked_output",
+    [
+        ("raw", "candidate.jsonl"),
+        ("text", "candidate.jsonl"),
+        ("index", "candidate.jsonl"),
+        ("extracted_notes", "candidate.jsonl"),
+        ("feedback", "candidate.jsonl"),
+        ("registry", "candidate.jsonl"),
+        ("reports", "candidate.jsonl"),
+        ("queue", "candidate.jsonl"),
+    ],
+)
+def test_reextract_run_cli_rejects_private_tree_candidate_output_paths(
+    tmp_path, monkeypatch, capsys, blocked_output
+):
+    base = _private_fixture(tmp_path)
+    _write_reextract_source(base)
+    blocked_dir, filename = blocked_output
+    target = base / blocked_dir / filename
+    monkeypatch.setattr(
+        "hermes_knowledge.cli.invoke_provider",
+        lambda *_args, **_kwargs: pytest.fail("provider must not run for blocked output roots"),
+    )
+
+    assert (
+        main(
+            [
+                "reextract-run",
+                "--base-dir",
+                str(base),
+                "--output-path",
+                str(target),
+                "--allow-provider-calls",
+                "true",
+                "--provider",
+                "command",
+                "--model",
+                "test-model",
+                "--max-provider-calls",
+                "1",
+                "--max-books",
+                "1",
+                "--max-passages-per-book",
+                "1",
+                "--max-notes",
+                "1",
+            ]
+        )
+        == 1
+    )
+
+    captured = capsys.readouterr()
+    output = captured.out.strip()
+    assert "abort_reason=isolated_output_path_required" in output
+    assert "provider_attempted=false" in output
+    assert str(target) not in output
+    assert str(target) not in captured.err
+
+
+def test_reextract_run_cli_live_dry_run_requires_model(tmp_path, monkeypatch, capsys):
+    base = _private_fixture(tmp_path)
+    _write_reextract_source(base)
+    monkeypatch.setattr(
+        "hermes_knowledge.cli.invoke_provider",
+        lambda *_args, **_kwargs: pytest.fail("provider must not run when model gate is missing"),
+    )
+
+    assert (
+        main(
+            [
+                "reextract-run",
+                "--base-dir",
+                str(base),
+                "--output-path",
+                str(tmp_path / "candidate-output.jsonl"),
+                "--allow-provider-calls",
+                "true",
+                "--provider",
+                "command",
+                "--max-provider-calls",
+                "1",
+                "--max-books",
+                "1",
+                "--max-passages-per-book",
+                "1",
+                "--max-notes",
+                "1",
+            ]
+        )
+        == 1
+    )
+
+    output = capsys.readouterr().out.strip()
+    assert "abort_reason=model_required" in output
+    assert "provider_attempted=false" in output
+    assert "provider_calls_used=0" in output
+
+
+def test_reextract_run_cli_live_dry_run_enforces_single_provider_call(tmp_path, monkeypatch, capsys):
+    base = _private_fixture(tmp_path)
+    _write_reextract_source(base)
+    monkeypatch.setattr(
+        "hermes_knowledge.cli.invoke_provider",
+        lambda *_args, **_kwargs: pytest.fail("provider must not run when max call gate is invalid"),
+    )
+
+    assert (
+        main(
+            [
+                "reextract-run",
+                "--base-dir",
+                str(base),
+                "--output-path",
+                str(tmp_path / "candidate-output.jsonl"),
+                "--allow-provider-calls",
+                "true",
+                "--provider",
+                "command",
+                "--model",
+                "test-model",
+                "--max-provider-calls",
+                "2",
+                "--max-books",
+                "1",
+                "--max-passages-per-book",
+                "1",
+                "--max-notes",
+                "1",
+            ]
+        )
+        == 1
+    )
+
+    output = capsys.readouterr().out.strip()
+    assert "abort_reason=max_provider_calls_must_equal_one" in output
+    assert "provider_attempted=false" in output
+
+
+def test_reextract_run_cli_live_dry_run_fails_closed_on_provider_failure(tmp_path, capsys):
+    base = _private_fixture(tmp_path)
+    active_path = _write_reextract_source(base)
+    output_path = tmp_path / "candidate-output.jsonl"
+    before = active_path.read_bytes()
+
+    assert (
+        main(
+            [
+                "reextract-run",
+                "--base-dir",
+                str(base),
+                "--output-path",
+                str(output_path),
+                "--allow-provider-calls",
+                "true",
+                "--provider",
+                "command",
+                "--model",
+                "test-model",
+                "--max-provider-calls",
+                "1",
+                "--max-books",
+                "1",
+                "--max-passages-per-book",
+                "1",
+                "--max-notes",
+                "1",
+            ],
+            provider_invoker=lambda *_args: ProviderResult("provider_error", message="failed"),
+        )
+        == 1
+    )
+
+    output = capsys.readouterr().out.strip()
+    assert "abort_reason=provider_failure" in output
+    assert "provider_attempted=true" in output
+    assert "provider_calls_used=1" in output
+    assert not output_path.exists()
+    assert active_path.read_bytes() == before
+
+
+def test_reextract_run_cli_live_dry_run_fails_closed_on_invalid_provider_response(tmp_path, capsys):
+    base = _private_fixture(tmp_path)
+    _write_reextract_source(base)
+
+    assert (
+        main(
+            [
+                "reextract-run",
+                "--base-dir",
+                str(base),
+                "--output-path",
+                str(tmp_path / "candidate-output.jsonl"),
+                "--allow-provider-calls",
+                "true",
+                "--provider",
+                "command",
+                "--model",
+                "test-model",
+                "--max-provider-calls",
+                "1",
+                "--max-books",
+                "1",
+                "--max-passages-per-book",
+                "1",
+                "--max-notes",
+                "1",
+            ],
+            provider_invoker=lambda *_args: ProviderResult("ok", output="not json"),
+        )
+        == 1
+    )
+
+    output = capsys.readouterr().out.strip()
+    assert "abort_reason=invalid_provider_response" in output
+    assert "notes_generated=0" in output
+    assert "notes_written=0" in output
+
+
+def test_reextract_run_cli_live_dry_run_fails_closed_on_schema_validation(tmp_path, capsys):
+    base = _private_fixture(tmp_path)
+    _write_reextract_source(base)
+
+    assert (
+        main(
+            [
+                "reextract-run",
+                "--base-dir",
+                str(base),
+                "--output-path",
+                str(tmp_path / "candidate-output.jsonl"),
+                "--allow-provider-calls",
+                "true",
+                "--provider",
+                "command",
+                "--model",
+                "test-model",
+                "--max-provider-calls",
+                "1",
+                "--max-books",
+                "1",
+                "--max-passages-per-book",
+                "1",
+                "--max-notes",
+                "1",
+            ],
+            provider_invoker=lambda *_args: ProviderResult(
+                "ok",
+                output=json.dumps(_provider_note(priority_score=999)),
+            ),
+        )
+        == 1
+    )
+
+    output = capsys.readouterr().out.strip()
+    assert "abort_reason=schema_validation_failed" in output
+    assert "notes_schema_invalid=1" in output
+    assert "notes_written=0" in output
+
+
+def test_reextract_run_cli_live_dry_run_requires_isolated_output_path(tmp_path, monkeypatch, capsys):
+    base = _private_fixture(tmp_path)
+    _write_reextract_source(base)
+    monkeypatch.setattr(
+        "hermes_knowledge.cli.invoke_provider",
+        lambda *_args, **_kwargs: pytest.fail("provider must not run for non-isolated output"),
+    )
+
+    assert (
+        main(
+            [
+                "reextract-run",
+                "--base-dir",
+                str(base),
+                "--output-path",
+                str(base / "extracted_notes" / "candidate-output.jsonl"),
+                "--allow-provider-calls",
+                "true",
+                "--provider",
+                "command",
+                "--model",
+                "test-model",
+                "--max-provider-calls",
+                "1",
+                "--max-books",
+                "1",
+                "--max-passages-per-book",
+                "1",
+                "--max-notes",
+                "1",
+            ]
+        )
+        == 1
+    )
+
+    output = capsys.readouterr().out.strip()
+    assert "abort_reason=isolated_output_path_required" in output
+    assert "provider_attempted=false" in output
+
+
+def test_reextract_run_cli_live_dry_run_never_overwrites_existing_candidate_output(tmp_path, monkeypatch, capsys):
+    base = _private_fixture(tmp_path)
+    _write_reextract_source(base)
+    output_path = tmp_path / "candidate-output.jsonl"
+    output_path.write_text("{\"existing\": true}\n", encoding="utf-8")
+    before = output_path.read_bytes()
+    monkeypatch.setattr(
+        "hermes_knowledge.cli.invoke_provider",
+        lambda *_args, **_kwargs: pytest.fail("provider must not run when overwrite is false"),
+    )
+
+    assert (
+        main(
+            [
+                "reextract-run",
+                "--base-dir",
+                str(base),
+                "--output-path",
+                str(output_path),
+                "--allow-provider-calls",
+                "true",
+                "--provider",
+                "command",
+                "--model",
+                "test-model",
+                "--max-provider-calls",
+                "1",
+                "--max-books",
+                "1",
+                "--max-passages-per-book",
+                "1",
+                "--max-notes",
+                "1",
+            ]
+        )
+        == 1
+    )
+
+    output = capsys.readouterr().out.strip()
+    assert "abort_reason=overwrite_forbidden" in output
+    assert output_path.read_bytes() == before
+
+
+def test_reextract_run_cli_live_dry_run_writes_isolated_candidate_output_and_audits_it(tmp_path, capsys):
+    base = _private_fixture(tmp_path)
+    active_path = _write_reextract_source(base)
+    before = active_path.read_bytes()
+    output_path = tmp_path / "candidate-output.jsonl"
+
+    assert (
+        main(
+            [
+                "reextract-run",
+                "--base-dir",
+                str(base),
+                "--output-path",
+                str(output_path),
+                "--allow-provider-calls",
+                "true",
+                "--provider",
+                "command",
+                "--model",
+                "test-model",
+                "--max-provider-calls",
+                "1",
+                "--max-books",
+                "1",
+                "--max-passages-per-book",
+                "1",
+                "--max-notes",
+                "1",
+            ],
+            provider_invoker=lambda *_args: ProviderResult("ok", output=json.dumps(_provider_note())),
+        )
+        == 0
+    )
+
+    output = capsys.readouterr().out.strip()
+    row = json.loads(output_path.read_text(encoding="utf-8").splitlines()[0])
+    assert "abort_reason=none" in output
+    assert "provider_attempted=true" in output
+    assert "provider_calls_used=1" in output
+    assert "notes_generated=1" in output
+    assert "notes_written=1" in output
+    assert "notes_schema_valid=1" in output
+    assert "notes_schema_invalid=0" in output
+    assert "post_generation_audit_required=true" in output
+    assert "post_generation_audit_run=true" in output
+    assert "candidate_readiness=ready" in output
+    assert "provider_name_provided=true" in output
+    assert "provider_name_redacted=true" in output
+    assert "model_name_provided=true" in output
+    assert "model_name_redacted=true" in output
+    assert "promotion_allowed=false" in output
+    assert "queue_insertion_allowed=false" in output
+    assert "active_generation_still_blocked=true" in output
+    assert row["note_id"].startswith("note-")
+    assert row["blocker_tags"] == ["walk_forward_fail"]
+    assert row["thesis"] == "Stable parameter regions improve walk-forward reliability."
+    assert row["evidence_summary"] == "Prefer broad stable regions over isolated optima."
+    assert row["risk_control_hint"] == "Measure adjacent parameter dispersion."
+    assert set(row) == {
+        "note_id",
+        "source_location",
+        "source_passage_id",
+        "blocker_tags",
+        "thesis",
+        "evidence_summary",
+        "risk_control_hint",
+    }
+    assert "source_excerpt" not in row
+    assert "Parameter stability and walk-forward robustness reduce overfitting." not in output_path.read_text(encoding="utf-8")
+    assert active_path.read_bytes() == before
+    assert str(output_path) not in output
+    assert str(base / "raw" / "book.pdf") not in output
+    assert "command" not in output_path.read_text(encoding="utf-8")
+    assert "Trading Systems and Methods" not in output
+    assert "Parameter stability and walk-forward robustness reduce overfitting." not in output
+    assert "test-model" not in output_path.read_text(encoding="utf-8")
+    assert "test-model" not in output
 
 
 def test_reextract_run_cli_does_not_write_private_or_feedback_files(tmp_path):

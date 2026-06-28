@@ -15,6 +15,16 @@ MAX_RULE_CHARS = 300
 MAX_TOTAL_TEXT_CHARS = 2000
 MIN_LIST_ITEMS = 1
 MAX_LIST_ITEMS = 12
+CANDIDATE_BLOCKER_MAX_CHARS = 100
+CANDIDATE_SAFE_FIELDS = (
+    "note_id",
+    "source_location",
+    "source_passage_id",
+    "blocker_tags",
+    "thesis",
+    "evidence_summary",
+    "risk_control_hint",
+)
 
 LIST_ITEM_MAX_CHARS = {
     "testable_rules": MAX_RULE_CHARS,
@@ -48,6 +58,10 @@ OPTIONAL_FIELDS = {
     "source_location",
     "source_passage_id",
     "implementation_hint",
+    "blocker_tags",
+    "thesis",
+    "evidence_summary",
+    "risk_control_hint",
 }
 ALLOWED_FIELDS = REQUIRED_FIELDS | OPTIONAL_FIELDS
 
@@ -160,6 +174,9 @@ def validate_entry(raw: dict[str, Any]) -> dict[str, Any]:
         ("source_location", 100),
         ("source_passage_id", 64),
         ("implementation_hint", 300),
+        ("thesis", MAX_HYPOTHESIS_CHARS),
+        ("evidence_summary", MAX_SUMMARY_CHARS),
+        ("risk_control_hint", 300),
     ):
         if field in entry:
             _require_short_text(entry, field, maximum)
@@ -198,6 +215,8 @@ def validate_entry(raw: dict[str, Any]) -> dict[str, Any]:
 
     for field, maximum_item_chars in LIST_ITEM_MAX_CHARS.items():
         _require_text_list(entry, field, maximum_item_chars)
+    if "blocker_tags" in entry:
+        _require_text_list(entry, "blocker_tags", 100)
 
     priority = entry.get("priority_score")
     if not isinstance(priority, (int, float)) or isinstance(priority, bool):
@@ -212,6 +231,60 @@ def validate_entry(raw: dict[str, Any]) -> dict[str, Any]:
         for key, value in entry.items()
         if key not in {"source_path", "source_sha256"}
         if isinstance(value, str)
+    ) + sum(
+        len(item)
+        for value in entry.values()
+        if isinstance(value, list)
+        for item in value
+        if isinstance(item, str)
+    )
+    if total_text_chars > MAX_TOTAL_TEXT_CHARS:
+        raise KnowledgeValidationError(
+            f"total text exceeds {MAX_TOTAL_TEXT_CHARS} characters"
+        )
+    return entry
+
+
+def validate_reextract_candidate_entry(raw: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise KnowledgeValidationError("candidate note must be an object")
+    forbidden_field = forbidden_prompt_reference_field(raw)
+    if forbidden_field:
+        raise KnowledgeValidationError(f"forbidden reference in {forbidden_field}")
+    missing = sorted(set(CANDIDATE_SAFE_FIELDS) - raw.keys())
+    if missing:
+        raise KnowledgeValidationError(
+            f"missing candidate fields: {', '.join(missing)}"
+        )
+    unexpected = sorted(raw.keys() - set(CANDIDATE_SAFE_FIELDS))
+    if unexpected:
+        raise KnowledgeValidationError(
+            f"unexpected candidate fields: {', '.join(unexpected)}"
+        )
+
+    entry = dict(raw)
+    for field, maximum in (
+        ("note_id", 64),
+        ("source_location", 100),
+        ("source_passage_id", 64),
+        ("thesis", MAX_HYPOTHESIS_CHARS),
+        ("evidence_summary", MAX_SUMMARY_CHARS),
+        ("risk_control_hint", 300),
+    ):
+        _require_short_text(entry, field, maximum)
+
+    if not re.fullmatch(r"note-[0-9a-fA-F]{16}", entry["note_id"]):
+        raise KnowledgeValidationError(
+            "note_id must use note- followed by 16 hash characters"
+        )
+    if not re.fullmatch(r"passage-[0-9a-fA-F]{16}", entry["source_passage_id"]):
+        raise KnowledgeValidationError(
+            "source_passage_id must use passage- followed by 16 hash characters"
+        )
+
+    _require_text_list(entry, "blocker_tags", CANDIDATE_BLOCKER_MAX_CHARS)
+    total_text_chars = sum(
+        len(value) for value in entry.values() if isinstance(value, str)
     ) + sum(
         len(item)
         for value in entry.values()

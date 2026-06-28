@@ -1025,8 +1025,8 @@ def test_controlled_reextraction_run_plan_reports_safe_default_dry_run_noop():
     ("kwargs", "reason"),
     [
         ({"dry_run": False}, "dry_run_required"),
-        ({"provider_allowed": True}, "provider_execution_forbidden"),
-        ({"max_provider_calls": 1}, "provider_execution_forbidden"),
+        ({"allow_provider_calls": True}, "provider_required"),
+        ({"max_provider_calls": 1}, "allow_provider_calls_required"),
         ({}, "output_path_required"),
         ({"overwrite_requested": True}, "overwrite_forbidden"),
         ({"promotion_requested": True}, "promotion_forbidden"),
@@ -1054,6 +1054,93 @@ def test_controlled_reextraction_run_plan_fails_closed(kwargs, reason):
     assert plan.notes_written == 0
     assert plan.notes_schema_valid == 0
     assert plan.notes_schema_invalid == 0
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "reason"),
+    [
+        ({"allow_provider_calls": True, "provider": ""}, "provider_required"),
+        ({"allow_provider_calls": True, "provider": "command", "model": ""}, "model_required"),
+        (
+            {
+                "allow_provider_calls": True,
+                "provider": "command",
+                "model": "test-model",
+                "max_provider_calls": 2,
+            },
+            "max_provider_calls_must_equal_one",
+        ),
+        (
+            {
+                "allow_provider_calls": True,
+                "provider": "command",
+                "model": "test-model",
+                "max_provider_calls": 1,
+                "max_books": 2,
+            },
+            "max_books_must_equal_one",
+        ),
+        (
+            {
+                "allow_provider_calls": True,
+                "provider": "command",
+                "model": "test-model",
+                "max_provider_calls": 1,
+                "max_passages_per_book": 2,
+            },
+            "max_passages_per_book_invalid",
+        ),
+        (
+            {
+                "allow_provider_calls": True,
+                "provider": "command",
+                "model": "test-model",
+                "max_provider_calls": 1,
+                "max_notes": 2,
+            },
+            "max_notes_invalid",
+        ),
+    ],
+)
+def test_controlled_reextraction_run_live_gate_requires_explicit_contract(kwargs, reason):
+    base_kwargs = {
+        "output_path": "candidate-output.jsonl",
+        "max_books": 1,
+        "max_passages_per_book": 1,
+        "max_notes": 1,
+        "max_provider_calls": 1,
+        "allow_provider_calls": True,
+        "provider": "command",
+        "model": "test-model",
+    }
+    base_kwargs.update(kwargs)
+
+    plan = plan_controlled_reextraction_run(**base_kwargs)
+
+    assert plan.aborted is True
+    assert plan.abort_reason == reason
+    assert plan.provider_attempted is False
+    assert plan.provider_calls_used == 0
+
+
+def test_controlled_reextraction_run_live_gate_accepts_single_call_dry_run_contract():
+    plan = plan_controlled_reextraction_run(
+        output_path="candidate-output.jsonl",
+        max_books=1,
+        max_passages_per_book=3,
+        max_notes=3,
+        max_provider_calls=1,
+        allow_provider_calls=True,
+        provider="command",
+        model="test-model",
+    )
+
+    assert plan.aborted is False
+    assert plan.abort_reason == "none"
+    assert plan.provider_allowed is True
+    assert plan.provider_attempted is False
+    assert plan.provider_calls_used == 0
+    assert plan.max_provider_calls == 1
 
 
 def test_controlled_reextraction_run_plan_does_not_write_or_expose_private_values(tmp_path):
