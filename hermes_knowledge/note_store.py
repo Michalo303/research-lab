@@ -15,6 +15,7 @@ from hermes_knowledge.passage_extractor import PassageCandidate
 from hermes_knowledge.schema import (
     KnowledgeValidationError,
     load_knowledge_jsonl,
+    validate_entry,
     validate_reextract_candidate_entry,
     validate_proposed_note,
 )
@@ -179,6 +180,65 @@ def write_candidate_notes(
     if validated:
         _atomic_jsonl(destination, validated)
     return WriteSummary(len(validated), 0)
+
+
+def _build_promoted_reextract_entry(
+    candidate_entry: dict[str, Any],
+    *,
+    source_book_id: str,
+    source_title: str,
+    source_sha256: str,
+    canonical_blocker: str,
+) -> dict[str, Any]:
+    candidate = validate_reextract_candidate_entry(candidate_entry)
+    entry = {
+        "book_id": source_book_id,
+        "source_title": source_title,
+        "source_path": f"private-book:{source_book_id}",
+        "source_sha256": source_sha256,
+        "concept": f"Explicit Knihomol promotion for {canonical_blocker}",
+        "hypothesis": candidate["thesis"],
+        "summary": candidate["evidence_summary"],
+        "source_excerpt": "",
+        "testable_rules": [candidate["risk_control_hint"]],
+        "compatible_builders": ["not_specified_in_candidate"],
+        "asset_classes": ["unknown"],
+        "timeframes": ["not_specified_in_candidate"],
+        "expected_edge": f"Address {canonical_blocker} with explicitly promoted evidence.",
+        "known_failure_modes": ["manual_promotion_only"],
+        "addresses_blockers": [canonical_blocker],
+        "priority_score": 1.0,
+        "implementation_hint": candidate["risk_control_hint"],
+        "note_id": candidate["note_id"],
+        "source_location": candidate["source_location"],
+        "source_passage_id": candidate["source_passage_id"],
+    }
+    return validate_entry(entry)
+
+
+def write_promoted_reextract_note(
+    path: str | Path,
+    candidate_entry: dict[str, Any],
+    *,
+    source_book_id: str,
+    source_title: str,
+    source_sha256: str,
+    canonical_blocker: str,
+) -> dict[str, Any]:
+    destination = Path(path)
+    entry = _build_promoted_reextract_entry(
+        candidate_entry,
+        source_book_id=source_book_id,
+        source_title=source_title,
+        source_sha256=source_sha256,
+        canonical_blocker=canonical_blocker,
+    )
+    existing = load_knowledge_jsonl(destination) if destination.exists() else []
+    note_id = str(entry["note_id"])
+    if any(str(row.get("note_id", "")) == note_id for row in existing):
+        raise ValueError(f"note already promoted: {note_id}")
+    _atomic_jsonl(destination, [*existing, entry])
+    return entry
 
 
 def promote_note(

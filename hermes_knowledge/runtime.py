@@ -11,6 +11,9 @@ import re
 from typing import Any
 
 from hermes_knowledge.books import load_book_index
+from hermes_knowledge.book_selector import SelectedBook
+from hermes_knowledge.note_store import write_promoted_reextract_note
+from hermes_knowledge.passage_extractor import extract_passages
 from hermes_knowledge.prompt import build_hermes_knowledge_prompt
 from hermes_knowledge.retriever import retrieve_for_blocker
 from hermes_knowledge.schema import (
@@ -220,6 +223,20 @@ class ReextractCandidateReview:
     active_generation_still_blocked: bool = True
 
 
+@dataclass(frozen=True)
+class ReextractCandidatePromotion:
+    promotion_attempted: bool = True
+    promotion_allowed: bool = False
+    promotion_succeeded: bool = False
+    promoted_note_id: str | None = None
+    target_blocker: str | None = None
+    target_file_relative: str | None = None
+    explicit_promotion_used: bool = False
+    active_generation_still_blocked: bool = True
+    queue_insertion_allowed: bool = False
+    provider_calls_used: int = 0
+
+
 def _normalize_retrieval_blocker_id(raw: str) -> str | None:
     normalized = str(raw).strip().casefold()
     if normalized == "drawdown":
@@ -284,6 +301,104 @@ def review_reextract_candidate_file(path: str | Path) -> ReextractCandidateRevie
         invalid_candidates=invalid_candidates,
         duplicate_note_ids=tuple(sorted(duplicate_note_ids)),
         blocker_tags_seen=tuple(sorted(blocker_tags_seen)),
+    )
+
+
+def promote_reextract_candidate(
+    *,
+    base_dir: str | Path,
+    input_path: str | Path,
+    note_id: str,
+) -> ReextractCandidatePromotion:
+    try:
+        review = review_reextract_candidate_file(input_path)
+    except OSError:
+        return ReextractCandidatePromotion()
+    if not review.review_valid:
+        return ReextractCandidatePromotion()
+
+    candidate_path = Path(input_path)
+    try:
+        matches = []
+        with candidate_path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                raw = json.loads(line)
+                entry = validate_reextract_candidate_entry(raw)
+                if entry["note_id"] == note_id:
+                    matches.append(entry)
+    except (OSError, json.JSONDecodeError, KnowledgeValidationError):
+        return ReextractCandidatePromotion()
+
+    if len(matches) != 1:
+        return ReextractCandidatePromotion()
+    candidate = matches[0]
+    blocker_tags = candidate["blocker_tags"]
+    if len(blocker_tags) != 1:
+        return ReextractCandidatePromotion()
+    raw_blocker = str(blocker_tags[0]).strip()
+    canonical_blocker = _normalize_retrieval_blocker_id(raw_blocker)
+    if canonical_blocker is None:
+        return ReextractCandidatePromotion()
+
+    try:
+        books = load_book_index(Path(base_dir) / "index" / "book_index.json")
+    except (OSError, ValueError, TypeError, KeyError):
+        return ReextractCandidatePromotion()
+    indexed_hashes = {book.book_id: book.source_sha256 for book in books}
+    try:
+        passages, _diagnostics = extract_passages(
+            [
+                SelectedBook(
+                    book=book,
+                    score=0.0,
+                    matched_terms=(),
+                    reasons=("reextract_candidate",),
+                )
+                for book in books
+            ],
+            raw_blocker,
+            text_dir=Path(base_dir) / "text",
+            passages_per_book=3,
+        )
+    except (OSError, ValueError, TypeError):
+        return ReextractCandidatePromotion()
+    source_matches = [
+        passage
+        for passage in passages
+        if passage.passage_id == candidate["source_passage_id"]
+        and passage.location == candidate["source_location"]
+    ]
+    if len(source_matches) != 1:
+        return ReextractCandidatePromotion()
+    source = source_matches[0]
+    if indexed_hashes.get(source.book_id) != source.source_sha256:
+        return ReextractCandidatePromotion()
+
+    target_relative = Path("extracted_notes") / f"{canonical_blocker}.jsonl"
+    try:
+        write_promoted_reextract_note(
+            Path(base_dir) / target_relative,
+            candidate,
+            source_book_id=source.book_id,
+            source_title=source.source_title,
+            source_sha256=source.source_sha256,
+            canonical_blocker=canonical_blocker,
+        )
+    except (OSError, ValueError, KnowledgeValidationError):
+        return ReextractCandidatePromotion(
+            target_blocker=canonical_blocker,
+            target_file_relative=target_relative.as_posix(),
+        )
+
+    return ReextractCandidatePromotion(
+        promotion_allowed=True,
+        promotion_succeeded=True,
+        promoted_note_id=str(candidate["note_id"]),
+        target_blocker=canonical_blocker,
+        target_file_relative=target_relative.as_posix(),
+        explicit_promotion_used=True,
     )
 
 
