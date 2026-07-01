@@ -163,6 +163,7 @@ class NoteGenerationDiagnostic:
     passage_id: str
     code: str
     message: str
+    reason: str = "none"
 
 
 class GroundingValidationError(ValueError):
@@ -284,11 +285,29 @@ def _ground_provider_note(
 
 
 def _prompt(candidate: PassageCandidate) -> str:
+    contract = {
+        "concept": "string",
+        "hypothesis": "string",
+        "summary": "string",
+        "testable_rules": ["string"],
+        "compatible_builders": ["string"],
+        "asset_classes": ["string"],
+        "timeframes": ["string"],
+        "expected_edge": "string",
+        "known_failure_modes": ["string"],
+        "implementation_hint": "string",
+        "priority_score": 0,
+    }
     return "\n".join(
         [
             "Convert the bounded book evidence below into exactly one JSON object.",
-            "Return JSON only, with exactly these fields:",
-            ", ".join(sorted(PROVIDER_FIELDS)),
+            "Return exactly one JSON object and nothing else.",
+            "Do not return prose, markdown, code fences, comments, or extra keys.",
+            "Use this exact top-level object shape and key names:",
+            json.dumps(contract, ensure_ascii=True, sort_keys=True),
+            "All non-array fields must be strings except priority_score, which must be a number from 0 to 100.",
+            "testable_rules, compatible_builders, asset_classes, timeframes, and known_failure_modes must each be arrays of non-empty strings.",
+            "Do not use null, booleans, nested objects, nested arrays, or placeholder keys.",
             "The note must be concise, testable, and must not relax validation gates.",
             "Do not return executable code, leverage expansion, private paths, or generic advice.",
             "Ground every claim only in the Evidence text below, not the blocker, title, book metadata, or general knowledge.",
@@ -305,6 +324,29 @@ def _prompt(candidate: PassageCandidate) -> str:
             f"Evidence: {candidate.text}",
         ]
     )
+
+
+def _schema_violation_reason(exc: Exception) -> str:
+    message = str(exc).casefold()
+    if "missing required fields" in message or "missing proposed note provenance" in message:
+        return "missing_required_field"
+    if "unexpected fields" in message or "unexpected proposed note fields" in message:
+        return "extra_key"
+    if "invalid provider fields:" in message:
+        if "missing=" in message:
+            return "missing_required_field"
+        if "extra=" in message:
+            return "extra_key"
+    if (
+        "must be an object" in message
+        or "must be text" in message
+        or "must be non-empty text" in message
+        or "must be an array" in message
+        or "must contain non-empty strings" in message
+        or "must be numeric" in message
+    ):
+        return "invalid_field_type"
+    return "invalid_field_value"
 
 
 def _note_id(candidate: PassageCandidate, provider_note: dict[str, Any]) -> str:
@@ -377,6 +419,7 @@ def generate_proposed_notes(
                     candidate.passage_id,
                     result.status or "provider_error",
                     "Provider did not return a usable note.",
+                    reason=result.status or "provider_error",
                 )
             )
             continue
@@ -388,6 +431,7 @@ def generate_proposed_notes(
                     candidate.passage_id,
                     "invalid_json",
                     "Provider output was not valid JSON.",
+                    reason="invalid_json",
                 )
             )
             continue
@@ -397,6 +441,7 @@ def generate_proposed_notes(
                     candidate.passage_id,
                     "invalid_json",
                     "Provider output was not a JSON object.",
+                    reason="invalid_json",
                 )
             )
             continue
@@ -409,14 +454,16 @@ def generate_proposed_notes(
                     candidate.passage_id,
                     "grounding_violation",
                     "Provider note made a material claim unsupported by the passage.",
+                    reason="grounding_violation",
                 )
             )
-        except (KnowledgeValidationError, KeyError, TypeError, ValueError):
+        except (KnowledgeValidationError, KeyError, TypeError, ValueError) as exc:
             diagnostics.append(
                 NoteGenerationDiagnostic(
                     candidate.passage_id,
                     "schema_violation",
                     "Provider note failed local schema validation.",
+                    reason=_schema_violation_reason(exc),
                 )
             )
     return proposals, diagnostics
