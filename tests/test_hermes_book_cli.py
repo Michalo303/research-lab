@@ -1053,8 +1053,56 @@ def test_reextract_run_cli_live_dry_run_fails_closed_on_schema_validation(tmp_pa
 
     output = capsys.readouterr().out.strip()
     assert "abort_reason=schema_validation_failed" in output
+    assert "diagnostic_code=schema_violation" in output
+    assert "diagnostic_reason=invalid_field_value" in output
     assert "notes_schema_invalid=1" in output
     assert "notes_written=0" in output
+
+
+def test_reextract_run_cli_live_dry_run_reports_redacted_schema_diagnostic_only(tmp_path, capsys):
+    base = _private_fixture(tmp_path)
+    _write_reextract_source(base)
+    provider_note = _provider_note()
+    provider_note.pop("summary")
+
+    assert (
+        main(
+            [
+                "reextract-run",
+                "--base-dir",
+                str(base),
+                "--output-path",
+                str(tmp_path / "candidate-output.jsonl"),
+                "--allow-provider-calls",
+                "true",
+                "--provider",
+                "command",
+                "--model",
+                "test-model",
+                "--max-provider-calls",
+                "1",
+                "--max-books",
+                "1",
+                "--max-passages-per-book",
+                "1",
+                "--max-notes",
+                "1",
+            ],
+            provider_invoker=lambda *_args: ProviderResult(
+                "ok",
+                output=json.dumps(provider_note),
+            ),
+        )
+        == 1
+    )
+
+    output = capsys.readouterr().out.strip()
+    assert "abort_reason=schema_validation_failed" in output
+    assert "diagnostic_code=schema_violation" in output
+    assert "diagnostic_reason=missing_required_field" in output
+    assert "summary" not in output
+    assert "Parameter neighborhood stability" not in output
+    assert "candidate-output.jsonl" not in output
 
 
 def test_reextract_run_cli_live_dry_run_requires_isolated_output_path(tmp_path, monkeypatch, capsys):

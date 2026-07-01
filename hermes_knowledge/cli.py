@@ -335,6 +335,8 @@ def _print_reextract_result(plan) -> None:
                 f"notes_written={plan.notes_written}",
                 f"notes_schema_valid={plan.notes_schema_valid}",
                 f"notes_schema_invalid={plan.notes_schema_invalid}",
+                f"diagnostic_code={plan.diagnostic_code}",
+                f"diagnostic_reason={plan.diagnostic_reason}",
                 f"post_generation_audit_required={str(plan.post_generation_audit_required).lower()}",
                 f"post_generation_audit_run={str(plan.post_generation_audit_run).lower()}",
                 f"candidate_readiness={plan.candidate_readiness}",
@@ -524,6 +526,8 @@ def _reextract_run(
         env=provider_env,
         provider_invoker=provider_invoker,
     )
+    schema_like_codes = {"invalid_json", "schema_violation", "grounding_violation"}
+    first_diagnostic = diagnostics[0] if diagnostics else None
     plan = type(plan)(
         **{
             **plan.__dict__,
@@ -531,7 +535,11 @@ def _reextract_run(
             "provider_calls_used": len(provider_candidates),
             "notes_generated": len(proposals),
             "notes_schema_valid": len(proposals),
-            "notes_schema_invalid": len(diagnostics),
+            "notes_schema_invalid": sum(
+                1 for item in diagnostics if item.code in schema_like_codes
+            ),
+            "diagnostic_code": first_diagnostic.code if first_diagnostic else "none",
+            "diagnostic_reason": first_diagnostic.reason if first_diagnostic else "none",
         }
     )
     if diagnostics:

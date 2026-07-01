@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+import hermes_knowledge.note_generator as note_generator
 import hermes_knowledge.runtime as knowledge_runtime
 
 import hermes_knowledge.runtime as knowledge_runtime
@@ -183,6 +184,17 @@ def test_generated_note_has_repository_owned_provenance_and_stable_id():
     assert "exactly one JSON object" in calls[0][1]
 
 
+def test_provider_prompt_declares_exact_minimal_json_contract():
+    prompt = note_generator._prompt(_passage())
+
+    assert "Return exactly one JSON object and nothing else." in prompt
+    assert "Do not return prose, markdown, code fences, comments, or extra keys." in prompt
+    assert '"concept": "string"' in prompt
+    assert '"testable_rules": ["string"]' in prompt
+    assert '"priority_score": 0' in prompt
+    assert '"source_excerpt"' not in prompt
+
+
 def test_proposal_envelope_cannot_pass_runtime_entry_validation():
     proposal = {
         "status": "proposed",
@@ -221,6 +233,26 @@ def test_generation_skips_only_failed_passage():
         "schema_violation",
     ]
     assert all("not json" not in item.message for item in diagnostics)
+
+
+def test_generation_reports_redacted_schema_reason_without_provider_output():
+    provider_note = _provider_note()
+    provider_note.pop("summary")
+
+    proposals, diagnostics = generate_proposed_notes(
+        [_passage()],
+        provider="command",
+        env={},
+        provider_invoker=lambda *_args: ProviderResult(
+            "ok", output=json.dumps(provider_note)
+        ),
+    )
+
+    assert proposals == []
+    assert len(diagnostics) == 1
+    assert diagnostics[0].code == "schema_violation"
+    assert diagnostics[0].message == "Provider note failed local schema validation."
+    assert diagnostics[0].reason == "missing_required_field"
 
 
 def test_proposed_note_requires_generation_provenance():

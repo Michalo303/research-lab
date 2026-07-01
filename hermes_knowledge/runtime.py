@@ -201,6 +201,8 @@ class ControlledReextractionRunPlan:
     notes_written: int = 0
     notes_schema_valid: int = 0
     notes_schema_invalid: int = 0
+    diagnostic_code: str = "none"
+    diagnostic_reason: str = "none"
     post_generation_audit_required: bool = True
     post_generation_audit_run: bool = False
     candidate_readiness: str = "blocked"
