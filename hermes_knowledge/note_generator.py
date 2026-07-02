@@ -419,7 +419,7 @@ def generate_proposed_notes(
                     candidate.passage_id,
                     result.status or "provider_error",
                     "Provider did not return a usable note.",
-                    reason=result.status or "provider_error",
+                    reason=result.reason if result.reason != "none" else (result.status or "provider_error"),
                 )
             )
             continue

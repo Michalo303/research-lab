@@ -20,6 +20,7 @@ class ProviderResult:
     status: str
     output: str | None = None
     message: str = ""
+    reason: str = "none"
 
 
 def invoke_provider(
@@ -82,13 +83,19 @@ def _invoke_openai_compatible(prompt: str, env: Mapping[str, str], urlopen: Call
     api_key = str(env.get("HERMES_OPENAI_API_KEY", "")).strip()
     if not base_url or not model:
         return ProviderResult(
-            "provider_unavailable", message="HERMES_OPENAI_BASE_URL and HERMES_OPENAI_MODEL are required"
+            "provider_unavailable",
+            message="HERMES_OPENAI_BASE_URL and HERMES_OPENAI_MODEL are required",
+            reason="provider_not_configured",
         )
     endpoint_error = _validate_openai_base_url(base_url)
     if endpoint_error:
-        return ProviderResult("provider_error", message=endpoint_error)
+        return ProviderResult("provider_error", message=endpoint_error, reason="invalid_base_url")
     if not api_key and not _is_loopback(base_url):
-        return ProviderResult("provider_unavailable", message="HERMES_OPENAI_API_KEY is required for remote endpoints")
+        return ProviderResult(
+            "provider_unavailable",
+            message="HERMES_OPENAI_API_KEY is required for remote endpoints",
+            reason="missing_api_key",
+        )
     payload = json.dumps(
         {
             "model": model,
@@ -106,18 +113,50 @@ def _invoke_openai_compatible(prompt: str, env: Mapping[str, str], urlopen: Call
         with urlopen(request, timeout=_timeout(env)) as response:
             raw_response = response.read(MAX_PROVIDER_OUTPUT_BYTES + 1)
             if len(raw_response) > MAX_PROVIDER_OUTPUT_BYTES:
-                return ProviderResult("provider_error", message="OpenAI-compatible provider response exceeded the size limit")
+                return ProviderResult(
+                    "provider_error",
+                    message="OpenAI-compatible provider response exceeded the size limit",
+                    reason="response_too_large",
+                )
             response_payload = json.loads(raw_response.decode("utf-8"))
         content = response_payload["choices"][0]["message"]["content"]
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError, ValueError) as exc:
+    except urllib.error.HTTPError as exc:
         return ProviderResult(
-            "provider_error", message=_redact(f"OpenAI-compatible provider request failed: {_safe_error(exc)}", env)
+            "provider_error",
+            message="OpenAI-compatible provider request failed.",
+            reason=_classify_openai_http_error(exc),
         )
-    except (json.JSONDecodeError, KeyError, IndexError, TypeError, UnicodeDecodeError) as exc:
-        return ProviderResult("provider_error", message=f"OpenAI-compatible provider returned an invalid response: {exc}")
+    except TimeoutError:
+        return ProviderResult(
+            "provider_error",
+            message="OpenAI-compatible provider request timed out.",
+            reason="timeout",
+        )
+    except urllib.error.URLError:
+        return ProviderResult(
+            "provider_error",
+            message="OpenAI-compatible provider request failed.",
+            reason="network_error",
+        )
+    except OSError:
+        return ProviderResult(
+            "provider_error",
+            message="OpenAI-compatible provider request failed.",
+            reason="network_error",
+        )
+    except (json.JSONDecodeError, KeyError, IndexError, TypeError, UnicodeDecodeError, ValueError):
+        return ProviderResult(
+            "provider_error",
+            message="OpenAI-compatible provider returned an invalid response.",
+            reason="malformed_response",
+        )
     output = str(content or "").strip()
     if not output:
-        return ProviderResult("provider_error", message="OpenAI-compatible provider returned empty content")
+        return ProviderResult(
+            "provider_error",
+            message="OpenAI-compatible provider returned empty content",
+            reason="empty_response",
+        )
     return ProviderResult("ok", output=output)
 
 
@@ -150,6 +189,77 @@ def _safe_error(exc: Exception) -> str:
     if isinstance(exc, urllib.error.HTTPError):
         return f"HTTP {exc.code}"
     return str(getattr(exc, "reason", exc))[:500]
+
+
+def _classify_openai_http_error(exc: urllib.error.HTTPError) -> str:
+    body = _http_error_body(exc)
+    if _looks_like_model_error(body):
+        return "model_unavailable"
+    if _looks_like_quota_error(body):
+        return "quota_exceeded"
+    if exc.code == 429 or _looks_like_rate_limit_error(body):
+        return "rate_limited"
+    if exc.code in {401, 403}:
+        return "authentication_failure"
+    if 400 <= exc.code <= 499:
+        return "http_4xx"
+    if 500 <= exc.code <= 599:
+        return "http_5xx"
+    return "http_error"
+
+
+def _http_error_body(exc: urllib.error.HTTPError) -> str:
+    try:
+        raw = exc.read(8192)
+    except Exception:
+        return ""
+    if not raw:
+        return ""
+    try:
+        return raw.decode("utf-8", errors="ignore").casefold()
+    except Exception:
+        return ""
+
+
+def _looks_like_model_error(body: str) -> bool:
+    return any(
+        marker in body
+        for marker in (
+            "model not found",
+            "model_not_found",
+            "unknown model",
+            "unsupported model",
+            "does not exist",
+            "model access denied",
+            "access to model",
+        )
+    )
+
+
+def _looks_like_quota_error(body: str) -> bool:
+    return any(
+        marker in body
+        for marker in (
+            "insufficient_quota",
+            "insufficient quota",
+            "quota exceeded",
+            "billing",
+            "payment required",
+            "credits exhausted",
+        )
+    )
+
+
+def _looks_like_rate_limit_error(body: str) -> bool:
+    return any(
+        marker in body
+        for marker in (
+            "rate limit",
+            "too many requests",
+            "requests per min",
+            "tokens per min",
+        )
+    )
 
 
 def _redact(message: str, env: Mapping[str, str]) -> str:

@@ -978,6 +978,54 @@ def test_reextract_run_cli_live_dry_run_fails_closed_on_provider_failure(tmp_pat
     assert active_path.read_bytes() == before
 
 
+def test_reextract_run_cli_live_dry_run_reports_fixed_provider_reason_only(tmp_path, capsys):
+    base = _private_fixture(tmp_path)
+    active_path = _write_reextract_source(base)
+    output_path = tmp_path / "candidate-output.jsonl"
+    before = active_path.read_bytes()
+
+    assert (
+        main(
+            [
+                "reextract-run",
+                "--base-dir",
+                str(base),
+                "--output-path",
+                str(output_path),
+                "--allow-provider-calls",
+                "true",
+                "--provider",
+                "openai_compatible",
+                "--model",
+                "test-model",
+                "--max-provider-calls",
+                "1",
+                "--max-books",
+                "1",
+                "--max-passages-per-book",
+                "1",
+                "--max-notes",
+                "1",
+            ],
+            provider_invoker=lambda *_args: ProviderResult(
+                "provider_error",
+                message="OpenAI-compatible provider request failed: unauthorized",
+                reason="authentication_failure",
+            ),
+        )
+        == 1
+    )
+
+    output = capsys.readouterr().out.strip()
+    assert "abort_reason=provider_failure" in output
+    assert "diagnostic_code=provider_error" in output
+    assert "diagnostic_reason=authentication_failure" in output
+    assert "unauthorized" not in output
+    assert "test-model" not in output
+    assert not output_path.exists()
+    assert active_path.read_bytes() == before
+
+
 def test_reextract_run_cli_live_dry_run_fails_closed_on_invalid_provider_response(tmp_path, capsys):
     base = _private_fixture(tmp_path)
     _write_reextract_source(base)
