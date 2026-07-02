@@ -2,6 +2,8 @@ import json
 import subprocess
 import urllib.error
 
+import pytest
+
 from research_lab.hermes.providers import invoke_provider
 
 
@@ -190,6 +192,143 @@ def test_openai_provider_error_does_not_expose_api_key():
     )
 
     assert result.status == "provider_error"
+    assert "do-not-log-this" not in result.message
+
+
+def test_openai_compatible_remote_missing_api_key_has_fixed_reason():
+    result = invoke_provider(
+        "openai_compatible",
+        "prompt",
+        {
+            "HERMES_OPENAI_BASE_URL": "https://api.example.test/v1",
+            "HERMES_OPENAI_MODEL": "model",
+        },
+    )
+
+    assert result.status == "provider_unavailable"
+    assert result.reason == "missing_api_key"
+
+
+@pytest.mark.parametrize(
+    ("code", "body", "expected_reason"),
+    [
+        (401, b'{"error":{"message":"bad key"}}', "authentication_failure"),
+        (403, b'{"error":{"message":"forbidden"}}', "authentication_failure"),
+        (403, b'{"error":{"message":"insufficient quota"}}', "quota_exceeded"),
+        (404, b'{"error":{"message":"model not found"}}', "model_unavailable"),
+        (403, b'{"error":{"message":"model access denied"}}', "model_unavailable"),
+        (429, b'{"error":{"message":"rate limit exceeded"}}', "rate_limited"),
+        (429, b'{"error":{"message":"insufficient quota"}}', "quota_exceeded"),
+        (400, b'{"error":{"message":"unsupported model"}}', "model_unavailable"),
+        (418, b'{"error":{"message":"teapot"}}', "http_4xx"),
+        (500, b'{"error":{"message":"server error"}}', "http_5xx"),
+    ],
+)
+def test_openai_compatible_classifies_http_failures_to_fixed_reasons(
+    code, body, expected_reason
+):
+    def fake_urlopen(request, timeout):
+        raise urllib.error.HTTPError(
+            request.full_url,
+            code,
+            "provider failure",
+            hdrs=None,
+            fp=_Response(json.loads(body.decode("utf-8"))),
+        )
+
+    result = invoke_provider(
+        "openai_compatible",
+        "prompt",
+        {
+            "HERMES_OPENAI_BASE_URL": "https://api.example.test/v1",
+            "HERMES_OPENAI_MODEL": "model",
+            "HERMES_OPENAI_API_KEY": "do-not-log-this",
+        },
+        urlopen=fake_urlopen,
+    )
+
+    assert result.status == "provider_error"
+    assert result.reason == expected_reason
+    assert "do-not-log-this" not in result.message
+
+
+def test_openai_compatible_classifies_timeout_without_exposing_provider_text():
+    def fake_urlopen(request, timeout):
+        raise TimeoutError("timed out while contacting provider")
+
+    result = invoke_provider(
+        "openai_compatible",
+        "prompt",
+        {
+            "HERMES_OPENAI_BASE_URL": "https://api.example.test/v1",
+            "HERMES_OPENAI_MODEL": "model",
+            "HERMES_OPENAI_API_KEY": "do-not-log-this",
+        },
+        urlopen=fake_urlopen,
+    )
+
+    assert result.status == "provider_error"
+    assert result.reason == "timeout"
+    assert "do-not-log-this" not in result.message
+
+
+def test_openai_compatible_classifies_network_error_without_exposing_provider_text():
+    def fake_urlopen(request, timeout):
+        raise urllib.error.URLError("connection refused")
+
+    result = invoke_provider(
+        "openai_compatible",
+        "prompt",
+        {
+            "HERMES_OPENAI_BASE_URL": "https://api.example.test/v1",
+            "HERMES_OPENAI_MODEL": "model",
+            "HERMES_OPENAI_API_KEY": "do-not-log-this",
+        },
+        urlopen=fake_urlopen,
+    )
+
+    assert result.status == "provider_error"
+    assert result.reason == "network_error"
+    assert "do-not-log-this" not in result.message
+
+
+def test_openai_compatible_classifies_malformed_response_to_fixed_reason():
+    def fake_urlopen(request, timeout):
+        return _Response({"choices": []})
+
+    result = invoke_provider(
+        "openai_compatible",
+        "prompt",
+        {
+            "HERMES_OPENAI_BASE_URL": "https://api.example.test/v1",
+            "HERMES_OPENAI_MODEL": "model",
+            "HERMES_OPENAI_API_KEY": "do-not-log-this",
+        },
+        urlopen=fake_urlopen,
+    )
+
+    assert result.status == "provider_error"
+    assert result.reason == "malformed_response"
+    assert "do-not-log-this" not in result.message
+
+
+def test_openai_compatible_classifies_empty_content_to_fixed_reason():
+    def fake_urlopen(request, timeout):
+        return _Response({"choices": [{"message": {"content": "   "}}]})
+
+    result = invoke_provider(
+        "openai_compatible",
+        "prompt",
+        {
+            "HERMES_OPENAI_BASE_URL": "https://api.example.test/v1",
+            "HERMES_OPENAI_MODEL": "model",
+            "HERMES_OPENAI_API_KEY": "do-not-log-this",
+        },
+        urlopen=fake_urlopen,
+    )
+
+    assert result.status == "provider_error"
+    assert result.reason == "empty_response"
     assert "do-not-log-this" not in result.message
 
 

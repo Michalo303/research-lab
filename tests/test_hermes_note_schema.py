@@ -255,6 +255,25 @@ def test_generation_reports_redacted_schema_reason_without_provider_output():
     assert diagnostics[0].reason == "missing_required_field"
 
 
+def test_generation_preserves_fixed_provider_reason_without_provider_text():
+    proposals, diagnostics = generate_proposed_notes(
+        [_passage()],
+        provider="openai_compatible",
+        env={},
+        provider_invoker=lambda *_args: ProviderResult(
+            "provider_error",
+            message="OpenAI-compatible provider request failed.",
+            reason="authentication_failure",
+        ),
+    )
+
+    assert proposals == []
+    assert len(diagnostics) == 1
+    assert diagnostics[0].code == "provider_error"
+    assert diagnostics[0].message == "Provider did not return a usable note."
+    assert diagnostics[0].reason == "authentication_failure"
+
+
 def test_proposed_note_requires_generation_provenance():
     with pytest.raises(KnowledgeValidationError, match="source_passage_id"):
         validate_proposed_note({"status": "proposed", "entry": {}})
