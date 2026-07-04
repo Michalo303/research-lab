@@ -1,6 +1,8 @@
 from types import SimpleNamespace
 import csv
 import json
+import urllib.request
+import sys
 
 import pandas as pd
 import pytest
@@ -101,6 +103,27 @@ def test_massive_fallback_happens_when_eodhd_fails(monkeypatch, tmp_path, capsys
     assert all(row["selected_provider"] == "massive" for row in bundle.manifest["symbol_diagnostics"])
     assert all(row["fallback_used"] is True for row in bundle.manifest["symbol_diagnostics"])
     assert "WARNING: EODHD credentials exist but EODHD was not selected" in capsys.readouterr().out
+
+
+def test_synthetic_router_ignores_ambient_provider_credentials_and_stays_local(monkeypatch, tmp_path):
+    monkeypatch.setenv("RESEARCH_LAB_DATA_PROVIDER", "synthetic")
+    monkeypatch.setenv("RESEARCH_LAB_USE_YFINANCE", "0")
+    monkeypatch.setenv("EODHD_API_KEY", "fake-eodhd")
+    monkeypatch.setenv("MASSIVE_API_KEY", "fake-massive")
+    monkeypatch.setenv("OPENAI_API_KEY", "fake-openai")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-anthropic")
+
+    def blocked(*args, **kwargs):
+        raise AssertionError("live provider or transport path invoked")
+
+    monkeypatch.setattr(runner, "load_eodhd_daily_universe", blocked)
+    monkeypatch.setattr(runner, "load_massive_daily_universe", blocked)
+    monkeypatch.setattr(urllib.request, "urlopen", blocked)
+    monkeypatch.setitem(sys.modules, "yfinance", SimpleNamespace(download=blocked))
+
+    bundle = runner._load_daily_data_bundle(LabConfig.from_env(tmp_path), symbols=["SPY"])
+    assert bundle.manifest["source"] == "synthetic"
+    assert bundle.manifest["symbols"] == ["SPY"]
 
 
 def test_registry_leaderboard_and_report_preserve_actual_provider(tmp_path):

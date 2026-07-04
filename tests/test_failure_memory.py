@@ -152,7 +152,7 @@ def test_metadata_only_repair_flags_do_not_change_execution_fingerprint_or_dedup
     assert dedupe_strategy_specs([plain, annotated]) == [plain]
 
 
-def test_unordered_symbols_have_same_failure_memory_signature_and_execution_fingerprint():
+def test_ordered_symbols_have_distinct_failure_memory_signature_and_execution_fingerprint():
     first_parameters = {"symbols": ["SPY", "TLT"], "lookback": 126}
     second_parameters = {"symbols": ["TLT", "SPY"], "lookback": 126}
     first = _spec(
@@ -168,11 +168,11 @@ def test_unordered_symbols_have_same_failure_memory_signature_and_execution_fing
         parameters=second_parameters,
     )
 
-    assert execution_parameter_signature(first_parameters) == execution_parameter_signature(second_parameters)
-    assert strategy_execution_fingerprint(first) == strategy_execution_fingerprint(second)
+    assert execution_parameter_signature(first_parameters) != execution_parameter_signature(second_parameters)
+    assert strategy_execution_fingerprint(first) != strategy_execution_fingerprint(second)
 
 
-def test_symbol_list_reordering_only_does_not_reduce_failure_penalty(tmp_path):
+def test_symbol_list_reordering_is_treated_as_an_executable_parameter_change(tmp_path):
     _write_experiments(
         tmp_path,
         [
@@ -201,7 +201,7 @@ def test_symbol_list_reordering_only_does_not_reduce_failure_penalty(tmp_path):
         parameters={"symbols": ["TLT", "SPY"], "lookback": 126},
     )
 
-    assert memory.penalty_for_spec(reordered).score == memory.penalty_for_spec(original).score
+    assert memory.penalty_for_spec(reordered).score < memory.penalty_for_spec(original).score
 
 
 def test_metadata_only_repair_flags_do_not_bypass_queue_dedupe(tmp_path):

@@ -174,6 +174,56 @@ def test_metadata_includes_mixed_source_summary(tmp_path):
     }
 
 
+def test_metadata_and_report_include_compact_daily_experiment_funnel(tmp_path):
+    outcome = write_daily_report_artifacts(
+        tmp_path,
+        [_result("eodhd", tier="A"), _result("eodhd", strategy_id="R2", tier="Rejected", tier_reason="Unseen max drawdown exceeds 15%", split_metrics={"unseen": {"max_drawdown": -0.20}})],
+        timestamp=datetime(2026, 6, 3, 12, 3, 4, tzinfo=timezone.utc),
+        git_info={"commit": "abcdef1234567890", "branch": "main", "dirty": False},
+        extra_metadata={
+            "daily_experiment_selection": {
+                "budget": 18,
+                "recent_window": 50,
+                "proposed": 7,
+                "family_filtered": 2,
+                "source_filtered": 1,
+                "invalid_filtered": 0,
+                "recent_duplicate_skipped": 1,
+                "in_batch_duplicate_skipped": 1,
+                "budget_skipped": 0,
+                "selected": 2,
+                "attempted": 2,
+                "completed": 2,
+                "missing_data_skipped": 0,
+                "queue_rows_consumed": False,
+            }
+        },
+    )
+
+    metadata = json.loads(outcome["metadata_path"].read_text(encoding="utf-8"))
+    assert metadata["daily_experiment_funnel"]["selector_counts"] == {
+        "proposed": 7,
+        "family_filtered": 2,
+        "source_filtered": 1,
+        "invalid_filtered": 0,
+        "recent_duplicate_skipped": 1,
+        "in_batch_duplicate_skipped": 1,
+        "budget_skipped": 0,
+        "selected": 2,
+    }
+    assert metadata["daily_experiment_funnel"]["execution_counts"] == {
+        "attempted": 2,
+        "completed": 2,
+        "missing_data_skipped": 0,
+    }
+    assert metadata["daily_experiment_funnel"]["execution_failure_contract"] == "fail_fast_no_completed_report"
+    assert metadata["daily_experiment_funnel"]["result_diagnostics"]["tier_ab"] == 1
+    report = outcome["run_report_path"].read_text(encoding="utf-8")
+    assert "## Compact Funnel" in report
+    assert "| proposed | selector outcome | 7 |" in report
+    assert "- queue rows consumed: false" in report
+
+
 def test_metadata_includes_bounded_walk_forward_diagnostics_for_etf_tier_c_near_miss(tmp_path):
     outcome = write_daily_report_artifacts(
         tmp_path,

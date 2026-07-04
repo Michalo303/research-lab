@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
-from collections import Counter, defaultdict
+from collections import Counter, defaultdict, deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
 from research_lab.config import REAL_EOD_DATA_SOURCES
 from research_lab.queue_dedupe import candidate_fingerprint
+from research_lab.jsonl import tail_jsonl
 
 
 ACCEPTED_TIERS = {"A", "B"}
@@ -286,20 +287,10 @@ def _is_structural_intraday_synthetic_auxiliary_result(result: dict[str, Any]) -
 def _load_recent_results(source: Path | Iterable[dict[str, Any]], max_results: int) -> list[dict[str, Any]]:
     if isinstance(source, Path):
         path = source / "registry" / "experiments.jsonl"
-        if not path.exists():
-            return []
-        rows = []
-        for line in path.read_text(encoding="utf-8").splitlines()[-max_results:]:
-            if not line.strip():
-                continue
-            try:
-                item = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(item, dict):
-                rows.append(item)
-        return rows
-    return [item for item in list(source)[-max_results:] if isinstance(item, dict)]
+        return tail_jsonl(path, max_results)
+    if max_results <= 0:
+        return []
+    return [item for item in deque(source, maxlen=max_results) if isinstance(item, dict)]
 
 
 def _candidate_penalties(memory: FailureMemory) -> tuple[CandidatePenalty, ...]:

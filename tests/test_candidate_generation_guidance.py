@@ -294,13 +294,13 @@ def test_shared_source_key_suppresses_only_when_execution_identity_is_equal(tmp_
     assert selection["diagnostics"]["reasons"] == {"source_key_duplicate": 1}
 
 
-def test_executable_dedupe_collapses_specs_that_only_reorder_unordered_symbols():
+def test_executable_dedupe_preserves_symbol_order_that_can_break_rank_ties():
     first = _spec("FIRST", {"symbols": ["SPY", "TLT"], "lookback": 126})
     second = _spec("SECOND", {"symbols": ["TLT", "SPY"], "lookback": 126})
 
     retained = dedupe_strategy_specs([first, second])
 
-    assert [spec.short_name for spec in retained] == ["FIRST"]
+    assert [spec.short_name for spec in retained] == ["FIRST", "SECOND"]
 
 
 def test_executable_dedupe_preserves_order_sensitive_weight_lists():
