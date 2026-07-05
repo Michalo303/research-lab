@@ -22,6 +22,9 @@ class DataBundle:
     manifest: dict
 
 
+REQUIRED_OHLCV_FIELDS = ("open", "high", "low", "close", "volume")
+
+
 def _seed(name: str) -> int:
     digest = hashlib.sha256(name.encode("utf-8")).hexdigest()
     return int(digest[:8], 16)
@@ -207,6 +210,179 @@ def load_eodhd_daily_universe(
     )
     (root / "data" / "manifests" / "daily_universe.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return DataBundle("daily_universe", "1D", panel, manifest)
+
+
+def load_cached_eodhd_daily_universe(root: Path, symbols: list[str]) -> DataBundle:
+    """Load an immutable, previously materialized real-EODHD daily universe."""
+    root = Path(root)
+    csv_path = root / "data" / "processed" / "eodhd_daily_universe.csv"
+    manifest_path = root / "data" / "manifests" / "daily_universe.json"
+    requested_symbols = _normalized_requested_symbols(symbols)
+    stored_manifest = validate_cached_eodhd_daily_universe_metadata(root, requested_symbols)
+
+    try:
+        panel = pd.read_csv(csv_path, header=[0, 1], index_col=0)
+    except Exception as exc:
+        raise ValueError(f"cached EODHD CSV is malformed: {csv_path}") from exc
+    if panel.empty or not isinstance(panel.columns, pd.MultiIndex) or panel.columns.nlevels != 2:
+        raise ValueError("cached EODHD CSV is malformed or empty: expected two-level symbol/OHLCV columns")
+    try:
+        parsed_index = pd.to_datetime(panel.index, errors="raise", format="mixed")
+    except (TypeError, ValueError) as exc:
+        raise ValueError("cached EODHD CSV date index is malformed") from exc
+    if parsed_index.has_duplicates:
+        raise ValueError("cached EODHD CSV date index must be unique")
+    if not parsed_index.is_monotonic_increasing:
+        raise ValueError("cached EODHD CSV date index must be sorted")
+    panel.index = pd.DatetimeIndex(parsed_index)
+    panel.columns = pd.MultiIndex.from_tuples(
+        [(str(symbol).strip(), str(field).strip().lower()) for symbol, field in panel.columns]
+    )
+    if panel.columns.has_duplicates:
+        raise ValueError("cached EODHD CSV contains duplicate symbol/OHLCV columns")
+
+    selected_columns: list[tuple[str, str]] = []
+    for symbol in requested_symbols:
+        for field in REQUIRED_OHLCV_FIELDS:
+            column = (symbol, field)
+            if column not in panel.columns:
+                raise ValueError(f"cached EODHD CSV is missing {field} for requested symbol {symbol}")
+            original = panel[column]
+            numeric = pd.to_numeric(original, errors="coerce")
+            numeric_values = numeric.dropna().to_numpy(dtype=float)
+            if (
+                original.notna().sum() != numeric.notna().sum()
+                or numeric_values.size == 0
+                or not np.isfinite(numeric_values).all()
+            ):
+                raise ValueError(f"cached EODHD CSV requires usable numeric {field} values for {symbol}")
+            panel[column] = numeric.astype(float)
+            selected_columns.append(column)
+
+    selected = panel.loc[:, selected_columns]
+    selected.columns = pd.MultiIndex.from_tuples(selected_columns)
+    if selected.dropna(how="all").empty:
+        raise ValueError("cached EODHD CSV has no usable requested data")
+    diagnostics = _cached_symbol_diagnostics(requested_symbols, selected)
+    usable = selected.dropna(how="all")
+    start = usable.index.min()
+    end = usable.index.max()
+    years = max((end - start).days / 365.25, 0.0)
+    manifest = {
+        "name": "daily_universe",
+        "source": "eodhd",
+        "provider": "eodhd",
+        "load_mode": "offline_cache",
+        "provider_request_made": False,
+        "fallback_used": False,
+        "symbols": requested_symbols,
+        "requested_symbols": requested_symbols,
+        "rows": int(len(selected)),
+        "start": str(start),
+        "end": str(end),
+        "years": years,
+        "research_only": True,
+        "stored_csv": str(csv_path),
+        "source_manifest": str(manifest_path),
+        "source_manifest_created_at": stored_manifest.get("created_at", ""),
+        "symbol_diagnostics": diagnostics,
+    }
+    return DataBundle("daily_universe", "1D", selected, manifest)
+
+
+def validate_cached_eodhd_daily_universe_metadata(root: Path, symbols: list[str]) -> dict:
+    """Validate fixed cache paths and provenance without parsing market data."""
+    root = Path(root)
+    csv_path = root / "data" / "processed" / "eodhd_daily_universe.csv"
+    manifest_path = root / "data" / "manifests" / "daily_universe.json"
+    if not csv_path.is_file():
+        raise ValueError(f"cached EODHD CSV is missing: {csv_path}")
+    if not manifest_path.is_file():
+        raise ValueError(f"cached EODHD manifest is missing: {manifest_path}")
+    if csv_path.stat().st_size <= 0:
+        raise ValueError(f"cached EODHD CSV is empty: {csv_path}")
+    if manifest_path.stat().st_size <= 0:
+        raise ValueError(f"cached EODHD manifest is empty: {manifest_path}")
+
+    try:
+        stored_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cached EODHD manifest is malformed: {manifest_path}") from exc
+    if not isinstance(stored_manifest, dict):
+        raise ValueError("cached EODHD manifest is malformed: expected a JSON object")
+    _validate_cached_eodhd_provenance(stored_manifest, csv_path)
+
+    requested_symbols = _normalized_requested_symbols(symbols)
+    manifest_symbols = stored_manifest.get("symbols") or stored_manifest.get("requested_symbols")
+    if not isinstance(manifest_symbols, list):
+        raise ValueError("cached EODHD manifest is inconsistent: symbols are missing")
+    missing_manifest_symbols = [symbol for symbol in requested_symbols if symbol not in manifest_symbols]
+    if missing_manifest_symbols:
+        raise ValueError(
+            "cached EODHD manifest does not contain requested symbols: "
+            + ", ".join(missing_manifest_symbols)
+        )
+    validated = dict(stored_manifest)
+    validated["requested_symbols"] = requested_symbols
+    return validated
+
+
+def _normalized_requested_symbols(symbols: list[str]) -> list[str]:
+    requested = list(dict.fromkeys(str(symbol).strip() for symbol in symbols if str(symbol).strip()))
+    if not requested:
+        raise ValueError("cached EODHD load requires at least one requested symbol")
+    return requested
+
+
+def _validate_cached_eodhd_provenance(manifest: dict, csv_path: Path) -> None:
+    source = manifest.get("source")
+    provider = manifest.get("provider")
+    if type(source) is not str or source != "eodhd" or type(provider) is not str or provider != "eodhd":
+        raise ValueError("cached EODHD manifest provenance must canonically prove EODHD")
+    if "fallback_used" in manifest and manifest.get("fallback_used") is not False:
+        raise ValueError("cached EODHD manifest fallback marker must be the boolean false")
+    if any(manifest.get(key) for key in ("fallback_reason", "fallback_source", "fallback_provider")):
+        raise ValueError("cached EODHD manifest records an explicit fallback")
+    diagnostics = manifest.get("symbol_diagnostics") or []
+    if not isinstance(diagnostics, list) or any(
+        isinstance(row, dict)
+        and "fallback_used" in row
+        and row.get("fallback_used") is not False
+        for row in diagnostics
+    ):
+        raise ValueError("cached EODHD manifest symbol provenance records fallback usage")
+    if not str(manifest.get("start") or "").strip() or not str(manifest.get("end") or "").strip():
+        raise ValueError("cached EODHD manifest provenance requires non-empty start and end")
+    if int(manifest.get("rows") or 0) <= 0:
+        raise ValueError("cached EODHD manifest is inconsistent: rows must be positive")
+    stored_csv = str(manifest.get("stored_csv") or "").strip()
+    if not stored_csv or Path(stored_csv).resolve() != csv_path.resolve():
+        raise ValueError("cached EODHD manifest is inconsistent with the stored CSV path")
+
+
+def _cached_symbol_diagnostics(symbols: list[str], panel: pd.DataFrame) -> list[dict]:
+    diagnostics = []
+    for symbol in symbols:
+        frame = panel[symbol].dropna(how="all")
+        if frame.empty:
+            raise ValueError(f"cached EODHD CSV has no usable requested data for {symbol}")
+        start = frame.index.min()
+        end = frame.index.max()
+        diagnostics.append(
+            {
+                "requested_symbol": symbol,
+                "provider_symbol": _eodhd_symbol(symbol),
+                "selected_provider": "eodhd",
+                "load_mode": "offline_cache",
+                "provider_request_made": False,
+                "fallback_used": False,
+                "first_date": str(start.date()),
+                "last_date": str(end.date()),
+                "daily_bars": int(len(frame)),
+                "history_years": round(max((end - start).days / 365.25, 0.0), 2),
+            }
+        )
+    return diagnostics
 
 
 def load_intraday_symbol(root: Path, symbol: str) -> DataBundle:

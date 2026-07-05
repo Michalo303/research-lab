@@ -84,6 +84,11 @@ def test_daily_runner_surfaces_queued_candidate_dedupe_diagnostics_in_report_met
             "recent_executable_duplicate": 1,
             "effective_parameter_duplicate": 1,
         },
+        "recovery_target": 1,
+        "selected_new": 1,
+        "covered_by_recent_real": 0,
+        "recovery_resolved": 1,
+        "recovery_shortfall": 0,
     }
     metadata = {}
 
@@ -205,6 +210,71 @@ def test_daily_runner_preserves_fail_fast_backtest_exception_contract(tmp_path, 
     with pytest.raises(RuntimeError, match="backtest failed"):
         run_daily_research(tmp_path, recovery_mode=True, recovery_day=1)
     assert report_called is False
+
+
+def test_unresolved_recovery_fails_before_data_loading_or_artifact_mutation(tmp_path, monkeypatch):
+    import research_lab.runner as runner
+
+    monkeypatch.setenv("RESEARCH_LAB_MODE", "research_only")
+    monkeypatch.setattr(
+        runner,
+        "select_daily_candidates",
+        lambda *args, **kwargs: {
+            "specs": [_spec("H1")],
+            "diagnostics": {
+                "selection_mode": "bounded_recovery",
+                "recovery_target": 4,
+                "selected_new": 1,
+                "covered_by_recent_real": 0,
+                "recovery_resolved": 1,
+                "recovery_shortfall": 3,
+            },
+        },
+    )
+
+    def blocked(*args, **kwargs):
+        raise AssertionError("mutation or execution path reached")
+
+    monkeypatch.setattr(runner, "ensure_project_structure", blocked)
+    monkeypatch.setattr(runner, "_load_daily_data_bundle", blocked)
+    monkeypatch.setattr(runner, "write_daily_report_artifacts", blocked)
+    monkeypatch.setattr(runner, "append_jsonl", blocked)
+
+    with pytest.raises(RuntimeError, match="recovery.*shortfall|resolve all",):
+        run_daily_research(tmp_path, recovery_mode=True, recovery_day=1)
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_normal_daily_preserves_structure_setup_before_selection(tmp_path, monkeypatch):
+    import research_lab.runner as runner
+
+    order = []
+    monkeypatch.setenv("RESEARCH_LAB_MODE", "research_only")
+    monkeypatch.setattr(runner, "ensure_project_structure", lambda root: order.append("ensure"))
+    monkeypatch.setattr(
+        runner,
+        "select_daily_candidates",
+        lambda *args, **kwargs: order.append("select")
+        or {
+            "specs": [],
+            "diagnostics": {
+                "selection_mode": "normal_daily",
+                "proposed": 0,
+                "selected": 0,
+            },
+        },
+    )
+    monkeypatch.setattr(runner, "write_leaderboard", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "write_allocation_model", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "write_daily_report_artifacts",
+        lambda *args, **kwargs: {"latest_report_path": tmp_path / "daily.md"},
+    )
+
+    assert run_daily_research(tmp_path) == []
+    assert order == ["ensure", "select"]
 
 
 def test_used_note_ids_stream_queue_once_for_all_selected_candidates(tmp_path, monkeypatch):
@@ -369,6 +439,19 @@ def test_zero_selected_run_writes_completed_report_without_loading_data(
                 "queue_inspected": queue_inspected,
                 "queue_consumed": False,
                 "candidate_source": candidate_source,
+                **(
+                    {
+                        "proposed": 4,
+                        "recovery_target": 4,
+                        "selected_new": 0,
+                        "covered_by_recent_real": 4,
+                        "recovery_resolved": 4,
+                        "recovery_shortfall": 0,
+                        "covered_recent_results": [],
+                    }
+                    if selection_mode == "bounded_recovery"
+                    else {}
+                ),
             },
         },
     )

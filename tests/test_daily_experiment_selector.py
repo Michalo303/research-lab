@@ -9,6 +9,7 @@ from research_lab.strategies.baselines import (
     RECOVERY_ALLOWED_BUILDERS,
     RECOVERY_EXECUTABLE_PARAMETER_SCHEMAS,
     StrategySpec,
+    _proven_eodhd_result_rejection_reason,
     _recent_experiment_results,
     recovery_manifest_specs,
     select_daily_experiment_candidates,
@@ -275,13 +276,325 @@ def test_seven_day_manifest_is_unique_bounded_and_queue_independent(tmp_path):
     assert counts[0] > 0 and counts[1] > 0
 
 
-def test_recent_fingerprints_are_excluded_without_padding(tmp_path):
+def test_recent_qualifying_eodhd_results_cover_recovery_without_new_execution(tmp_path):
     first_day = recovery_manifest_specs(1)
     _write_experiments(tmp_path, [_result_from_spec(spec, index) for index, spec in enumerate(first_day)])
     selection = select_daily_experiment_candidates(tmp_path, recovery_day=1, budget=18, recent_window=50)
     assert selection["specs"] == []
     assert selection["diagnostics"]["recent_duplicate_skipped"] == len(first_day)
     assert selection["diagnostics"]["selected"] == 0
+    assert selection["diagnostics"]["recovery_target"] == 4
+    assert selection["diagnostics"]["selected_new"] == 0
+    assert selection["diagnostics"]["covered_by_recent_real"] == 4
+    assert selection["diagnostics"]["nonqualifying_recent_matches"] == 0
+    assert selection["diagnostics"]["recovery_resolved"] == 4
+    assert selection["diagnostics"]["recovery_shortfall"] == 0
+    assert len(selection["diagnostics"]["covered_recent_results"]) == 4
+    assert {
+        row["strategy_id"] for row in selection["diagnostics"]["covered_recent_results"]
+    } == {f"RESULT_{index}" for index in range(4)}
+
+
+@pytest.mark.parametrize(
+    ("missing_key", "reason"),
+    [
+        ("data_source", "missing_data_source"),
+        ("split_metrics", "missing_split_evidence"),
+        ("cost_stress", "missing_cost_stress_evidence"),
+        ("walk_forward", "missing_walk_forward_evidence"),
+    ],
+)
+def test_incomplete_structured_eodhd_evidence_does_not_cover_recovery(
+    tmp_path, missing_key, reason
+):
+    candidate = recovery_manifest_specs(1)[0]
+    result = _result_from_spec(candidate, 1)
+    result.pop(missing_key)
+    result["provenance_note"] = "real EODHD data"
+    _write_experiments(tmp_path, [result])
+
+    selection = select_daily_experiment_candidates(tmp_path, recovery_day=1, budget=18, recent_window=50)
+
+    assert strategy_execution_fingerprint(candidate) in {
+        strategy_execution_fingerprint(spec) for spec in selection["specs"]
+    }
+    diagnostics = selection["diagnostics"]
+    assert diagnostics["covered_by_recent_real"] == 0
+    assert diagnostics["nonqualifying_recent_matches"] == 1
+    assert diagnostics["rejected_recent_matches"][0]["reason"] == reason
+
+
+@pytest.mark.parametrize("data_source", ["synthetic", "fallback", "unknown"])
+def test_non_eodhd_top_level_source_never_covers_recovery(tmp_path, data_source):
+    candidate = recovery_manifest_specs(1)[0]
+    result = _result_from_spec(candidate, 1)
+    result["data_source"] = data_source
+    _write_experiments(tmp_path, [result])
+
+    selection = select_daily_experiment_candidates(tmp_path, recovery_day=1, budget=18, recent_window=50)
+
+    assert selection["diagnostics"]["covered_by_recent_real"] == 0
+    assert selection["diagnostics"]["rejected_recent_matches"][0]["reason"] == "non_real_eodhd_source"
+
+
+@pytest.mark.parametrize("section", ["split_metrics", "cost_stress", "walk_forward"])
+@pytest.mark.parametrize("section_source", ["synthetic", "fallback", "unknown"])
+def test_conflicting_structured_section_provenance_does_not_cover_recovery(
+    tmp_path, section, section_source
+):
+    candidate = recovery_manifest_specs(1)[0]
+    result = _result_from_spec(candidate, 1)
+    result[section]["data_source"] = section_source
+    _write_experiments(tmp_path, [result])
+
+    selection = select_daily_experiment_candidates(tmp_path, recovery_day=1, budget=18, recent_window=50)
+
+    assert selection["diagnostics"]["covered_by_recent_real"] == 0
+    assert selection["diagnostics"]["rejected_recent_matches"][0]["reason"] == "conflicting_structured_provenance"
+
+
+@pytest.mark.parametrize("section", ["split_metrics", "cost_stress", "walk_forward"])
+@pytest.mark.parametrize(
+    ("value", "reason"),
+    [
+        (None, "conflicting_structured_provenance"),
+        ("EODHD", "conflicting_structured_provenance"),
+        (" eodhd ", "conflicting_structured_provenance"),
+        ("synthetic", "conflicting_structured_provenance"),
+        ("fallback", "conflicting_structured_provenance"),
+        ("unknown", "conflicting_structured_provenance"),
+        (123, "conflicting_structured_provenance"),
+    ],
+)
+def test_section_level_provenance_must_be_explicit_canonical_eodhd(tmp_path, section, value, reason):
+    candidate = recovery_manifest_specs(1)[0]
+    result = _result_from_spec(candidate, 1)
+    result[section]["data_source"] = value
+    _write_experiments(tmp_path, [result])
+
+    selection = select_daily_experiment_candidates(tmp_path, recovery_day=1, budget=18, recent_window=50)
+
+    assert selection["diagnostics"]["covered_by_recent_real"] == 0
+    assert selection["diagnostics"]["rejected_recent_matches"][0]["reason"] == reason
+
+
+@pytest.mark.parametrize("section", ["split_metrics", "cost_stress", "walk_forward"])
+def test_missing_section_level_provenance_does_not_cover_recovery(tmp_path, section):
+    candidate = recovery_manifest_specs(1)[0]
+    result = _result_from_spec(candidate, 1)
+    result[section].pop("data_source")
+    _write_experiments(tmp_path, [result])
+
+    selection = select_daily_experiment_candidates(tmp_path, recovery_day=1, budget=18, recent_window=50)
+
+    assert selection["diagnostics"]["covered_by_recent_real"] == 0
+    assert selection["diagnostics"]["rejected_recent_matches"][0]["reason"] == "conflicting_structured_provenance"
+
+
+@pytest.mark.parametrize("container", ["result", "split_metrics", "cost_stress", "walk_forward"])
+def test_explicit_fallback_metadata_anywhere_does_not_cover_recovery(tmp_path, container):
+    candidate = recovery_manifest_specs(1)[0]
+    result = _result_from_spec(candidate, 1)
+    target = result if container == "result" else result[container]
+    target["fallback_source"] = "synthetic"
+    _write_experiments(tmp_path, [result])
+
+    selection = select_daily_experiment_candidates(tmp_path, recovery_day=1, budget=18, recent_window=50)
+
+    assert selection["diagnostics"]["covered_by_recent_real"] == 0
+    assert selection["diagnostics"]["rejected_recent_matches"][0]["reason"] == "fallback_used"
+
+
+@pytest.mark.parametrize("section", ["split_metrics", "cost_stress", "walk_forward"])
+def test_nested_structured_fallback_metadata_does_not_cover_recovery(tmp_path, section):
+    candidate = recovery_manifest_specs(1)[0]
+    result = _result_from_spec(candidate, 1)
+    result[section]["details"] = {"fallback_source": "synthetic"}
+    _write_experiments(tmp_path, [result])
+
+    selection = select_daily_experiment_candidates(tmp_path, recovery_day=1, budget=18, recent_window=50)
+
+    assert selection["diagnostics"]["covered_by_recent_real"] == 0
+    assert selection["diagnostics"]["rejected_recent_matches"][0]["reason"] == "fallback_used"
+
+
+@pytest.mark.parametrize("section", ["split_metrics", "cost_stress", "walk_forward"])
+def test_nested_noncanonical_structured_provenance_does_not_cover_recovery(tmp_path, section):
+    candidate = recovery_manifest_specs(1)[0]
+    result = _result_from_spec(candidate, 1)
+    result[section]["details"] = {"provider": "synthetic"}
+    _write_experiments(tmp_path, [result])
+
+    selection = select_daily_experiment_candidates(tmp_path, recovery_day=1, budget=18, recent_window=50)
+
+    assert selection["diagnostics"]["covered_by_recent_real"] == 0
+    assert selection["diagnostics"]["rejected_recent_matches"][0]["reason"] == "conflicting_structured_provenance"
+
+
+@pytest.mark.parametrize("section", ["split_metrics", "cost_stress", "walk_forward"])
+def test_nested_plain_text_fallback_word_does_not_trigger_false_positive(tmp_path, section):
+    candidate = recovery_manifest_specs(1)[0]
+    result = _result_from_spec(candidate, 1)
+    result[section]["details"] = {"label": "fallback regime review only"}
+    _write_experiments(tmp_path, [result])
+
+    selection = select_daily_experiment_candidates(tmp_path, recovery_day=1, budget=18, recent_window=50)
+
+    assert selection["diagnostics"]["covered_by_recent_real"] == 1
+    assert selection["diagnostics"]["nonqualifying_recent_matches"] == 0
+
+
+@pytest.mark.parametrize("section", ["split_metrics", "cost_stress", "walk_forward"])
+def test_cyclic_structured_metadata_fails_closed_without_exception(section):
+    candidate = recovery_manifest_specs(1)[0]
+    result = _result_from_spec(candidate, 1)
+    details = {}
+    details["self"] = details
+    result[section]["details"] = details
+
+    reason = _proven_eodhd_result_rejection_reason(result)
+
+    assert reason == "malformed_result_metadata"
+
+
+@pytest.mark.parametrize("section", ["split_metrics", "cost_stress", "walk_forward"])
+def test_nested_depth_within_bound_can_still_cover_recovery(tmp_path, section):
+    candidate = recovery_manifest_specs(1)[0]
+    result = _result_from_spec(candidate, 1)
+    nested = {"label": "ok"}
+    for _ in range(10):
+        nested = {"children": [nested]}
+    result[section]["details"] = nested
+    _write_experiments(tmp_path, [result])
+
+    selection = select_daily_experiment_candidates(tmp_path, recovery_day=1, budget=18, recent_window=50)
+
+    assert selection["diagnostics"]["covered_by_recent_real"] == 1
+    assert selection["diagnostics"]["nonqualifying_recent_matches"] == 0
+
+
+@pytest.mark.parametrize("section", ["split_metrics", "cost_stress", "walk_forward"])
+def test_nested_depth_beyond_bound_fails_closed_without_exception(tmp_path, section):
+    candidate = recovery_manifest_specs(1)[0]
+    result = _result_from_spec(candidate, 1)
+    nested = {"label": "too deep"}
+    for _ in range(30):
+        nested = {"children": [nested]}
+    result[section]["details"] = nested
+    _write_experiments(tmp_path, [result])
+
+    selection = select_daily_experiment_candidates(tmp_path, recovery_day=1, budget=18, recent_window=50)
+
+    assert selection["diagnostics"]["covered_by_recent_real"] == 0
+    assert selection["diagnostics"]["rejected_recent_matches"][0]["reason"] == "malformed_result_metadata"
+
+
+@pytest.mark.parametrize("section", ["split_metrics", "cost_stress", "walk_forward"])
+@pytest.mark.parametrize(
+    ("key", "value", "reason"),
+    [
+        ("fallback_used", False, None),
+        ("fallback_used", True, "fallback_used"),
+        ("fallback_used", "false", "conflicting_structured_provenance"),
+        ("fallback_used", "true", "conflicting_structured_provenance"),
+        ("fallback_used", 0, "conflicting_structured_provenance"),
+        ("fallback_used", 1, "conflicting_structured_provenance"),
+        ("fallback_used", None, "conflicting_structured_provenance"),
+        ("fallback_used", [], "conflicting_structured_provenance"),
+        ("fallback_used", {}, "conflicting_structured_provenance"),
+        ("used_fallback", False, None),
+        ("used_fallback", True, "fallback_used"),
+        ("used_fallback", "false", "conflicting_structured_provenance"),
+        ("used_fallback", "true", "conflicting_structured_provenance"),
+        ("used_fallback", 0, "conflicting_structured_provenance"),
+        ("used_fallback", 1, "conflicting_structured_provenance"),
+        ("used_fallback", None, "conflicting_structured_provenance"),
+        ("used_fallback", [], "conflicting_structured_provenance"),
+        ("used_fallback", {}, "conflicting_structured_provenance"),
+        ("synthetic_fallback", False, None),
+        ("synthetic_fallback", True, "fallback_used"),
+        ("synthetic_fallback", "false", "conflicting_structured_provenance"),
+        ("synthetic_fallback", "true", "conflicting_structured_provenance"),
+        ("synthetic_fallback", 0, "conflicting_structured_provenance"),
+        ("synthetic_fallback", 1, "conflicting_structured_provenance"),
+        ("synthetic_fallback", None, "conflicting_structured_provenance"),
+        ("synthetic_fallback", [], "conflicting_structured_provenance"),
+        ("synthetic_fallback", {}, "conflicting_structured_provenance"),
+    ],
+)
+def test_boolean_fallback_markers_require_real_bool_types(tmp_path, section, key, value, reason):
+    candidate = recovery_manifest_specs(1)[0]
+    result = _result_from_spec(candidate, 1)
+    result[section]["details"] = {key: value}
+    _write_experiments(tmp_path, [result])
+
+    selection = select_daily_experiment_candidates(tmp_path, recovery_day=1, budget=18, recent_window=50)
+
+    if reason is None:
+        assert selection["diagnostics"]["covered_by_recent_real"] == 1
+        assert selection["diagnostics"]["nonqualifying_recent_matches"] == 0
+    else:
+        assert selection["diagnostics"]["covered_by_recent_real"] == 0
+        assert selection["diagnostics"]["rejected_recent_matches"][0]["reason"] == reason
+
+
+@pytest.mark.parametrize(
+    ("overrides", "reason"),
+    [
+        ({"data_source": "synthetic", "data_manifest": {"source": "synthetic", "symbols": ["SPY"], "start": "2020-01-01", "end": "2024-01-01"}}, "non_real_eodhd_source"),
+        ({"data_manifest": {"source": "eodhd", "symbols": ["SPY"], "start": "2020-01-01", "end": "2024-01-01", "fallback_used": True}}, "fallback_used"),
+        ({"data_manifest": {"source": "eodhd", "provider": "synthetic", "symbols": ["SPY"], "start": "2020-01-01", "end": "2024-01-01", "fallback_used": False}}, "conflicting_data_source_provenance"),
+        ({"data_manifest": {"source": "eodhd", "symbols": ["SPY"], "start": "2020-01-01", "end": "2024-01-01", "fallback_used": "false"}}, "ambiguous_fallback_marker"),
+        ({"data_manifest": {"source": "eodhd", "symbols": ["SPY"], "start": "", "end": "", "fallback_used": False}}, "missing_data_period"),
+        ({"data_manifest": {"source": "eodhd", "symbols": ["SPY"], "start": "2020-01-01", "end": "2024-01-01"}}, "missing_fallback_provenance"),
+        ({"data_manifest": {"source": "eodhd", "symbols": [], "start": "2020-01-01", "end": "2024-01-01", "fallback_used": False}}, "missing_required_symbols"),
+        ({"split_metrics": []}, "malformed_result_metadata"),
+    ],
+)
+def test_nonqualifying_recent_match_does_not_suppress_real_cache_execution(tmp_path, overrides, reason):
+    candidate = recovery_manifest_specs(1)[0]
+    result = _result_from_spec(candidate, 1)
+    result.update(overrides)
+    _write_experiments(tmp_path, [result])
+
+    selection = select_daily_experiment_candidates(tmp_path, recovery_day=1, budget=18, recent_window=50)
+
+    assert strategy_execution_fingerprint(candidate) in {
+        strategy_execution_fingerprint(spec) for spec in selection["specs"]
+    }
+    diagnostics = selection["diagnostics"]
+    assert diagnostics["selected_new"] == 4
+    assert diagnostics["covered_by_recent_real"] == 0
+    assert diagnostics["nonqualifying_recent_matches"] == 1
+    assert diagnostics["recovery_resolved"] == diagnostics["recovery_target"] == 4
+    assert diagnostics["recovery_shortfall"] == 0
+    assert diagnostics["rejected_recent_matches"][0]["reason"] == reason
+
+
+def test_qualifying_coverage_still_reports_other_nonqualifying_recent_matches(tmp_path):
+    candidate = recovery_manifest_specs(1)[0]
+    synthetic = _result_from_spec(candidate, 1)
+    synthetic.update(
+        {
+            "strategy_id": "SYNTHETIC_MATCH",
+            "data_source": "synthetic",
+            "data_manifest": {
+                "source": "synthetic",
+                "symbols": ["SPY"],
+                "start": "2020-01-01",
+                "end": "2024-01-01",
+            },
+        }
+    )
+    qualifying = _result_from_spec(candidate, 2)
+    _write_experiments(tmp_path, [synthetic, qualifying])
+
+    selection = select_daily_experiment_candidates(tmp_path, recovery_day=1, budget=18, recent_window=50)
+
+    diagnostics = selection["diagnostics"]
+    assert diagnostics["covered_by_recent_real"] == 1
+    assert diagnostics["nonqualifying_recent_matches"] == 1
+    assert diagnostics["rejected_recent_matches"][0]["strategy_id"] == "SYNTHETIC_MATCH"
 
 
 def test_selector_accounting_reconciles_every_proposal(tmp_path):
@@ -371,6 +684,23 @@ def test_compact_funnel_reports_mode_aware_queue_semantics(selection_mode, queue
         assert "queue rows were inspected" not in rendered
 
 
+def test_normal_daily_funnel_does_not_populate_recovery_counts():
+    funnel = build_daily_experiment_funnel(
+        [],
+        {"selection_mode": "normal_daily", "selected": 3, "attempted": 0, "completed": 0},
+    )
+
+    assert funnel["recovery_counts"] == {
+        "manifest_candidates": 0,
+        "selected_new": 0,
+        "covered_by_recent_real": 0,
+        "nonqualifying_recent_matches": 0,
+        "recovery_resolved": 0,
+        "recovery_shortfall": 0,
+    }
+    assert "recovery resolution" not in "\n".join(render_daily_experiment_funnel(funnel))
+
+
 def _spec(builder, *, family, parameters, asset_class="ETF", timeframe="1D"):
     return StrategySpec(
         family=family,
@@ -415,6 +745,15 @@ def _write_experiments(root, rows):
 
 
 def _result_from_spec(spec, index):
+    symbols = []
+    for key in ("symbol", "risk_symbol"):
+        value = spec.parameters.get(key)
+        if value and value not in symbols:
+            symbols.append(value)
+    for key in ("symbols", "risk_assets", "defensive_assets"):
+        for value in spec.parameters.get(key, []):
+            if value not in symbols:
+                symbols.append(value)
     return {
         "strategy_id": f"RESULT_{index}",
         "family": spec.family,
@@ -423,6 +762,31 @@ def _result_from_spec(spec, index):
         "short_name": spec.short_name,
         "builder": spec.builder,
         "parameters": spec.parameters,
+        "data_source": "eodhd",
+        "data_manifest": {
+            "source": "eodhd",
+            "provider": "eodhd",
+            "symbols": symbols,
+            "start": "2020-01-01",
+            "end": "2024-01-01",
+            "fallback_used": False,
+        },
+        "tier": "C",
+        "tier_reason": "test evidence",
+        "split_metrics": {
+            "data_source": "eodhd",
+            "unseen": {"cagr": 0.05, "max_drawdown": -0.08, "trade_count": 42},
+        },
+        "cost_stress": {
+            "data_source": "eodhd",
+            "double_unseen_cagr": 0.04,
+            "survives_double_cost": True,
+        },
+        "walk_forward": {
+            "data_source": "eodhd",
+            "window_count": 4,
+            "pass_rate": 0.75,
+        },
     }
 
 

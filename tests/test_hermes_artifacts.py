@@ -33,7 +33,7 @@ def test_prefers_latest_immutable_daily_run_report(tmp_path):
 
     assert diagnostic.path == immutable
     assert "excessive drawdown" in diagnostic.text
-    assert diagnostic.blocker == "drawdown"
+    assert diagnostic.blocker == "drawdown_fail"
 
 
 def test_falls_back_to_latest_daily_report(tmp_path):
@@ -44,7 +44,7 @@ def test_falls_back_to_latest_daily_report(tmp_path):
     diagnostic = read_diagnostic_input(tmp_path)
 
     assert diagnostic.path == daily
-    assert diagnostic.blocker == "drawdown"
+    assert diagnostic.blocker == "drawdown_fail"
 
 
 def test_dominant_blocker_has_safe_fallback():

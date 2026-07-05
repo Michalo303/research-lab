@@ -58,6 +58,37 @@ def test_maps_validated_hermes_record_to_exact_whitelisted_builder(tmp_path):
     ]
 
 
+def test_used_note_ids_compatibility_is_read_only_bounded_and_ignores_malformed_rows(tmp_path):
+    queue = tmp_path / "registry" / "hypothesis_queue.jsonl"
+    queue.parent.mkdir(parents=True)
+    queue.write_text(
+        "not-json\n"
+        + json.dumps(
+            {
+                "hypothesis_id": "HERMES_RUN_001",
+                "used_note_ids": [
+                    "note-1111111111111111",
+                    "invalid-note",
+                    42,
+                    "note-2222222222222222",
+                    "note-3333333333333333",
+                    "note-4444444444444444",
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    before = queue.read_bytes()
+
+    assert _used_note_ids(tmp_path, "HERMES_RUN_001") == [
+        "note-1111111111111111",
+        "note-2222222222222222",
+        "note-3333333333333333",
+    ]
+    assert queue.read_bytes() == before
+
+
 def test_skips_tampered_hermes_record_before_daily_execution(tmp_path):
     _write_queue(tmp_path, [_hermes_record(builder="arbitrary_python")])
 

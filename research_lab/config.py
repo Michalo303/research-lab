@@ -26,8 +26,9 @@ class LabConfig:
     @classmethod
     def from_env(cls, root: Path | None = None) -> "LabConfig":
         resolved_root = root or Path(os.getenv("RESEARCH_LAB_ROOT", ".")).resolve()
-        data_provider = os.getenv("RESEARCH_LAB_DATA_PROVIDER", "synthetic").lower()
+        data_provider = cls.data_provider_from_env()
         use_yfinance = os.getenv("RESEARCH_LAB_USE_YFINANCE", "0") == "1" or data_provider == "yfinance"
+        eodhd_api_key = "" if data_provider == "eodhd_cache" else os.getenv("EODHD_API_KEY", "")
         return cls(
             root=resolved_root,
             mode=os.getenv("RESEARCH_LAB_MODE", "research_only"),
@@ -39,9 +40,13 @@ class LabConfig:
             massive_base_url=os.getenv("MASSIVE_BASE_URL", "https://api.massive.com"),
             massive_start_date=os.getenv("MASSIVE_START_DATE", "2021-05-24"),
             massive_adjusted=os.getenv("MASSIVE_ADJUSTED", "true").lower() in {"1", "true", "yes"},
-            eodhd_api_key=os.getenv("EODHD_API_KEY", ""),
+            eodhd_api_key=eodhd_api_key,
             eodhd_start_date=os.getenv("EODHD_START_DATE", "1990-01-01"),
         )
+
+    @staticmethod
+    def data_provider_from_env() -> str:
+        return os.getenv("RESEARCH_LAB_DATA_PROVIDER", "synthetic").lower()
 
 
 REQUIRED_DIRS = [
