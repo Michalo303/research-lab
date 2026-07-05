@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -11,13 +12,114 @@ import pandas as pd
 
 from research_lab.failure_memory import build_failure_memory, execution_relevant_parameters
 from research_lab.hermes.schema import validate_hypothesis
+from research_lab.jsonl import iter_jsonl, tail_jsonl
 from research_lab.queue_dedupe import candidate_fingerprint
 from research_lab.research_orchestrator import build_research_guidance, score_candidate_direction, summarize_recent_failures
 from research_lab.risk_management import has_strong_rotation_risk_overlay
 
 
-UNORDERED_EXECUTABLE_LIST_KEYS = {"symbols", "universe", "tickers", "assets", "asset_universe"}
 MAX_QUEUE_DEDUPE_SKIP_DETAILS = 50
+DAILY_EXPERIMENT_BUDGET = 18
+DAILY_RECENT_EXPERIMENT_WINDOW = 50
+RECOVERY_ALLOWED_BUILDERS = {
+    "long_term_vol_target",
+    "long_term_vol_target_cap",
+    "swing_rsi_pullback",
+    "swing_trend_filtered_pullback",
+    "defensive_asset_rotation",
+}
+RECOVERY_ALLOWED_FAMILIES = {"LONGTERM", "SWING", "ROTATION"}
+RECOVERY_BUILDER_FAMILIES = {
+    "long_term_vol_target": "LONGTERM",
+    "long_term_vol_target_cap": "LONGTERM",
+    "swing_rsi_pullback": "SWING",
+    "swing_trend_filtered_pullback": "SWING",
+    "defensive_asset_rotation": "ROTATION",
+}
+RECOVERY_EXECUTABLE_PARAMETER_SCHEMAS = {
+    "long_term_vol_target": ("symbol", "sma", "vol_window", "target_vol"),
+    "long_term_vol_target_cap": ("symbol", "sma", "vol_window", "target_vol", "max_weight"),
+    "swing_rsi_pullback": ("symbol", "trend_sma", "rsi_entry", "rsi_exit"),
+    "swing_trend_filtered_pullback": (
+        "symbol",
+        "fast_sma",
+        "slow_sma",
+        "rsi_entry",
+        "rsi_exit",
+        "atr_stop",
+        "max_exposure",
+    ),
+    "defensive_asset_rotation": (
+        "risk_assets",
+        "defensive_assets",
+        "lookback",
+        "top_n",
+        "risk_symbol",
+        "risk_sma",
+    ),
+}
+RECOVERY_PARAMETER_DEFAULTS = {
+    "long_term_vol_target": {"symbol": "SPY", "sma": 150, "vol_window": 63, "target_vol": 0.12},
+    "long_term_vol_target_cap": {"symbol": "SPY", "sma": 200, "vol_window": 63, "target_vol": 0.10, "max_weight": 0.75},
+    "swing_rsi_pullback": {"symbol": "SPY", "trend_sma": 100, "rsi_entry": 35, "rsi_exit": 55},
+    "swing_trend_filtered_pullback": {
+        "symbol": "QQQ", "fast_sma": 50, "slow_sma": 150, "rsi_entry": 40,
+        "rsi_exit": 58, "atr_stop": 2.0, "max_exposure": 1.0,
+    },
+    "defensive_asset_rotation": {
+        "risk_assets": ["SPY", "QQQ"], "defensive_assets": ["TLT", "GLD"],
+        "lookback": 126, "top_n": 1, "risk_symbol": "SPY", "risk_sma": 200,
+    },
+}
+RECOVERY_REQUIRED_PARAMETER_KEYS = {
+    "swing_rsi_pullback": ("symbol", "trend_sma", "rsi_entry", "rsi_exit"),
+}
+
+# Explicit rows, not a parameter grid. Each tuple is one recovery day.
+RECOVERY_EXPERIMENT_ROWS = (
+    (
+        ("long_term_vol_target_cap", {"symbol": "SPY", "sma": 200, "vol_window": 63, "target_vol": 0.08, "max_weight": 0.60}),
+        ("swing_trend_filtered_pullback", {"symbol": "SPY", "fast_sma": 50, "slow_sma": 150, "rsi_entry": 38, "rsi_exit": 58, "atr_stop": 2.0, "max_exposure": 0.50}),
+        ("defensive_asset_rotation", {"risk_assets": ["SPY", "QQQ", "IWM"], "defensive_assets": ["IEF", "TLT", "GLD", "SHY"], "lookback": 126, "top_n": 1, "risk_symbol": "SPY", "risk_sma": 200}),
+        ("long_term_vol_target", {"symbol": "IEF", "sma": 150, "vol_window": 42, "target_vol": 0.06}),
+    ),
+    (
+        ("long_term_vol_target_cap", {"symbol": "QQQ", "sma": 250, "vol_window": 84, "target_vol": 0.06, "max_weight": 0.40}),
+        ("swing_trend_filtered_pullback", {"symbol": "QQQ", "fast_sma": 100, "slow_sma": 200, "rsi_entry": 32, "rsi_exit": 65, "atr_stop": 3.0, "max_exposure": 0.25}),
+        ("defensive_asset_rotation", {"risk_assets": ["SPY", "QQQ", "IWM"], "defensive_assets": ["SHY", "IEF", "TLT", "GLD"], "lookback": 252, "top_n": 1, "risk_symbol": "SPY", "risk_sma": 150}),
+        ("swing_rsi_pullback", {"symbol": "IWM", "trend_sma": 200, "rsi_entry": 32, "rsi_exit": 65}),
+    ),
+    (
+        ("long_term_vol_target_cap", {"symbol": "IWM", "sma": 150, "vol_window": 42, "target_vol": 0.10, "max_weight": 0.60}),
+        ("swing_trend_filtered_pullback", {"symbol": "IWM", "fast_sma": 50, "slow_sma": 150, "rsi_entry": 32, "rsi_exit": 58, "atr_stop": 3.0, "max_exposure": 0.25}),
+        ("defensive_asset_rotation", {"risk_assets": ["IWM", "SPY", "QQQ"], "defensive_assets": ["IEF", "GLD", "TLT", "SHY"], "lookback": 126, "top_n": 1, "risk_symbol": "SPY", "risk_sma": 150}),
+        ("long_term_vol_target", {"symbol": "GLD", "sma": 250, "vol_window": 63, "target_vol": 0.08}),
+    ),
+    (
+        ("long_term_vol_target_cap", {"symbol": "GLD", "sma": 200, "vol_window": 84, "target_vol": 0.08, "max_weight": 0.75}),
+        ("swing_trend_filtered_pullback", {"symbol": "SPY", "fast_sma": 100, "slow_sma": 200, "rsi_entry": 32, "rsi_exit": 65, "atr_stop": 2.0, "max_exposure": 0.25}),
+        ("defensive_asset_rotation", {"risk_assets": ["QQQ", "SPY", "IWM"], "defensive_assets": ["TLT", "IEF", "GLD", "SHY"], "lookback": 252, "top_n": 1, "risk_symbol": "SPY", "risk_sma": 200}),
+        ("swing_rsi_pullback", {"symbol": "SPY", "trend_sma": 150, "rsi_entry": 38, "rsi_exit": 58}),
+    ),
+    (
+        ("long_term_vol_target_cap", {"symbol": "IEF", "sma": 250, "vol_window": 42, "target_vol": 0.06, "max_weight": 0.40}),
+        ("swing_trend_filtered_pullback", {"symbol": "QQQ", "fast_sma": 50, "slow_sma": 150, "rsi_entry": 38, "rsi_exit": 65, "atr_stop": 3.0, "max_exposure": 0.50}),
+        ("defensive_asset_rotation", {"risk_assets": ["SPY", "IWM", "QQQ"], "defensive_assets": ["GLD", "IEF", "TLT", "SHY"], "lookback": 126, "top_n": 1, "risk_symbol": "SPY", "risk_sma": 200}),
+        ("long_term_vol_target", {"symbol": "SPY", "sma": 250, "vol_window": 84, "target_vol": 0.06}),
+    ),
+    (
+        ("long_term_vol_target_cap", {"symbol": "SPY", "sma": 150, "vol_window": 84, "target_vol": 0.10, "max_weight": 0.40}),
+        ("swing_trend_filtered_pullback", {"symbol": "IWM", "fast_sma": 100, "slow_sma": 200, "rsi_entry": 38, "rsi_exit": 58, "atr_stop": 2.0, "max_exposure": 0.50}),
+        ("defensive_asset_rotation", {"risk_assets": ["IWM", "QQQ", "SPY"], "defensive_assets": ["SHY", "GLD", "IEF", "TLT"], "lookback": 252, "top_n": 1, "risk_symbol": "SPY", "risk_sma": 150}),
+        ("swing_rsi_pullback", {"symbol": "QQQ", "trend_sma": 200, "rsi_entry": 38, "rsi_exit": 65}),
+    ),
+    (
+        ("long_term_vol_target_cap", {"symbol": "QQQ", "sma": 200, "vol_window": 42, "target_vol": 0.08, "max_weight": 0.60}),
+        ("swing_trend_filtered_pullback", {"symbol": "SPY", "fast_sma": 50, "slow_sma": 150, "rsi_entry": 32, "rsi_exit": 58, "atr_stop": 3.0, "max_exposure": 0.25}),
+        ("defensive_asset_rotation", {"risk_assets": ["QQQ", "IWM", "SPY"], "defensive_assets": ["IEF", "SHY", "GLD", "TLT"], "lookback": 126, "top_n": 1, "risk_symbol": "SPY", "risk_sma": 150}),
+        ("long_term_vol_target", {"symbol": "IWM", "sma": 200, "vol_window": 63, "target_vol": 0.10}),
+    ),
+)
 
 
 @dataclass(frozen=True)
@@ -34,6 +136,15 @@ class StrategySpec:
     def strategy_id(self, sequence: int) -> str:
         stamp = date.today().strftime("%Y%m%d")
         return f"{self.family}_{self.asset_class}_{self.timeframe}_{self.short_name}_{stamp}_{sequence:03d}"
+
+
+@dataclass(frozen=True)
+class CandidateProposal:
+    spec: StrategySpec
+    source: str
+    order: int
+    source_key: str
+    hypothesis_id: str = ""
 
 
 def baseline_strategies() -> list[StrategySpec]:
@@ -135,6 +246,107 @@ def baseline_strategies() -> list[StrategySpec]:
     ]
 
 
+def select_daily_experiment_candidates(
+    root: Path,
+    *,
+    budget: int = DAILY_EXPERIMENT_BUDGET,
+    recent_window: int = DAILY_RECENT_EXPERIMENT_WINDOW,
+    recovery_day: int,
+) -> dict[str, Any]:
+    budget = max(int(budget), 0)
+    recent_window = max(int(recent_window), 0)
+    proposals, terminal_counts = _daily_candidate_proposals(root, recovery_day)
+    recent_fingerprints = _recent_executable_fingerprints(root, max_rows=recent_window)
+    diagnostics = {
+        "budget": budget,
+        "recent_window": recent_window,
+        "recovery_day": recovery_day,
+        "queue_rows_consumed": False,
+        "proposed": len(proposals) + sum(terminal_counts.values()),
+        "family_filtered": terminal_counts["family_filtered"],
+        "source_filtered": terminal_counts["source_filtered"],
+        "invalid_filtered": terminal_counts["invalid_filtered"],
+        "recent_duplicate_skipped": 0,
+        "in_batch_duplicate_skipped": 0,
+        "budget_skipped": 0,
+        "selected": 0,
+        "selected_fingerprints": [],
+        "selected_sources": [],
+        "retained_count": 0,
+        "skipped_count": 0,
+        "reasons": {},
+        "skipped": [],
+    }
+    selected: list[StrategySpec] = []
+    seen_batch: set[str] = set()
+    for proposal in proposals:
+        spec = proposal.spec
+        if not _is_allowed_recovery_spec(spec):
+            diagnostics["family_filtered"] += 1
+            continue
+        fingerprint = strategy_execution_fingerprint(spec)
+        if fingerprint in recent_fingerprints:
+            diagnostics["recent_duplicate_skipped"] += 1
+            _record_daily_selector_skip(diagnostics, "recent_executable_duplicate", proposal, fingerprint)
+            continue
+        if fingerprint in seen_batch:
+            diagnostics["in_batch_duplicate_skipped"] += 1
+            _record_daily_selector_skip(diagnostics, "effective_parameter_duplicate", proposal, fingerprint)
+            continue
+        seen_batch.add(fingerprint)
+        if len(selected) >= budget:
+            diagnostics["budget_skipped"] += 1
+            continue
+        selected.append(spec)
+        diagnostics["selected_fingerprints"].append(fingerprint)
+        diagnostics["selected_sources"].append(proposal.source)
+    diagnostics["selected"] = len(selected)
+    diagnostics["budget_selected"] = len(selected)  # compatibility with older report readers
+    diagnostics["retained_count"] = len(selected)
+    return {"specs": selected, "diagnostics": diagnostics}
+
+
+def _record_daily_selector_skip(
+    diagnostics: dict[str, Any], reason: str, proposal: CandidateProposal, fingerprint: str
+) -> None:
+    diagnostics["skipped_count"] += 1
+    diagnostics["reasons"][reason] = diagnostics["reasons"].get(reason, 0) + 1
+    if len(diagnostics["skipped"]) < MAX_QUEUE_DEDUPE_SKIP_DETAILS:
+        diagnostics["skipped"].append(
+            {
+                "reason_code": reason,
+                "hypothesis_id": proposal.hypothesis_id,
+                "source": proposal.source,
+                "source_key": proposal.source_key,
+                "fingerprint": fingerprint,
+            }
+        )
+
+
+def recovery_manifest_specs(recovery_day: int) -> list[StrategySpec]:
+    if recovery_day < 1 or recovery_day > len(RECOVERY_EXPERIMENT_ROWS):
+        return []
+    specs = []
+    for index, (builder, parameters) in enumerate(RECOVERY_EXPERIMENT_ROWS[recovery_day - 1], start=1):
+        family = RECOVERY_BUILDER_FAMILIES[builder]
+        specs.append(
+            StrategySpec(
+                family=family,
+                asset_class="ETF",
+                timeframe="1D",
+                short_name=f"RECOVERY_D{recovery_day}_{index}",
+                hypothesis=f"Deterministic bounded recovery experiment day {recovery_day}, row {index}.",
+                parameters=dict(parameters),
+                rules=f"Execute existing builder {builder} with the explicit recovery manifest parameters.",
+                builder=builder,
+            )
+        )
+    fingerprints = [strategy_execution_fingerprint(spec) for spec in specs]
+    if len(fingerprints) != len(set(fingerprints)):
+        raise ValueError(f"Recovery manifest day {recovery_day} contains duplicate executable fingerprints")
+    return specs
+
+
 def queued_hypothesis_strategies(root: Path, limit: int = 4) -> list[StrategySpec]:
     return select_queued_hypothesis_candidates(root, limit=limit)["specs"]
 
@@ -155,11 +367,10 @@ def select_queued_hypothesis_candidates(root: Path, limit: int = 4) -> dict[str,
                 "skipped": [],
             },
         }
-    items = [json.loads(line) for line in queue_path.read_text(encoding="utf-8").splitlines() if line.strip()]
     candidates = []
     extreme_rotation_drawdown = _has_recent_extreme_rotation_drawdown(root)
     diagnostics = {
-        "input_count": len(items),
+        "input_count": 0,
         "retained_count": 0,
         "selected_count": 0,
         "skipped_count": 0,
@@ -171,7 +382,8 @@ def select_queued_hypothesis_candidates(root: Path, limit: int = 4) -> dict[str,
     seen_semantic_executable: dict[tuple[str, str], str] = {}
     seen_source_executable: dict[tuple[str, str], str] = {}
     seen_executable: dict[str, str] = {}
-    for order, item in enumerate(items):
+    for order, item in enumerate(iter_jsonl(queue_path)):
+        diagnostics["input_count"] += 1
         key = str(item.get("source_key") or item.get("hypothesis_id") or f"{item.get('family', '')}:{item.get('ticker', '')}:{item.get('title', '')}")
         hypothesis_id = str(item.get("hypothesis_id") or "")
         family = str(item.get("family") or "")
@@ -226,6 +438,26 @@ def select_queued_hypothesis_candidates(root: Path, limit: int = 4) -> dict[str,
     return {"specs": specs, "diagnostics": diagnostics}
 
 
+def _daily_candidate_proposals(root: Path, recovery_day: int) -> tuple[list[CandidateProposal], dict[str, int]]:
+    proposals: list[CandidateProposal] = []
+    for order, spec in enumerate(recovery_manifest_specs(recovery_day)):
+        proposals.append(
+            CandidateProposal(
+                spec=spec,
+                source="recovery_manifest",
+                order=order,
+                source_key=f"recovery:{recovery_day}:{strategy_execution_fingerprint(spec)}",
+            )
+        )
+    proposals.sort(
+        key=lambda proposal: (
+            strategy_execution_fingerprint(proposal.spec),
+            proposal.source_key,
+        )
+    )
+    return proposals, {"family_filtered": 0, "source_filtered": 0, "invalid_filtered": 0}
+
+
 def next_run_guided_strategies(root: Path, limit: int = 2) -> list[StrategySpec]:
     near_misses = [result for result in reversed(_recent_experiment_results(root)) if _is_near_miss_trend_vol_cap(result)]
     specs: list[StrategySpec] = []
@@ -254,25 +486,44 @@ def dedupe_strategy_specs(specs: list[StrategySpec]) -> list[StrategySpec]:
 
 
 def strategy_execution_fingerprint(spec: StrategySpec) -> str:
+    builder = str(spec.builder).strip().lower()
+    if builder not in RECOVERY_EXECUTABLE_PARAMETER_SCHEMAS:
+        parameters = execution_relevant_parameters(spec.parameters)
+    else:
+        parameters = _recovery_executable_parameters(builder, spec.parameters)
     payload = {
-        "family": spec.family,
-        "asset_class": spec.asset_class,
-        "timeframe": spec.timeframe,
-        "builder": spec.builder,
-        "parameters": _executable_parameters(spec.parameters),
+        "timeframe": str(spec.timeframe).strip().upper(),
+        "builder": builder,
+        "parameters": parameters,
     }
-    return json.dumps(_normalize_for_fingerprint(payload), sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+
+
+def result_execution_fingerprint(result: dict[str, Any]) -> str | None:
+    timeframe = str(result.get("timeframe") or "").strip()
+    short_name = str(result.get("short_name") or _short_name_from_strategy_id(str(result.get("strategy_id") or ""))).strip()
+    builder = str(result.get("builder") or _builder_for_short_name(short_name)).strip()
+    if not (timeframe and builder):
+        return None
+    spec = StrategySpec(
+        family=str(result.get("family") or RECOVERY_BUILDER_FAMILIES.get(builder, "")),
+        asset_class=str(result.get("asset_class") or ""),
+        timeframe=timeframe,
+        short_name=short_name,
+        hypothesis="",
+        parameters=result.get("parameters") or {},
+        rules="",
+        builder=builder,
+    )
+    return strategy_execution_fingerprint(spec)
 
 
 def queued_daily_symbols(root: Path, limit: int = 8) -> list[str]:
     queue_path = root / "registry" / "hypothesis_queue.jsonl"
     if not queue_path.exists():
         return []
-    symbols = []
-    for line in reversed(queue_path.read_text(encoding="utf-8").splitlines()):
-        if not line.strip():
-            continue
-        item = json.loads(line)
+    symbols: OrderedDict[str, None] = OrderedDict()
+    for item in iter_jsonl(queue_path):
         if str(item.get("family", "")).upper() == "INTRADAY" or str(item.get("timeframe", "")).upper() == "15M":
             continue
         item_symbols = [item.get("ticker")]
@@ -285,11 +536,13 @@ def queued_daily_symbols(root: Path, limit: int = 8) -> list[str]:
                     item_symbols.extend(value)
         for value in item_symbols:
             ticker = str(value or "").strip().upper()
-            if ticker and ticker not in symbols:
-                symbols.append(ticker)
-        if len(symbols) >= limit:
-            break
-    return list(reversed(symbols[: max(int(limit), 0)]))
+            if not ticker:
+                continue
+            symbols.pop(ticker, None)
+            symbols[ticker] = None
+            while len(symbols) > max(int(limit), 0):
+                symbols.popitem(last=False)
+    return list(symbols)
 
 
 def build_weights(spec: StrategySpec, daily_panel: pd.DataFrame, intraday: pd.DataFrame | None = None) -> pd.DataFrame:
@@ -565,21 +818,23 @@ def _record_queue_skip(
         )
 
 
+def _is_allowed_recovery_spec(spec: StrategySpec) -> bool:
+    builder = str(spec.builder).strip().lower()
+    return builder in RECOVERY_ALLOWED_BUILDERS and spec.family == RECOVERY_BUILDER_FAMILIES[builder]
+
+
+def _recent_executable_fingerprints(root: Path, max_rows: int) -> set[str]:
+    fingerprints: set[str] = set()
+    for result in _recent_experiment_results(root, max_rows=max_rows):
+        fingerprint = result_execution_fingerprint(result)
+        if fingerprint:
+            fingerprints.add(fingerprint)
+    return fingerprints
+
+
 def _recent_experiment_results(root: Path, max_rows: int = 200) -> list[dict[str, Any]]:
     path = root / "registry" / "experiments.jsonl"
-    if not path.exists():
-        return []
-    rows = []
-    for line in path.read_text(encoding="utf-8").splitlines()[-max_rows:]:
-        if not line.strip():
-            continue
-        try:
-            item = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(item, dict):
-            rows.append(item)
-    return rows
+    return tail_jsonl(path, max_rows)
 
 
 def _recent_drawdown_penalties(root: Path) -> dict[str, int]:
@@ -729,33 +984,24 @@ def _trend_vol_cap_conservative_mutations(result: dict[str, Any]) -> list[Strate
     ]
 
 
-def _executable_parameters(parameters: dict[str, Any]) -> dict[str, Any]:
-    return execution_relevant_parameters(parameters)
-
-
-def _normalize_for_fingerprint(value: Any, key_path: tuple[str, ...] = ()) -> Any:
-    if isinstance(value, dict):
-        return {
-            normalized_key: _normalize_for_fingerprint(item, (*key_path, normalized_key))
-            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
-            if (normalized_key := str(key).strip().lower())
-        }
-    if isinstance(value, list):
-        items = [_normalize_for_fingerprint(item, key_path) for item in value]
-        if key_path and key_path[-1] in UNORDERED_EXECUTABLE_LIST_KEYS:
-            return sorted(items, key=lambda item: json.dumps(item, sort_keys=True, default=str))
-        return items
-    if isinstance(value, tuple):
-        return _normalize_for_fingerprint(list(value), key_path)
-    if isinstance(value, float):
-        if not np.isfinite(value):
-            return None
-        if value.is_integer():
-            return int(value)
-        return float(format(value, ".12g"))
-    if isinstance(value, str):
-        return " ".join(value.strip().lower().split())
-    return value
+def _recovery_executable_parameters(builder: str, parameters: dict[str, Any]) -> dict[str, Any]:
+    defaults = RECOVERY_PARAMETER_DEFAULTS[builder]
+    missing = [key for key in RECOVERY_REQUIRED_PARAMETER_KEYS.get(builder, ()) if key not in parameters]
+    if missing:
+        raise ValueError(f"{builder} missing required executable parameter: {missing[0]}")
+    normalized = {}
+    for key in RECOVERY_EXECUTABLE_PARAMETER_SCHEMAS[builder]:
+        value = parameters.get(key, defaults[key])
+        if key in {"symbol", "risk_symbol"}:
+            value = str(value).strip().upper()
+        elif key in {"risk_assets", "defensive_assets"}:
+            if not isinstance(value, (list, tuple)):
+                raise ValueError(f"{builder}.{key} must be an ordered list of ticker symbols")
+            value = [str(symbol).strip().upper() for symbol in value]
+        elif isinstance(value, np.generic):
+            value = value.item()
+        normalized[key] = value
+    return normalized
 
 
 def _short_name_from_strategy_id(strategy_id: str) -> str:
@@ -771,9 +1017,13 @@ def _short_name_from_strategy_id(strategy_id: str) -> str:
 
 def _builder_for_short_name(short_name: str) -> str:
     return {
+        "RSI_PULLBACK": "swing_rsi_pullback",
         "QUEUE_PULLBACK": "swing_trend_filtered_pullback",
+        "TREND_VOL_CAP_CONSERVATIVE": "long_term_vol_target_cap",
+        "TREND_VOL_CAP_STABLE": "long_term_vol_target_cap",
         "QUEUE_VOL_TARGET": "long_term_vol_target",
         "TREND_VOL_CAP": "long_term_vol_target_cap",
+        "DEFENSIVE_ROTATION": "defensive_asset_rotation",
     }.get(short_name, "")
 
 

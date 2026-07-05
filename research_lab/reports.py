@@ -95,6 +95,7 @@ def write_daily_report(path: Path, results: list[dict], report_date: date | None
     drawdown_diagnostics = _drawdown_diagnostics_rows(results)
     rejection_drawdown_attribution = _rejection_drawdown_attribution_rows(rejected)
     walk_forward_diagnostics = _bounded_walk_forward_diagnostics(results)
+    compact_funnel = build_daily_experiment_funnel(results, run_metadata.get("daily_experiment_selection") if run_metadata else None)
     rows = [
         "| strategy_id | family | asset | timeframe | data_source | train | validation | unseen | max_dd | tier |",
         "|---|---|---|---|---|---:|---:|---:|---:|---|",
@@ -128,6 +129,10 @@ def write_daily_report(path: Path, results: list[dict], report_date: date | None
         f"- data-source summary: {data_source_summary['summary_text']}",
         "",
         *_hermes_report_lines(run_metadata.get("hermes") if run_metadata else None),
+        "",
+        "## Compact Funnel",
+        "",
+        *render_daily_experiment_funnel(compact_funnel),
         "",
         "## New Strategies Tested",
         "",
@@ -177,6 +182,108 @@ def write_daily_report(path: Path, results: list[dict], report_date: date | None
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def build_daily_experiment_funnel(results: list[dict], selection: dict[str, Any] | None = None) -> dict[str, Any]:
+    selection = selection or {}
+    selection_mode = str(selection.get("selection_mode") or "unknown")
+    queue_inspected = bool(selection.get("queue_inspected", False))
+    queue_consumed = bool(selection.get("queue_consumed", selection.get("queue_rows_consumed", False)))
+    candidate_source = str(selection.get("candidate_source") or "unspecified")
+    selector_counts = {
+        "proposed": _safe_int(selection.get("proposed"), 0),
+        "family_filtered": _safe_int(selection.get("family_filtered"), 0),
+        "source_filtered": _safe_int(selection.get("source_filtered"), 0),
+        "invalid_filtered": _safe_int(selection.get("invalid_filtered"), 0),
+        "recent_duplicate_skipped": _safe_int(selection.get("recent_duplicate_skipped"), 0),
+        "in_batch_duplicate_skipped": _safe_int(selection.get("in_batch_duplicate_skipped"), 0),
+        "budget_skipped": _safe_int(selection.get("budget_skipped"), 0),
+        "selected": _safe_int(selection.get("selected", selection.get("budget_selected")), 0),
+    }
+    execution_counts = {
+        "attempted": _safe_int(selection.get("attempted"), len(results)),
+        "completed": _safe_int(selection.get("completed"), len(results)),
+        "missing_data_skipped": _safe_int(selection.get("missing_data_skipped"), 0),
+    }
+    result_diagnostics = {
+        "positive_oos": sum(1 for result in results if _safe_float(result.get("split_metrics", {}).get("unseen", {}).get("cagr"), 0.0) > 0.0),
+        "tier_drawdown_pass_15pct": sum(1 for result in results if _safe_float(result.get("split_metrics", {}).get("unseen", {}).get("max_drawdown"), -1.0) >= -0.15),
+        "recovery_drawdown_pass_10pct": sum(1 for result in results if _safe_float(result.get("split_metrics", {}).get("unseen", {}).get("max_drawdown"), -1.0) >= -0.10),
+        "walk_forward_pass": sum(1 for result in results if isinstance(result.get("walk_forward"), dict) and _walk_forward_failure(result["walk_forward"]) is None),
+        "cost_pass": sum(1 for result in results if result.get("cost_stress", {}).get("survives_double_cost") is True),
+        "tier_ab": sum(1 for result in results if result.get("tier") in ACCEPTED_TIERS),
+        "deployment_gate_pass": sum(1 for result in results if result.get("deployment_gate", {}).get("passed") is True),
+    }
+    rejection_reasons: dict[str, int] = {}
+    for result in results:
+        if result.get("tier") in ACCEPTED_TIERS:
+            continue
+        for reason in build_rejection_diagnostics(result):
+            rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
+    return {
+        "selector_counts": selector_counts,
+        "execution_counts": execution_counts,
+        "execution_failure_contract": "fail_fast_no_completed_report",
+        "result_diagnostics": result_diagnostics,
+        "rejection_reasons": rejection_reasons,
+        "selection_mode": selection_mode,
+        "queue_inspected": queue_inspected,
+        "queue_consumed": queue_consumed,
+        "queue_rows_consumed": queue_consumed,
+        "candidate_source": candidate_source,
+        "candidate_scope_note": (
+            "selector counts are mutually exclusive terminal outcomes; candidates came from the internal seven-day recovery manifest"
+            if selection_mode == "bounded_recovery"
+            else "selector counts are mutually exclusive terminal outcomes; the normal baseline/guided/queue path inspected queue rows without consuming them"
+        ),
+        "result_scope_note": "execution counts reconcile selected candidates; result diagnostics are overlapping, non-exclusive counts over completed results",
+    }
+
+
+def render_daily_experiment_funnel(funnel: dict[str, Any]) -> list[str]:
+    selector_counts = funnel.get("selector_counts", {})
+    execution_counts = funnel.get("execution_counts", {})
+    result_diagnostics = funnel.get("result_diagnostics", {})
+    rejection_reasons = funnel.get("rejection_reasons", {})
+    rows = [
+        "| stage | scope | count |",
+        "|---|---|---:|",
+    ]
+    for stage in (
+        "proposed",
+        "family_filtered",
+        "source_filtered",
+        "invalid_filtered",
+        "recent_duplicate_skipped",
+        "in_batch_duplicate_skipped",
+        "budget_skipped",
+        "selected",
+    ):
+        rows.append(f"| {stage} | selector outcome | {_safe_int(selector_counts.get(stage), 0)} |")
+    for stage in ("attempted", "completed", "missing_data_skipped"):
+        rows.append(f"| {stage} | execution | {_safe_int(execution_counts.get(stage), 0)} |")
+    for stage in ("positive_oos", "tier_drawdown_pass_15pct", "recovery_drawdown_pass_10pct", "walk_forward_pass", "cost_pass", "tier_ab", "deployment_gate_pass"):
+        rows.append(f"| {stage} | independent diagnostic | {_safe_int(result_diagnostics.get(stage), 0)} |")
+    rejection_text = (
+        "; ".join(f"{reason}={count}" for reason, count in sorted(rejection_reasons.items()))
+        if rejection_reasons
+        else "none"
+    )
+    rows.extend(
+        [
+            "",
+            f"- candidate semantics: {funnel.get('candidate_scope_note', '')}",
+            f"- selection mode: {funnel.get('selection_mode', 'unknown')}",
+            f"- candidate source: {funnel.get('candidate_source', 'unspecified')}",
+            f"- queue inspected: {str(bool(funnel.get('queue_inspected', False))).lower()}",
+            f"- queue consumed: {str(bool(funnel.get('queue_consumed', False))).lower()}",
+            f"- result semantics: {funnel.get('result_scope_note', '')}",
+            "- execution failure contract: execution exceptions abort the run; no completed daily report is written",
+            f"- queue rows consumed: {str(bool(funnel.get('queue_rows_consumed', False))).lower()}",
+            f"- rejection_reasons: {rejection_text}",
+        ]
+    )
+    return rows
+
+
 def write_daily_report_artifacts(
     root: Path,
     results: list[dict],
@@ -216,6 +323,10 @@ def write_daily_report_artifacts(
             "hermes": _hermes_metadata(latest_hermes_artifact(root, before=timestamp_utc)),
             **(extra_metadata or {}),
         }
+    )
+    metadata["daily_experiment_funnel"] = build_daily_experiment_funnel(
+        results,
+        metadata.get("daily_experiment_selection"),
     )
     write_daily_report(latest_report_path, results, report_date=report_day, run_metadata=metadata)
     write_daily_report(run_report_path, results, report_date=report_day, run_metadata=metadata)
@@ -1096,6 +1207,40 @@ def _run_metadata_lines(metadata: dict[str, Any]) -> list[str]:
                 f"- queued_candidate_dedupe_non_executable_count: {dedupe.get('non_executable_count', 0)}",
                 f"- queued_candidate_dedupe_risk_filtered_count: {dedupe.get('risk_filtered_count', 0)}",
                 f"- queued_candidate_dedupe_reasons: {dedupe.get('reasons', {})}",
+            ]
+        )
+    selection = metadata.get("daily_experiment_selection")
+    if isinstance(selection, dict):
+        lines.extend(
+            [
+                f"- daily_experiment_budget: {selection.get('budget', 0)}",
+                f"- daily_experiment_recent_window: {selection.get('recent_window', 0)}",
+                f"- daily_experiment_proposed: {selection.get('proposed', 0)}",
+                f"- daily_experiment_family_filtered: {selection.get('family_filtered', 0)}",
+                f"- daily_experiment_source_filtered: {selection.get('source_filtered', 0)}",
+                f"- daily_experiment_invalid_filtered: {selection.get('invalid_filtered', 0)}",
+                f"- daily_experiment_recent_duplicate_skipped: {selection.get('recent_duplicate_skipped', 0)}",
+                f"- daily_experiment_in_batch_duplicate_skipped: {selection.get('in_batch_duplicate_skipped', 0)}",
+                f"- daily_experiment_budget_skipped: {selection.get('budget_skipped', 0)}",
+                f"- daily_experiment_selected: {selection.get('selected', selection.get('budget_selected', 0))}",
+                f"- daily_experiment_selection_mode: {selection.get('selection_mode', 'unknown')}",
+                f"- daily_experiment_candidate_source: {selection.get('candidate_source', 'unspecified')}",
+                f"- daily_experiment_queue_inspected: {selection.get('queue_inspected', False)}",
+                f"- daily_experiment_queue_consumed: {selection.get('queue_consumed', selection.get('queue_rows_consumed', False))}",
+                f"- daily_experiment_queue_rows_consumed: {selection.get('queue_rows_consumed', False)}",
+            ]
+        )
+    funnel = metadata.get("daily_experiment_funnel")
+    if isinstance(funnel, dict):
+        selector_counts = funnel.get("selector_counts", {})
+        execution_counts = funnel.get("execution_counts", {})
+        result_diagnostics = funnel.get("result_diagnostics", {})
+        lines.extend(
+            [
+                f"- compact_funnel_selector_counts: {selector_counts}",
+                f"- compact_funnel_execution_counts: {execution_counts}",
+                f"- compact_funnel_result_diagnostics: {result_diagnostics}",
+                f"- compact_funnel_rejection_reasons: {funnel.get('rejection_reasons', {})}",
             ]
         )
     walk_forward_diagnostics = metadata.get("walk_forward_diagnostics")

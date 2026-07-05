@@ -11,21 +11,27 @@ from research_lab.backtest import close_frame, cost_stress, weighted_backtest
 from research_lab.config import LabConfig, ensure_project_structure
 from research_lab.data import DataBundle, load_daily_universe, load_eodhd_daily_universe, load_intraday_symbol, load_massive_daily_universe
 from research_lab.drawdown_diagnostics import compute_drawdown_diagnostics
+from research_lab.jsonl import iter_jsonl
 from research_lab.registry import append_jsonl, write_allocation_model, write_leaderboard
 from research_lab.reports import write_daily_report_artifacts, write_strategy_card
 from research_lab.strategies.baselines import (
-    build_weights,
     baseline_strategies,
+    build_weights,
     dedupe_strategy_specs,
     next_run_guided_strategies,
-    queued_daily_symbols,
+    select_daily_experiment_candidates,
     select_queued_hypothesis_candidates,
 )
 from research_lab.tiering import classify_strategy
 from research_lab.walk_forward import run_true_walk_forward
 
 
-def run_daily_research(root: Path | None = None) -> list[dict]:
+def run_daily_research(
+    root: Path | None = None,
+    *,
+    recovery_mode: bool = False,
+    recovery_day: int | None = None,
+) -> list[dict]:
     run_start = perf_counter()
     config = LabConfig.from_env(root)
     _log_daily_progress(f"start provider={config.data_provider} root={config.root}")
@@ -33,29 +39,51 @@ def run_daily_research(root: Path | None = None) -> list[dict]:
         raise RuntimeError("Refusing to run unless RESEARCH_LAB_MODE=research_only.")
     ensure_project_structure(config.root)
 
-    with _timed_daily_stage("loading daily universe", "daily universe"):
-        daily_bundle = _load_daily_data_bundle(config)
-    _print_daily_data_diagnostics(daily_bundle)
-    with _timed_daily_stage("loading intraday BTCUSDT", "intraday BTCUSDT"):
-        intraday_bundle = load_intraday_symbol(config.root, "BTCUSDT")
+    selection = select_daily_candidates(
+        config.root,
+        recovery_mode=recovery_mode,
+        recovery_day=recovery_day,
+    )
+    specs = dedupe_strategy_specs(selection["specs"])
+    selection["diagnostics"]["selected"] = len(specs)
+    selection["diagnostics"]["budget_selected"] = len(specs)
+    selection["diagnostics"].update(
+        {"attempted": 0, "completed": 0, "missing_data_skipped": 0}
+    )
+    used_note_ids = _load_used_note_ids(
+        config.root,
+        {
+            str(spec.parameters.get("source_hypothesis_id"))
+            for spec in specs
+            if spec.parameters.get("source_hypothesis_id")
+        },
+    )
+    daily_bundle = None
+    if specs:
+        with _timed_daily_stage("loading daily universe", "daily universe"):
+            daily_bundle = _load_daily_data_bundle(config, symbols=_spec_symbols(specs))
+        _print_daily_data_diagnostics(daily_bundle)
 
     results = []
     start_sequence = _next_sequence(config.root)
-    queued_selection = select_queued_hypothesis_candidates(config.root, limit=4)
-    specs = dedupe_strategy_specs(
-        baseline_strategies()
-        + next_run_guided_strategies(config.root, limit=2)
-        + queued_selection["specs"]
-    )
+    intraday_bundle = None
     for offset, spec in enumerate(specs):
+        assert daily_bundle is not None
         experiment_start = perf_counter()
         sequence = start_sequence + offset
         strategy_id = spec.strategy_id(sequence)
         _log_daily_progress(f"running experiment {offset + 1}/{len(specs)} {strategy_id}")
-        data_bundle = intraday_bundle if spec.family == "INTRADAY" else daily_bundle
+        if spec.family == "INTRADAY":
+            if intraday_bundle is None:
+                with _timed_daily_stage("loading intraday BTCUSDT", "intraday BTCUSDT"):
+                    intraday_bundle = load_intraday_symbol(config.root, "BTCUSDT")
+            data_bundle = intraday_bundle
+        else:
+            data_bundle = daily_bundle
         panel = data_bundle.data
         missing_symbols = _missing_symbols(spec, panel)
         if missing_symbols:
+            selection["diagnostics"]["missing_data_skipped"] += 1
             _log_daily_progress(f"experiment skipped strategy={strategy_id} reason=missing_symbols elapsed={perf_counter() - experiment_start:.2f}s")
             append_jsonl(
                 config.root / "registry" / "data_gaps.jsonl",
@@ -69,7 +97,8 @@ def run_daily_research(root: Path | None = None) -> list[dict]:
                 },
             )
             continue
-        weights = build_weights(spec, daily_bundle.data, intraday_bundle.data)
+        selection["diagnostics"]["attempted"] += 1
+        weights = build_weights(spec, daily_bundle.data, intraday_bundle.data if intraday_bundle is not None else None)
         close = close_frame(panel)
         if spec.family == "INTRADAY":
             periods_per_year = 252 * 26
@@ -104,12 +133,11 @@ def run_daily_research(root: Path | None = None) -> list[dict]:
             "asset_class": spec.asset_class,
             "timeframe": spec.timeframe,
             "short_name": spec.short_name,
+            "builder": spec.builder,
             "hypothesis": spec.hypothesis,
             "rules": spec.rules,
             "parameters": spec.parameters,
-            "used_note_ids": _used_note_ids(
-                config.root, spec.parameters.get("source_hypothesis_id")
-            ),
+            "used_note_ids": used_note_ids.get(str(spec.parameters.get("source_hypothesis_id") or ""), []),
             "parameter_count": len(spec.parameters),
             "variants_tried": 1,
             "data_manifest": data_bundle.manifest,
@@ -143,6 +171,7 @@ def run_daily_research(root: Path | None = None) -> list[dict]:
             _persist_result(config.root, result)
             _persist_hypothesis_result(config.root, result)
         results.append(result)
+        selection["diagnostics"]["completed"] += 1
         _log_daily_progress(
             f"experiment done strategy={strategy_id} tier={tier} elapsed={perf_counter() - experiment_start:.2f}s"
         )
@@ -156,12 +185,59 @@ def run_daily_research(root: Path | None = None) -> list[dict]:
     report_artifacts = write_daily_report_artifacts(
         config.root,
         results,
-        extra_metadata={"queued_candidate_dedupe": queued_selection["diagnostics"]},
+        extra_metadata={"daily_experiment_selection": selection["diagnostics"]},
     )
     report_path = report_artifacts.get("latest_report_path", config.root / "reports" / "daily")
     _log_daily_progress(f"daily report written in {perf_counter() - report_start:.2f}s path={report_path}")
     _log_daily_progress(f"completed in {perf_counter() - run_start:.2f}s")
     return results
+
+
+def select_daily_candidates(
+    root: Path,
+    *,
+    recovery_mode: bool = False,
+    recovery_day: int | None = None,
+) -> dict:
+    if not recovery_mode:
+        return _select_normal_daily_candidates(root)
+    if isinstance(recovery_day, bool) or not isinstance(recovery_day, int) or recovery_day <= 0:
+        raise ValueError("recovery_day must be a positive integer when recovery_mode is enabled")
+    if recovery_day > 7:
+        return _select_normal_daily_candidates(root)
+    selection = select_daily_experiment_candidates(root, recovery_day=recovery_day)
+    selection["diagnostics"].update(
+        {
+            "selection_mode": "bounded_recovery",
+            "queue_inspected": False,
+            "queue_consumed": False,
+            "candidate_source": "internal_recovery_manifest",
+        }
+    )
+    return selection
+
+
+def _select_normal_daily_candidates(root: Path) -> dict:
+    queued = select_queued_hypothesis_candidates(root, limit=4)
+    specs = dedupe_strategy_specs(
+        baseline_strategies()
+        + next_run_guided_strategies(root, limit=2)
+        + queued["specs"]
+    )
+    return {
+        "specs": specs,
+        "diagnostics": {
+            "selection_mode": "normal_daily",
+            "queue_inspected": True,
+            "queue_consumed": False,
+            "candidate_source": "normal_baseline_guided_queue",
+            "queue_rows_consumed": False,
+            "proposed": len(specs),
+            "selected": len(specs),
+            "budget_selected": len(specs),
+            "queued_candidate_dedupe": queued["diagnostics"],
+        },
+    }
 
 
 def _log_daily_progress(message: str) -> None:
@@ -246,29 +322,26 @@ def _persist_hypothesis_result(root: Path, result: dict) -> None:
     )
 
 
-def _used_note_ids(root: Path, hypothesis_id: object) -> list[str]:
-    if not hypothesis_id:
-        return []
+def _load_used_note_ids(root: Path, hypothesis_ids: set[str]) -> dict[str, list[str]]:
+    if not hypothesis_ids:
+        return {}
     path = Path(root) / "registry" / "hypothesis_queue.jsonl"
-    if not path.exists():
-        return []
-    for line in reversed(path.read_text(encoding="utf-8").splitlines()):
-        try:
-            item = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if str(item.get("hypothesis_id", "")) != str(hypothesis_id):
+    found = {}
+    for item in iter_jsonl(path):
+        hypothesis_id = str(item.get("hypothesis_id", ""))
+        if hypothesis_id not in hypothesis_ids:
             continue
         note_ids = item.get("used_note_ids", [])
         if not isinstance(note_ids, list):
-            return []
-        return [
+            found[hypothesis_id] = []
+            continue
+        found[hypothesis_id] = [
             note_id
             for note_id in note_ids[:5]
             if isinstance(note_id, str)
             and re.fullmatch(r"note-[0-9a-fA-F]{16}", note_id)
         ]
-    return []
+    return found
 
 
 def _next_sequence(root: Path) -> int:
@@ -278,10 +351,11 @@ def _next_sequence(root: Path) -> int:
         return 1
     max_sequence = 0
     pattern = re.compile(rf"_{today}_(\d{{3}})")
-    for line in registry.read_text(encoding="utf-8").splitlines():
-        match = pattern.search(line)
-        if match:
-            max_sequence = max(max_sequence, int(match.group(1)))
+    with registry.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            match = pattern.search(line)
+            if match:
+                max_sequence = max(max_sequence, int(match.group(1)))
     return max_sequence + 1
 
 
@@ -362,9 +436,9 @@ def _leaderboard_row(result: dict) -> dict:
 
 
 def _load_daily_data_bundle(config: LabConfig, symbols: list[str] | None = None) -> DataBundle:
-    eod_symbols = _unique(symbols or ["SPY", "QQQ", "TLT", "GLD"] + queued_daily_symbols(config.root, limit=8))
+    eod_symbols = _unique(symbols or ["SPY", "QQQ", "TLT", "GLD"])
     fallback_reason = ""
-    if config.eodhd_api_key:
+    if config.eodhd_api_key and config.data_provider in {"eodhd", "massive"}:
         try:
             bundle = load_eodhd_daily_universe(config.root, eod_symbols, config.eodhd_api_key, config.eodhd_start_date)
             _print_daily_selection_trace(config, bundle, "")
@@ -399,6 +473,22 @@ def _load_daily_data_bundle(config: LabConfig, symbols: list[str] | None = None)
     _warn_if_eodhd_not_selected(config, bundle, fallback_reason)
     _print_daily_selection_trace(config, bundle, fallback_reason)
     return bundle
+
+
+def _spec_symbols(specs) -> list[str]:
+    symbols = []
+    for spec in specs:
+        parameters = spec.parameters
+        values = [parameters.get("symbol"), parameters.get("risk_symbol")]
+        for key in ("symbols", "risk_assets", "defensive_assets"):
+            value = parameters.get(key)
+            if isinstance(value, (list, tuple)):
+                values.extend(value)
+        for value in values:
+            symbol = str(value or "").strip().upper()
+            if symbol and symbol not in symbols:
+                symbols.append(symbol)
+    return symbols
 
 
 def _mark_fallback(bundle: DataBundle, reason: str) -> None:

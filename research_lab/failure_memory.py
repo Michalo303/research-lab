@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from research_lab.reports import build_rejection_diagnostics
+from research_lab.jsonl import tail_jsonl
 
 
 REASON_WEIGHTS = {
@@ -29,8 +30,22 @@ NON_EXECUTABLE_PARAMETER_KEYS = {
     "min_unseen_trades_target",
     "cost_stress_repair",
     "turnover_repair",
+    "source_hypothesis_id",
+    "source_title",
+    "source_strategy_id",
+    "source_hermes_run_id",
+    "source_hermes_provider",
+    "source_risk_overlay_changed",
+    "source_walk_forward_repair",
+    "source_trade_count_repair",
+    "source_min_unseen_trades_target",
+    "source_cost_stress_repair",
+    "source_turnover_repair",
+    "source_material_design_change",
+    "source_edge_repair",
+    "source_validation_repair",
+    "source_duplicate_hint",
 }
-UNORDERED_EXECUTABLE_LIST_KEYS = {"symbols", "universe", "tickers", "assets", "asset_universe"}
 
 
 @dataclass(frozen=True)
@@ -111,19 +126,7 @@ def build_failure_memory(root: Path, max_results: int = 200) -> FailureMemory:
 
 def _recent_experiment_results(root: Path, max_results: int) -> list[dict[str, Any]]:
     path = root / "registry" / "experiments.jsonl"
-    if not path.exists():
-        return []
-    rows = []
-    for line in path.read_text(encoding="utf-8").splitlines()[-max_results:]:
-        if not line.strip():
-            continue
-        try:
-            item = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(item, dict):
-            rows.append(item)
-    return rows
+    return tail_jsonl(path, max_results)
 
 
 def _result_keys(result: dict[str, Any]) -> list[str]:
@@ -158,7 +161,7 @@ def execution_relevant_parameters(parameters: dict[str, Any]) -> dict[str, Any]:
     return {
         str(key): value
         for key, value in parameters.items()
-        if not str(key).startswith("source_") and str(key) not in NON_EXECUTABLE_PARAMETER_KEYS
+        if str(key) not in NON_EXECUTABLE_PARAMETER_KEYS
     }
 
 
@@ -228,18 +231,9 @@ def _normalize(value: Any, key_path: tuple[str, ...] = ()) -> Any:
             if (normalized_key := str(key).strip().lower())
         }
     if isinstance(value, list):
-        items = [_normalize(item, key_path) for item in value]
-        if key_path and key_path[-1] in UNORDERED_EXECUTABLE_LIST_KEYS:
-            return sorted(items, key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":"), ensure_ascii=True))
-        return items
+        return [_normalize(item, key_path) for item in value]
     if isinstance(value, tuple):
         return _normalize(list(value), key_path)
-    if isinstance(value, float):
-        if value.is_integer():
-            return int(value)
-        return float(format(value, ".12g"))
-    if isinstance(value, str):
-        return " ".join(value.strip().lower().split())
     return value
 
 

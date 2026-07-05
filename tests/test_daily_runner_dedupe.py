@@ -1,8 +1,11 @@
 import pandas as pd
+import pytest
 
 from research_lab.data import DataBundle
 from research_lab.runner import run_daily_research
 from research_lab.strategies.baselines import StrategySpec
+
+pytestmark = pytest.mark.usefixtures("hermetic_provider_guard")
 
 
 def test_daily_runner_skips_duplicate_executable_specs_before_evaluation(tmp_path, monkeypatch):
@@ -16,11 +19,12 @@ def test_daily_runner_skips_duplicate_executable_specs_before_evaluation(tmp_pat
     duplicate = _spec("H2")
     evaluated = []
 
-    monkeypatch.setattr(runner, "_load_daily_data_bundle", lambda config: _bundle(panel))
-    monkeypatch.setattr(runner, "load_intraday_symbol", lambda root, symbol: _bundle(panel))
-    monkeypatch.setattr(runner, "baseline_strategies", lambda: [first, duplicate])
-    monkeypatch.setattr(runner, "next_run_guided_strategies", lambda root, limit: [])
-    monkeypatch.setattr(runner, "select_queued_hypothesis_candidates", lambda root, limit: {"specs": [], "diagnostics": {"input_count": 0, "retained_count": 0, "skipped_count": 0, "reasons": {}, "skipped": []}})
+    monkeypatch.setattr(runner, "_load_daily_data_bundle", lambda config, symbols=None: _bundle(panel))
+    monkeypatch.setattr(
+        runner,
+        "select_daily_experiment_candidates",
+        lambda root, recovery_day: {"specs": [first, duplicate], "diagnostics": {"proposed": 2, "budget_selected": 2}},
+    )
 
     def fake_build_weights(spec, daily, intraday):
         evaluated.append(spec.parameters["source_hypothesis_id"])
@@ -49,7 +53,7 @@ def test_daily_runner_skips_duplicate_executable_specs_before_evaluation(tmp_pat
     monkeypatch.setattr(runner, "write_allocation_model", lambda *args: None)
     monkeypatch.setattr(runner, "write_daily_report_artifacts", lambda *args, **kwargs: {"latest_report_path": tmp_path / "daily.md"})
 
-    results = run_daily_research(tmp_path)
+    results = run_daily_research(tmp_path, recovery_mode=True, recovery_day=1)
 
     assert len(results) == 1
     assert evaluated == ["H1"]
@@ -65,26 +69,30 @@ def test_daily_runner_surfaces_queued_candidate_dedupe_diagnostics_in_report_met
     evaluated = []
     first = _spec("H1")
     diagnostics = {
-        "input_count": 2,
+        "budget": 18,
+        "recent_window": 50,
+        "proposed": 5,
+        "family_filtered": 1,
+        "source_filtered": 1,
+        "recent_duplicate_skipped": 1,
+        "in_batch_duplicate_skipped": 1,
+        "budget_selected": 1,
+        "queue_rows_consumed": False,
         "retained_count": 1,
-        "skipped_count": 1,
-        "reasons": {"effective_parameter_duplicate": 1},
-        "skipped": [
-            {
-                "reason_code": "effective_parameter_duplicate",
-                "hypothesis_id": "H2",
-                "family": "SWING",
-                "source_key": "queue:H2",
-            }
-        ],
+        "skipped_count": 2,
+        "reasons": {
+            "recent_executable_duplicate": 1,
+            "effective_parameter_duplicate": 1,
+        },
     }
     metadata = {}
 
-    monkeypatch.setattr(runner, "_load_daily_data_bundle", lambda config: _bundle(panel))
-    monkeypatch.setattr(runner, "load_intraday_symbol", lambda root, symbol: _bundle(panel))
-    monkeypatch.setattr(runner, "baseline_strategies", lambda: [])
-    monkeypatch.setattr(runner, "next_run_guided_strategies", lambda root, limit: [])
-    monkeypatch.setattr(runner, "select_queued_hypothesis_candidates", lambda root, limit: {"specs": [first], "diagnostics": diagnostics})
+    monkeypatch.setattr(runner, "_load_daily_data_bundle", lambda config, symbols=None: _bundle(panel))
+    monkeypatch.setattr(
+        runner,
+        "select_daily_experiment_candidates",
+        lambda root, recovery_day: {"specs": [first], "diagnostics": diagnostics},
+    )
 
     def fake_build_weights(spec, daily, intraday):
         evaluated.append(spec.parameters["source_hypothesis_id"])
@@ -117,13 +125,138 @@ def test_daily_runner_surfaces_queued_candidate_dedupe_diagnostics_in_report_met
     monkeypatch.setattr(runner, "write_allocation_model", lambda *args: None)
     monkeypatch.setattr(runner, "write_daily_report_artifacts", fake_report_artifacts)
 
-    results = run_daily_research(tmp_path)
+    results = run_daily_research(tmp_path, recovery_mode=True, recovery_day=1)
 
     assert len(results) == 1
     assert evaluated == ["H1"]
-    assert metadata["queued_candidate_dedupe"]["reasons"] == {"effective_parameter_duplicate": 1}
-    assert metadata["queued_candidate_dedupe"]["retained_count"] == 1
-    assert metadata["queued_candidate_dedupe"]["skipped_count"] == 1
+    assert metadata["daily_experiment_selection"]["budget_selected"] == 1
+    assert metadata["daily_experiment_selection"]["recent_duplicate_skipped"] == 1
+    assert metadata["daily_experiment_selection"]["queue_rows_consumed"] is False
+    assert metadata["daily_experiment_selection"]["retained_count"] == 1
+    assert metadata["daily_experiment_selection"]["skipped_count"] == 2
+    assert metadata["daily_experiment_selection"]["reasons"] == {
+        "recent_executable_duplicate": 1,
+        "effective_parameter_duplicate": 1,
+    }
+
+
+def test_daily_runner_execution_accounting_reconciles_selected_candidates(tmp_path, monkeypatch):
+    import research_lab.runner as runner
+
+    monkeypatch.setenv("RESEARCH_LAB_DATA_PROVIDER", "synthetic")
+    monkeypatch.setenv("RESEARCH_LAB_MODE", "research_only")
+    panel = _panel()
+    close = panel.xs("close", level=1, axis=1)
+    available = _spec("AVAILABLE")
+    missing = StrategySpec(
+        family="SWING",
+        asset_class="ETF",
+        timeframe="1D",
+        short_name="MISSING",
+        hypothesis="missing",
+        parameters={**available.parameters, "symbol": "MISSING"},
+        rules="same",
+        builder="swing_trend_filtered_pullback",
+    )
+    metadata = {}
+
+    monkeypatch.setattr(runner, "_load_daily_data_bundle", lambda config, symbols=None: _bundle(panel))
+    monkeypatch.setattr(
+        runner,
+        "select_daily_experiment_candidates",
+        lambda root, recovery_day: {
+            "specs": [available, missing],
+            "diagnostics": {"proposed": 2, "selected": 2, "budget_selected": 2},
+        },
+    )
+    monkeypatch.setattr(runner, "build_weights", lambda *args: pd.DataFrame({"SPY": 1.0}, index=close.index))
+    _stub_completed_backtest(monkeypatch, runner, close)
+    monkeypatch.setattr(runner, "write_daily_report_artifacts", lambda root, results, **kwargs: metadata.update(kwargs["extra_metadata"]) or {"latest_report_path": tmp_path / "daily.md"})
+
+    results = run_daily_research(tmp_path, recovery_mode=True, recovery_day=1)
+    counts = metadata["daily_experiment_selection"]
+    assert len(results) == 1
+    assert counts["selected"] == counts["attempted"] + counts["missing_data_skipped"] == 2
+    assert counts["attempted"] == counts["completed"] == 1
+    assert "execution_failed" not in counts
+
+
+def test_daily_runner_preserves_fail_fast_backtest_exception_contract(tmp_path, monkeypatch):
+    import research_lab.runner as runner
+
+    monkeypatch.setenv("RESEARCH_LAB_DATA_PROVIDER", "synthetic")
+    monkeypatch.setenv("RESEARCH_LAB_MODE", "research_only")
+    panel = _panel()
+    monkeypatch.setattr(runner, "_load_daily_data_bundle", lambda config, symbols=None: _bundle(panel))
+    monkeypatch.setattr(
+        runner,
+        "select_daily_experiment_candidates",
+        lambda root, recovery_day: {"specs": [_spec("H1")], "diagnostics": {"proposed": 1, "selected": 1}},
+    )
+    monkeypatch.setattr(runner, "build_weights", lambda *args: (_ for _ in ()).throw(RuntimeError("backtest failed")))
+    report_called = False
+
+    def unexpected_report(*args, **kwargs):
+        nonlocal report_called
+        report_called = True
+
+    monkeypatch.setattr(runner, "write_daily_report_artifacts", unexpected_report)
+
+    with pytest.raises(RuntimeError, match="backtest failed"):
+        run_daily_research(tmp_path, recovery_mode=True, recovery_day=1)
+    assert report_called is False
+
+
+def test_used_note_ids_stream_queue_once_for_all_selected_candidates(tmp_path, monkeypatch):
+    import json
+    from pathlib import Path
+    import research_lab.runner as runner
+
+    queue = tmp_path / "registry" / "hypothesis_queue.jsonl"
+    queue.parent.mkdir(parents=True)
+    queue.write_text(
+        "\n".join(
+            json.dumps({"hypothesis_id": hypothesis_id, "used_note_ids": [f"note-{index:016x}"]})
+            for index, hypothesis_id in enumerate(("H1", "H2"), start=1)
+        ),
+        encoding="utf-8",
+    )
+    real_open = Path.open
+    opens = 0
+
+    def tracking_open(path, *args, **kwargs):
+        nonlocal opens
+        if path == queue:
+            opens += 1
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", tracking_open)
+    found = runner._load_used_note_ids(tmp_path, {"H1", "H2"})
+    assert opens == 1
+    assert set(found) == {"H1", "H2"}
+
+
+def _stub_completed_backtest(monkeypatch, runner, close):
+    monkeypatch.setattr(
+        runner,
+        "weighted_backtest",
+        lambda *args: {
+            "metrics": {"cagr": 0.1},
+            "split_metrics": _split_metrics(),
+            "equity": pd.Series([1.0, 1.1], index=close.index),
+            "returns": pd.Series([0.0, 0.1], index=close.index),
+            "average_turnover": 0.0,
+            "average_exposure": 1.0,
+        },
+    )
+    monkeypatch.setattr(runner, "cost_stress", lambda *args: _cost_stress())
+    monkeypatch.setattr(runner, "compute_drawdown_diagnostics", lambda *args, **kwargs: {"max_drawdown": 0.0})
+    monkeypatch.setattr(runner, "run_true_walk_forward", lambda *args, **kwargs: {"method": "true_rolling_oos", "status": "ok"})
+    monkeypatch.setattr(runner, "classify_strategy", lambda *args: ("C", "test"))
+    monkeypatch.setattr(runner, "_persist_result", lambda *args: None)
+    monkeypatch.setattr(runner, "_persist_hypothesis_result", lambda *args: None)
+    monkeypatch.setattr(runner, "write_leaderboard", lambda *args: None)
+    monkeypatch.setattr(runner, "write_allocation_model", lambda *args: None)
 
 
 def _spec(source_hypothesis_id: str) -> StrategySpec:
@@ -206,3 +339,65 @@ def _cost_stress():
         "survives_double_cost": True,
         "double_unseen_cagr": 0.05,
     }
+@pytest.mark.parametrize(
+    ("selection_mode", "queue_inspected", "candidate_source", "recovery_kwargs"),
+    [
+        ("bounded_recovery", False, "internal_recovery_manifest", {"recovery_mode": True, "recovery_day": 1}),
+        ("normal_daily", True, "normal_baseline_guided_queue", {}),
+    ],
+)
+def test_zero_selected_run_writes_completed_report_without_loading_data(
+    tmp_path, monkeypatch, selection_mode, queue_inspected, candidate_source, recovery_kwargs
+):
+    import json
+    from datetime import datetime, timezone
+    from research_lab import runner
+    from research_lab import reports
+
+    fixed_timestamp = datetime(2026, 7, 4, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(reports, "_utc_timestamp", lambda value: fixed_timestamp)
+
+    monkeypatch.setattr(
+        runner,
+        "select_daily_candidates",
+        lambda *args, **kwargs: {
+            "specs": [],
+            "diagnostics": {
+                "proposed": 0,
+                "selected": 0,
+                "selection_mode": selection_mode,
+                "queue_inspected": queue_inspected,
+                "queue_consumed": False,
+                "candidate_source": candidate_source,
+            },
+        },
+    )
+    monkeypatch.setattr(
+        runner,
+        "_load_daily_data_bundle",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("zero selection must not load data")),
+    )
+    monkeypatch.setattr(runner, "write_leaderboard", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "write_allocation_model", lambda *args, **kwargs: None)
+
+    assert run_daily_research(tmp_path, **recovery_kwargs) == []
+    expected_report_path = tmp_path / "reports" / "daily" / "2026-07-04.md"
+    assert expected_report_path.exists()
+    metadata_paths = list((tmp_path / "reports" / "runs" / "2026-07-04").glob("*/run_metadata.json"))
+    assert len(metadata_paths) == 1
+    metadata = json.loads(metadata_paths[0].read_text(encoding="utf-8"))
+    assert metadata["latest_report_path"] == "reports/daily/2026-07-04.md"
+    report_path = tmp_path / metadata["run_report_path"]
+    assert report_path.exists()
+    report = report_path.read_text(encoding="utf-8")
+    counts = metadata["daily_experiment_selection"]
+    assert counts["selected"] == counts["attempted"] == counts["completed"] == 0
+    assert counts["missing_data_skipped"] == 0
+    assert "execution_failed" not in counts
+    assert "execution_failed" not in metadata
+    assert "execution_failed" not in report
+    funnel = metadata["daily_experiment_funnel"]
+    assert funnel["queue_inspected"] is queue_inspected
+    assert funnel["queue_consumed"] is False
+    assert funnel["candidate_source"] == candidate_source
+    assert f"queue inspected: {str(queue_inspected).lower()}" in report

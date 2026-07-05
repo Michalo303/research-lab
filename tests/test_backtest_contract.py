@@ -1,15 +1,42 @@
 import pandas as pd
+import pytest
 
 from research_lab.data import DataBundle
 from research_lab.runner import run_daily_research
 from research_lab.strategies.baselines import StrategySpec
 
+pytestmark = pytest.mark.usefixtures("hermetic_provider_guard")
+
 
 def test_daily_results_persist_true_walk_forward(tmp_path, monkeypatch):
-    monkeypatch.setenv("RESEARCH_LAB_DATA_PROVIDER", "synthetic")
-    monkeypatch.setenv("RESEARCH_LAB_MODE", "research_only")
+    import research_lab.runner as runner
 
-    results = run_daily_research(tmp_path)
+    monkeypatch.setenv("RESEARCH_LAB_DATA_PROVIDER", "synthetic")
+    monkeypatch.setenv("EODHD_API_KEY", "fake-must-not-be-used")
+    monkeypatch.setenv("RESEARCH_LAB_MODE", "research_only")
+    panel = _panel()
+    monkeypatch.setattr(runner, "_load_daily_data_bundle", lambda config, symbols=None: _bundle(panel))
+    monkeypatch.setattr(
+        runner,
+        "select_daily_experiment_candidates",
+        lambda root, recovery_day: {
+            "specs": [
+                StrategySpec(
+                    family="LONGTERM",
+                    asset_class="ETF",
+                    timeframe="1D",
+                    short_name="TEST_FAST",
+                    hypothesis="test",
+                    parameters={"symbol": "SPY", "sma": 1},
+                    rules="test",
+                    builder="long_term_trend_filter",
+                )
+            ],
+            "diagnostics": {"proposed": 1, "budget_selected": 1},
+        },
+    )
+
+    results = run_daily_research(tmp_path, recovery_mode=True, recovery_day=1)
 
     assert results
     assert all(result["walk_forward"]["method"] == "true_rolling_oos" for result in results)
@@ -33,10 +60,12 @@ def test_daily_runner_emits_progress_timing_logs(tmp_path, monkeypatch, capsys):
         builder="long_term_trend_filter",
     )
 
-    monkeypatch.setattr(runner, "_load_daily_data_bundle", lambda config: _bundle(panel))
-    monkeypatch.setattr(runner, "load_intraday_symbol", lambda root, symbol: _bundle(panel))
-    monkeypatch.setattr(runner, "baseline_strategies", lambda: [spec])
-    monkeypatch.setattr(runner, "queued_hypothesis_strategies", lambda root, limit: [])
+    monkeypatch.setattr(runner, "_load_daily_data_bundle", lambda config, symbols=None: _bundle(panel))
+    monkeypatch.setattr(
+        runner,
+        "select_daily_experiment_candidates",
+        lambda root, recovery_day: {"specs": [spec], "diagnostics": {"proposed": 1, "budget_selected": 1}},
+    )
     monkeypatch.setattr(runner, "build_weights", lambda spec, daily, intraday: pd.DataFrame({"SPY": 1.0}, index=close.index))
     monkeypatch.setattr(
         runner,
@@ -57,7 +86,7 @@ def test_daily_runner_emits_progress_timing_logs(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(runner, "_persist_hypothesis_result", lambda *args: None)
     monkeypatch.setattr(runner, "write_leaderboard", lambda *args: None)
     monkeypatch.setattr(runner, "write_allocation_model", lambda *args: None)
-    monkeypatch.setattr(runner, "write_daily_report_artifacts", lambda *args: {"latest_report_path": tmp_path / "daily.md"})
+    monkeypatch.setattr(runner, "write_daily_report_artifacts", lambda *args, **kwargs: {"latest_report_path": tmp_path / "daily.md"})
 
     def fake_walk_forward(*args, **kwargs):
         progress_log = kwargs.get("progress_log")
@@ -68,7 +97,7 @@ def test_daily_runner_emits_progress_timing_logs(tmp_path, monkeypatch, capsys):
 
     monkeypatch.setattr(runner, "run_true_walk_forward", fake_walk_forward)
 
-    results = run_daily_research(tmp_path)
+    results = run_daily_research(tmp_path, recovery_mode=True, recovery_day=1)
 
     out = capsys.readouterr().out
     assert results
