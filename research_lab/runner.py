@@ -9,7 +9,7 @@ from time import perf_counter
 
 from research_lab.backtest import close_frame, cost_stress, weighted_backtest
 from research_lab.config import LabConfig, ensure_project_structure
-from research_lab.data import DataBundle, load_daily_universe, load_eodhd_daily_universe, load_intraday_symbol, load_massive_daily_universe
+from research_lab.data import DataBundle, load_cached_eodhd_daily_universe, load_daily_universe, load_eodhd_daily_universe, load_intraday_symbol, load_massive_daily_universe
 from research_lab.drawdown_diagnostics import compute_drawdown_diagnostics
 from research_lab.jsonl import iter_jsonl
 from research_lab.registry import append_jsonl, write_allocation_model, write_leaderboard
@@ -37,13 +37,17 @@ def run_daily_research(
     _log_daily_progress(f"start provider={config.data_provider} root={config.root}")
     if config.mode != "research_only":
         raise RuntimeError("Refusing to run unless RESEARCH_LAB_MODE=research_only.")
-    ensure_project_structure(config.root)
+    if not recovery_mode:
+        ensure_project_structure(config.root)
 
     selection = select_daily_candidates(
         config.root,
         recovery_mode=recovery_mode,
         recovery_day=recovery_day,
     )
+    _require_resolved_recovery(selection["diagnostics"])
+    if recovery_mode:
+        ensure_project_structure(config.root)
     specs = dedupe_strategy_specs(selection["specs"])
     selection["diagnostics"]["selected"] = len(specs)
     selection["diagnostics"]["budget_selected"] = len(specs)
@@ -127,6 +131,10 @@ def run_daily_research(
         if "walk_forward" in classify_strategy.__code__.co_varnames[: classify_strategy.__code__.co_argcount]:
             tier_args.append(walk_forward)
         tier, tier_reason = classify_strategy(*tier_args)
+        data_source = data_bundle.manifest["source"]
+        split_metrics_result = {**backtest["split_metrics"], "data_source": data_source}
+        cost_stress_result = {**stress, "data_source": data_source}
+        walk_forward_result = {**walk_forward, "data_source": data_source}
         result = {
             "strategy_id": strategy_id,
             "family": spec.family,
@@ -141,7 +149,7 @@ def run_daily_research(
             "parameter_count": len(spec.parameters),
             "variants_tried": 1,
             "data_manifest": data_bundle.manifest,
-            "data_source": data_bundle.manifest["source"],
+            "data_source": data_source,
             "data_start": data_bundle.manifest["start"],
             "data_end": data_bundle.manifest["end"],
             "history_length": float(data_bundle.manifest.get("years", 0.0)),
@@ -152,11 +160,11 @@ def run_daily_research(
                 "turnover_source": "target_weight_diff_abs_sum",
             },
             "universe": list(data_bundle.manifest.get("symbols", [])),
-            "cost_stress": stress,
+            "cost_stress": cost_stress_result,
             "metrics": backtest["metrics"],
-            "split_metrics": backtest["split_metrics"],
+            "split_metrics": split_metrics_result,
             "drawdown_diagnostics": compute_drawdown_diagnostics(backtest["equity"], cagr=backtest["metrics"].get("cagr")),
-            "walk_forward": walk_forward,
+            "walk_forward": walk_forward_result,
             "average_turnover": backtest["average_turnover"],
             "average_exposure": backtest["average_exposure"],
             "return_series": _series_records(backtest["returns"]),
@@ -206,6 +214,18 @@ def select_daily_candidates(
     if recovery_day > 7:
         return _select_normal_daily_candidates(root)
     selection = select_daily_experiment_candidates(root, recovery_day=recovery_day)
+    diagnostics = selection["diagnostics"]
+    diagnostics.setdefault("recovery_target", int(diagnostics.get("proposed", len(selection["specs"]))))
+    diagnostics.setdefault("selected_new", len(selection["specs"]))
+    diagnostics.setdefault("covered_by_recent_real", 0)
+    diagnostics.setdefault(
+        "recovery_resolved",
+        int(diagnostics["selected_new"]) + int(diagnostics["covered_by_recent_real"]),
+    )
+    diagnostics.setdefault(
+        "recovery_shortfall",
+        max(int(diagnostics["recovery_target"]) - int(diagnostics["recovery_resolved"]), 0),
+    )
     selection["diagnostics"].update(
         {
             "selection_mode": "bounded_recovery",
@@ -215,6 +235,19 @@ def select_daily_candidates(
         }
     )
     return selection
+
+
+def _require_resolved_recovery(diagnostics: dict) -> None:
+    if diagnostics.get("selection_mode") != "bounded_recovery":
+        return
+    target = int(diagnostics.get("recovery_target", 0))
+    resolved = int(diagnostics.get("recovery_resolved", 0))
+    if target <= 0 or resolved != target:
+        shortfall = max(target - resolved, 0)
+        raise RuntimeError(
+            f"bounded recovery must resolve all manifest candidates before execution: "
+            f"target={target} resolved={resolved} recovery_shortfall={shortfall}"
+        )
 
 
 def _select_normal_daily_candidates(root: Path) -> dict:
@@ -344,6 +377,14 @@ def _load_used_note_ids(root: Path, hypothesis_ids: set[str]) -> dict[str, list[
     return found
 
 
+def _used_note_ids(root: Path, hypothesis_id: object) -> list[str]:
+    """Compatibility wrapper for callers that request one hypothesis."""
+    if not hypothesis_id:
+        return []
+    key = str(hypothesis_id)
+    return _load_used_note_ids(root, {key}).get(key, [])
+
+
 def _next_sequence(root: Path) -> int:
     registry = root / "registry" / "strategy_registry.jsonl"
     today = date.today().strftime("%Y%m%d")
@@ -437,6 +478,10 @@ def _leaderboard_row(result: dict) -> dict:
 
 def _load_daily_data_bundle(config: LabConfig, symbols: list[str] | None = None) -> DataBundle:
     eod_symbols = _unique(symbols or ["SPY", "QQQ", "TLT", "GLD"])
+    if config.data_provider == "eodhd_cache":
+        bundle = load_cached_eodhd_daily_universe(config.root, eod_symbols)
+        _print_daily_selection_trace(config, bundle, "")
+        return bundle
     fallback_reason = ""
     if config.eodhd_api_key and config.data_provider in {"eodhd", "massive"}:
         try:

@@ -256,7 +256,9 @@ def select_daily_experiment_candidates(
     budget = max(int(budget), 0)
     recent_window = max(int(recent_window), 0)
     proposals, terminal_counts = _daily_candidate_proposals(root, recovery_day)
-    recent_fingerprints = _recent_executable_fingerprints(root, max_rows=recent_window)
+    recent_results = _recent_experiment_results(root, max_rows=recent_window)
+    recent_matches = _recent_results_by_fingerprint(recent_results)
+    recovery_target = len(proposals) + sum(terminal_counts.values())
     diagnostics = {
         "budget": budget,
         "recent_window": recent_window,
@@ -276,6 +278,14 @@ def select_daily_experiment_candidates(
         "skipped_count": 0,
         "reasons": {},
         "skipped": [],
+        "recovery_target": recovery_target,
+        "selected_new": 0,
+        "covered_by_recent_real": 0,
+        "nonqualifying_recent_matches": 0,
+        "recovery_resolved": 0,
+        "recovery_shortfall": recovery_target,
+        "covered_recent_results": [],
+        "rejected_recent_matches": [],
     }
     selected: list[StrategySpec] = []
     seen_batch: set[str] = set()
@@ -285,9 +295,26 @@ def select_daily_experiment_candidates(
             diagnostics["family_filtered"] += 1
             continue
         fingerprint = strategy_execution_fingerprint(spec)
-        if fingerprint in recent_fingerprints:
+        qualifying_result = None
+        for recent_result in reversed(recent_matches.get(fingerprint, [])):
+            reason = _recovery_recent_result_rejection_reason(spec, recent_result)
+            if reason is None:
+                if qualifying_result is None:
+                    qualifying_result = recent_result
+                continue
+            diagnostics["nonqualifying_recent_matches"] += 1
+            if len(diagnostics["rejected_recent_matches"]) < MAX_QUEUE_DEDUPE_SKIP_DETAILS:
+                diagnostics["rejected_recent_matches"].append(
+                    _compact_rejected_recent_match(recent_result, fingerprint, reason)
+                )
+        if qualifying_result is not None:
             diagnostics["recent_duplicate_skipped"] += 1
-            _record_daily_selector_skip(diagnostics, "recent_executable_duplicate", proposal, fingerprint)
+            diagnostics["covered_by_recent_real"] += 1
+            _record_daily_selector_skip(diagnostics, "covered_by_recent_real_result", proposal, fingerprint)
+            if len(diagnostics["covered_recent_results"]) < MAX_QUEUE_DEDUPE_SKIP_DETAILS:
+                diagnostics["covered_recent_results"].append(
+                    _compact_covered_recent_result(qualifying_result, fingerprint)
+                )
             continue
         if fingerprint in seen_batch:
             diagnostics["in_batch_duplicate_skipped"] += 1
@@ -301,9 +328,226 @@ def select_daily_experiment_candidates(
         diagnostics["selected_fingerprints"].append(fingerprint)
         diagnostics["selected_sources"].append(proposal.source)
     diagnostics["selected"] = len(selected)
+    diagnostics["selected_new"] = len(selected)
     diagnostics["budget_selected"] = len(selected)  # compatibility with older report readers
     diagnostics["retained_count"] = len(selected)
+    diagnostics["recovery_resolved"] = diagnostics["selected_new"] + diagnostics["covered_by_recent_real"]
+    diagnostics["recovery_shortfall"] = max(
+        diagnostics["recovery_target"] - diagnostics["recovery_resolved"], 0
+    )
     return {"specs": selected, "diagnostics": diagnostics}
+
+
+def _recent_results_by_fingerprint(results: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    matches: dict[str, list[dict[str, Any]]] = {}
+    for result in results:
+        try:
+            fingerprint = result_execution_fingerprint(result)
+        except (TypeError, ValueError):
+            continue
+        if fingerprint:
+            matches.setdefault(fingerprint, []).append(result)
+    return matches
+
+
+def _recovery_recent_result_rejection_reason(spec: StrategySpec, result: dict[str, Any]) -> str | None:
+    if str(result.get("timeframe") or "").strip().upper() != "1D":
+        return "non_daily_timeframe"
+    evidence_reason = _proven_eodhd_result_rejection_reason(result)
+    if evidence_reason not in {None, "incomplete_data_source_provenance"}:
+        return evidence_reason
+    manifest = result["data_manifest"]
+    represented = manifest.get("symbols") if "symbols" in manifest else manifest.get("requested_symbols")
+    if not isinstance(represented, list):
+        return "missing_symbol_provenance"
+    represented_symbols = {str(symbol).strip().upper() for symbol in represented}
+    if not set(_recovery_spec_symbols(spec)).issubset(represented_symbols):
+        return "missing_required_symbols"
+    if evidence_reason is not None:
+        return evidence_reason
+    if not str(result.get("strategy_id") or "").strip() or not str(result.get("tier") or "").strip():
+        return "malformed_result_metadata"
+    return None
+
+
+def _proven_eodhd_result_rejection_reason(result: dict[str, Any]) -> str | None:
+    if "data_source" not in result or not str(result.get("data_source") or "").strip():
+        return "missing_data_source"
+    if type(result.get("data_source")) is not str or result.get("data_source") != "eodhd":
+        return "non_real_eodhd_source"
+    manifest = result.get("data_manifest")
+    if not isinstance(manifest, dict):
+        return "missing_data_manifest"
+    source = manifest.get("source")
+    provider = manifest.get("provider")
+    if source is None or provider is None or source == "" or provider == "":
+        incomplete_manifest_provenance = True
+    else:
+        incomplete_manifest_provenance = False
+        if type(source) is not str or type(provider) is not str or source != "eodhd" or provider != "eodhd":
+            return "conflicting_data_source_provenance"
+    fallback_proven = False
+    for container in (manifest, result):
+        if "fallback_used" not in container:
+            continue
+        fallback_value = container.get("fallback_used")
+        if not isinstance(fallback_value, bool):
+            return "ambiguous_fallback_marker"
+        if fallback_value:
+            return "fallback_used"
+        fallback_proven = True
+    if any(
+        container.get(key)
+        for container in (manifest, result)
+        for key in ("fallback_reason", "fallback_source", "fallback_provider")
+    ):
+        return "fallback_used"
+    symbol_diagnostics = manifest.get("symbol_diagnostics") or []
+    if not isinstance(symbol_diagnostics, list):
+        return "malformed_data_manifest"
+    diagnostics_prove_no_fallback = bool(symbol_diagnostics)
+    for row in symbol_diagnostics:
+        if not isinstance(row, dict):
+            return "malformed_data_manifest"
+        if "fallback_used" not in row or not isinstance(row.get("fallback_used"), bool):
+            diagnostics_prove_no_fallback = False
+            continue
+        if row["fallback_used"]:
+            return "fallback_used"
+    fallback_proven = fallback_proven or diagnostics_prove_no_fallback
+    if not fallback_proven:
+        return "missing_fallback_provenance"
+    if not str(manifest.get("start") or "").strip() or not str(manifest.get("end") or "").strip():
+        return "missing_data_period"
+    if incomplete_manifest_provenance:
+        return "incomplete_data_source_provenance"
+    required_sections = {
+        "split_metrics": "missing_split_evidence",
+        "cost_stress": "missing_cost_stress_evidence",
+        "walk_forward": "missing_walk_forward_evidence",
+    }
+    for key, missing_reason in required_sections.items():
+        if key not in result:
+            return missing_reason
+        value = result[key]
+        if not isinstance(value, dict):
+            return "malformed_result_metadata"
+        if type(value.get("data_source")) is not str or value.get("data_source") != "eodhd":
+            return "conflicting_structured_provenance"
+        structured_reason = _structured_provenance_rejection_reason(value)
+        if structured_reason is not None:
+            return structured_reason
+    split_metrics = result["split_metrics"]
+    unseen = split_metrics.get("unseen")
+    if not isinstance(unseen, dict) or not {"cagr", "max_drawdown", "trade_count"}.issubset(unseen):
+        return "malformed_result_metadata"
+    if not {"double_unseen_cagr", "survives_double_cost"}.issubset(result["cost_stress"]):
+        return "malformed_result_metadata"
+    if not {"window_count", "pass_rate"}.issubset(result["walk_forward"]):
+        return "malformed_result_metadata"
+    return None
+
+
+def _structured_provenance_rejection_reason(
+    value: Any,
+    *,
+    _seen: set[int] | None = None,
+    _depth: int = 0,
+) -> str | None:
+    if _depth > 25:
+        return "malformed_result_metadata"
+    if _seen is None:
+        _seen = set()
+    if isinstance(value, dict):
+        identity = id(value)
+        if identity in _seen:
+            return "malformed_result_metadata"
+        _seen.add(identity)
+        for key, item in value.items():
+            if key == "data_source":
+                if type(item) is not str or item != "eodhd":
+                    return "conflicting_structured_provenance"
+            elif key in {"source", "provider"}:
+                if type(item) is not str or item != "eodhd":
+                    return "conflicting_structured_provenance"
+            elif key == "fallback_used":
+                if type(item) is not bool:
+                    return "conflicting_structured_provenance"
+                if item:
+                    return "fallback_used"
+            elif key in {"used_fallback", "synthetic_fallback"}:
+                if type(item) is not bool:
+                    return "conflicting_structured_provenance"
+                if item:
+                    return "fallback_used"
+            elif key in {"fallback_reason", "fallback_source", "fallback_provider"}:
+                if item:
+                    return "fallback_used"
+            reason = _structured_provenance_rejection_reason(item, _seen=_seen, _depth=_depth + 1)
+            if reason is not None:
+                return reason
+        _seen.remove(identity)
+        return None
+    if isinstance(value, (list, tuple)):
+        identity = id(value)
+        if identity in _seen:
+            return "malformed_result_metadata"
+        _seen.add(identity)
+        for item in value:
+            reason = _structured_provenance_rejection_reason(item, _seen=_seen, _depth=_depth + 1)
+            if reason is not None:
+                return reason
+        _seen.remove(identity)
+    return None
+
+
+def _recovery_spec_symbols(spec: StrategySpec) -> list[str]:
+    symbols: OrderedDict[str, None] = OrderedDict()
+    for key in ("symbol", "risk_symbol"):
+        value = spec.parameters.get(key)
+        if value:
+            symbols[str(value).strip().upper()] = None
+    for key in ("symbols", "risk_assets", "defensive_assets"):
+        values = spec.parameters.get(key, [])
+        if isinstance(values, list):
+            for value in values:
+                if value:
+                    symbols[str(value).strip().upper()] = None
+    return list(symbols)
+
+
+def _compact_covered_recent_result(result: dict[str, Any], fingerprint: str) -> dict[str, Any]:
+    manifest = result.get("data_manifest") or {}
+    split_metrics = result.get("split_metrics") if isinstance(result.get("split_metrics"), dict) else {}
+    unseen = split_metrics.get("unseen") if isinstance(split_metrics.get("unseen"), dict) else {}
+    stress = result.get("cost_stress") if isinstance(result.get("cost_stress"), dict) else {}
+    walk_forward = result.get("walk_forward") if isinstance(result.get("walk_forward"), dict) else {}
+    return {
+        "strategy_id": str(result.get("strategy_id") or ""),
+        "fingerprint": fingerprint,
+        "data_source": "eodhd",
+        "data_start": str(manifest.get("start") or ""),
+        "data_end": str(manifest.get("end") or ""),
+        "tier": str(result.get("tier") or ""),
+        "tier_reason": str(result.get("tier_reason") or ""),
+        "unseen_cagr": unseen.get("cagr"),
+        "unseen_max_drawdown": unseen.get("max_drawdown"),
+        "unseen_trade_count": unseen.get("trade_count"),
+        "double_cost_unseen_cagr": stress.get("double_unseen_cagr"),
+        "double_cost_pass": stress.get("survives_double_cost"),
+        "walk_forward_window_count": walk_forward.get("window_count"),
+        "walk_forward_pass_rate": walk_forward.get("pass_rate"),
+    }
+
+
+def _compact_rejected_recent_match(result: dict[str, Any], fingerprint: str, reason: str) -> dict[str, str]:
+    manifest = result.get("data_manifest") if isinstance(result.get("data_manifest"), dict) else {}
+    return {
+        "strategy_id": str(result.get("strategy_id") or ""),
+        "fingerprint": fingerprint,
+        "data_source": str(result.get("data_source") or manifest.get("source") or ""),
+        "reason": reason,
+    }
 
 
 def _record_daily_selector_skip(

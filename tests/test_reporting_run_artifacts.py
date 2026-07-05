@@ -224,6 +224,75 @@ def test_metadata_and_report_include_compact_daily_experiment_funnel(tmp_path):
     assert "- queue rows consumed: false" in report
 
 
+def test_recovery_report_separates_recent_coverage_from_new_execution_counts(tmp_path):
+    coverage = {
+        "strategy_id": "RECENT_EODHD_1",
+        "fingerprint": '{"builder":"long_term_vol_target"}',
+        "data_source": "eodhd",
+        "data_start": "1993-01-29",
+        "data_end": "2026-07-02",
+        "tier": "C",
+        "tier_reason": "walk-forward shortfall",
+        "unseen_cagr": 0.08,
+        "unseen_max_drawdown": -0.09,
+        "unseen_trade_count": 42,
+        "double_cost_unseen_cagr": 0.07,
+        "double_cost_pass": True,
+        "walk_forward_window_count": 7,
+        "walk_forward_pass_rate": 0.57,
+    }
+    outcome = write_daily_report_artifacts(
+        tmp_path,
+        [_result("eodhd", strategy_id="NEW_RESULT")],
+        timestamp=datetime(2026, 7, 5, 12, 0, 0, tzinfo=timezone.utc),
+        git_info={"commit": "abcdef1234567890", "branch": "main", "dirty": False},
+        extra_metadata={
+            "daily_experiment_selection": {
+                "selection_mode": "bounded_recovery",
+                "candidate_source": "internal_recovery_manifest",
+                "queue_inspected": False,
+                "queue_consumed": False,
+                "proposed": 4,
+                "selected": 3,
+                "selected_new": 3,
+                "covered_by_recent_real": 1,
+                "recovery_target": 4,
+                "recovery_resolved": 4,
+                "recovery_shortfall": 0,
+                "nonqualifying_recent_matches": 2,
+                "covered_recent_results": [coverage],
+                "attempted": 1,
+                "completed": 1,
+                "missing_data_skipped": 0,
+            }
+        },
+    )
+
+    metadata = json.loads(outcome["metadata_path"].read_text(encoding="utf-8"))
+    funnel = metadata["daily_experiment_funnel"]
+    assert funnel["recovery_counts"] == {
+        "manifest_candidates": 4,
+        "selected_new": 3,
+        "covered_by_recent_real": 1,
+        "nonqualifying_recent_matches": 2,
+        "recovery_resolved": 4,
+        "recovery_shortfall": 0,
+    }
+    assert funnel["execution_counts"] == {
+        "attempted": 1,
+        "completed": 1,
+        "missing_data_skipped": 0,
+    }
+    assert funnel["result_diagnostics"]["positive_oos"] == 1
+    assert metadata["daily_experiment_selection"]["covered_recent_results"] == [coverage]
+    report = outcome["run_report_path"].read_text(encoding="utf-8")
+    assert "| manifest_candidates | recovery resolution | 4 |" in report
+    assert "| covered_by_recent_real | recovery resolution | 1 |" in report
+    assert "RECENT_EODHD_1" in report
+    assert "coverage provenance" in report
+    assert "result diagnostics cover only results completed in this run" in report
+
+
 def test_metadata_includes_bounded_walk_forward_diagnostics_for_etf_tier_c_near_miss(tmp_path):
     outcome = write_daily_report_artifacts(
         tmp_path,

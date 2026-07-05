@@ -203,6 +203,25 @@ def build_daily_experiment_funnel(results: list[dict], selection: dict[str, Any]
         "completed": _safe_int(selection.get("completed"), len(results)),
         "missing_data_skipped": _safe_int(selection.get("missing_data_skipped"), 0),
     }
+    recovery_counts = (
+        {
+            "manifest_candidates": _safe_int(selection.get("recovery_target"), 0),
+            "selected_new": _safe_int(selection.get("selected_new", selection.get("selected")), 0),
+            "covered_by_recent_real": _safe_int(selection.get("covered_by_recent_real"), 0),
+            "nonqualifying_recent_matches": _safe_int(selection.get("nonqualifying_recent_matches"), 0),
+            "recovery_resolved": _safe_int(selection.get("recovery_resolved"), 0),
+            "recovery_shortfall": _safe_int(selection.get("recovery_shortfall"), 0),
+        }
+        if selection_mode == "bounded_recovery"
+        else {
+            "manifest_candidates": 0,
+            "selected_new": 0,
+            "covered_by_recent_real": 0,
+            "nonqualifying_recent_matches": 0,
+            "recovery_resolved": 0,
+            "recovery_shortfall": 0,
+        }
+    )
     result_diagnostics = {
         "positive_oos": sum(1 for result in results if _safe_float(result.get("split_metrics", {}).get("unseen", {}).get("cagr"), 0.0) > 0.0),
         "tier_drawdown_pass_15pct": sum(1 for result in results if _safe_float(result.get("split_metrics", {}).get("unseen", {}).get("max_drawdown"), -1.0) >= -0.15),
@@ -220,6 +239,7 @@ def build_daily_experiment_funnel(results: list[dict], selection: dict[str, Any]
             rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
     return {
         "selector_counts": selector_counts,
+        "recovery_counts": recovery_counts,
         "execution_counts": execution_counts,
         "execution_failure_contract": "fail_fast_no_completed_report",
         "result_diagnostics": result_diagnostics,
@@ -229,17 +249,20 @@ def build_daily_experiment_funnel(results: list[dict], selection: dict[str, Any]
         "queue_consumed": queue_consumed,
         "queue_rows_consumed": queue_consumed,
         "candidate_source": candidate_source,
+        "covered_recent_results": list(selection.get("covered_recent_results") or [])[:50],
+        "rejected_recent_matches": list(selection.get("rejected_recent_matches") or [])[:50],
         "candidate_scope_note": (
             "selector counts are mutually exclusive terminal outcomes; candidates came from the internal seven-day recovery manifest"
             if selection_mode == "bounded_recovery"
             else "selector counts are mutually exclusive terminal outcomes; the normal baseline/guided/queue path inspected queue rows without consuming them"
         ),
-        "result_scope_note": "execution counts reconcile selected candidates; result diagnostics are overlapping, non-exclusive counts over completed results",
+        "result_scope_note": "execution counts cover only new selected executions; result diagnostics cover only results completed in this run and are overlapping, non-exclusive counts",
     }
 
 
 def render_daily_experiment_funnel(funnel: dict[str, Any]) -> list[str]:
     selector_counts = funnel.get("selector_counts", {})
+    recovery_counts = funnel.get("recovery_counts", {})
     execution_counts = funnel.get("execution_counts", {})
     result_diagnostics = funnel.get("result_diagnostics", {})
     rejection_reasons = funnel.get("rejection_reasons", {})
@@ -258,6 +281,16 @@ def render_daily_experiment_funnel(funnel: dict[str, Any]) -> list[str]:
         "selected",
     ):
         rows.append(f"| {stage} | selector outcome | {_safe_int(selector_counts.get(stage), 0)} |")
+    if funnel.get("selection_mode") == "bounded_recovery":
+        for stage in (
+            "manifest_candidates",
+            "selected_new",
+            "covered_by_recent_real",
+            "nonqualifying_recent_matches",
+            "recovery_resolved",
+            "recovery_shortfall",
+        ):
+            rows.append(f"| {stage} | recovery resolution | {_safe_int(recovery_counts.get(stage), 0)} |")
     for stage in ("attempted", "completed", "missing_data_skipped"):
         rows.append(f"| {stage} | execution | {_safe_int(execution_counts.get(stage), 0)} |")
     for stage in ("positive_oos", "tier_drawdown_pass_15pct", "recovery_drawdown_pass_10pct", "walk_forward_pass", "cost_pass", "tier_ab", "deployment_gate_pass"):
@@ -281,6 +314,25 @@ def render_daily_experiment_funnel(funnel: dict[str, Any]) -> list[str]:
             f"- rejection_reasons: {rejection_text}",
         ]
     )
+    for covered in funnel.get("covered_recent_results", []):
+        rows.append(
+            "- coverage provenance: "
+            f"strategy_id={covered.get('strategy_id', '')}; "
+            f"fingerprint={covered.get('fingerprint', '')}; "
+            f"data_source={covered.get('data_source', '')}; "
+            f"data_start={covered.get('data_start', '')}; "
+            f"data_end={covered.get('data_end', '')}; "
+            f"tier={covered.get('tier', '')}; "
+            f"unseen_cagr={covered.get('unseen_cagr')}; "
+            f"unseen_max_drawdown={covered.get('unseen_max_drawdown')}"
+        )
+    for rejected in funnel.get("rejected_recent_matches", []):
+        rows.append(
+            "- rejected recent match: "
+            f"strategy_id={rejected.get('strategy_id', '')}; "
+            f"data_source={rejected.get('data_source', '')}; "
+            f"reason={rejected.get('reason', '')}"
+        )
     return rows
 
 
@@ -1223,6 +1275,12 @@ def _run_metadata_lines(metadata: dict[str, Any]) -> list[str]:
                 f"- daily_experiment_in_batch_duplicate_skipped: {selection.get('in_batch_duplicate_skipped', 0)}",
                 f"- daily_experiment_budget_skipped: {selection.get('budget_skipped', 0)}",
                 f"- daily_experiment_selected: {selection.get('selected', selection.get('budget_selected', 0))}",
+                f"- daily_experiment_recovery_target: {selection.get('recovery_target', 0)}",
+                f"- daily_experiment_selected_new: {selection.get('selected_new', selection.get('selected', 0))}",
+                f"- daily_experiment_covered_by_recent_real: {selection.get('covered_by_recent_real', 0)}",
+                f"- daily_experiment_nonqualifying_recent_matches: {selection.get('nonqualifying_recent_matches', 0)}",
+                f"- daily_experiment_recovery_resolved: {selection.get('recovery_resolved', 0)}",
+                f"- daily_experiment_recovery_shortfall: {selection.get('recovery_shortfall', 0)}",
                 f"- daily_experiment_selection_mode: {selection.get('selection_mode', 'unknown')}",
                 f"- daily_experiment_candidate_source: {selection.get('candidate_source', 'unspecified')}",
                 f"- daily_experiment_queue_inspected: {selection.get('queue_inspected', False)}",
@@ -1234,10 +1292,12 @@ def _run_metadata_lines(metadata: dict[str, Any]) -> list[str]:
     if isinstance(funnel, dict):
         selector_counts = funnel.get("selector_counts", {})
         execution_counts = funnel.get("execution_counts", {})
+        recovery_counts = funnel.get("recovery_counts", {})
         result_diagnostics = funnel.get("result_diagnostics", {})
         lines.extend(
             [
                 f"- compact_funnel_selector_counts: {selector_counts}",
+                f"- compact_funnel_recovery_counts: {recovery_counts}",
                 f"- compact_funnel_execution_counts: {execution_counts}",
                 f"- compact_funnel_result_diagnostics: {result_diagnostics}",
                 f"- compact_funnel_rejection_reasons: {funnel.get('rejection_reasons', {})}",

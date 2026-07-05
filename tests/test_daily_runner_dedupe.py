@@ -1,9 +1,16 @@
+import json
+
 import pandas as pd
 import pytest
 
 from research_lab.data import DataBundle
 from research_lab.runner import run_daily_research
-from research_lab.strategies.baselines import StrategySpec
+from research_lab.strategies.baselines import (
+    StrategySpec,
+    _proven_eodhd_result_rejection_reason,
+    recovery_manifest_specs,
+    select_daily_experiment_candidates,
+)
 
 pytestmark = pytest.mark.usefixtures("hermetic_provider_guard")
 
@@ -84,6 +91,11 @@ def test_daily_runner_surfaces_queued_candidate_dedupe_diagnostics_in_report_met
             "recent_executable_duplicate": 1,
             "effective_parameter_duplicate": 1,
         },
+        "recovery_target": 1,
+        "selected_new": 1,
+        "covered_by_recent_real": 0,
+        "recovery_resolved": 1,
+        "recovery_shortfall": 0,
     }
     metadata = {}
 
@@ -207,6 +219,262 @@ def test_daily_runner_preserves_fail_fast_backtest_exception_contract(tmp_path, 
     assert report_called is False
 
 
+def test_daily_runner_stamps_section_level_provenance_without_mutating_source_dicts(tmp_path, monkeypatch):
+    import research_lab.runner as runner
+
+    monkeypatch.setenv("RESEARCH_LAB_DATA_PROVIDER", "eodhd_cache")
+    monkeypatch.setenv("RESEARCH_LAB_MODE", "research_only")
+    spec = recovery_manifest_specs(1)[0]
+    panel = _panel_for_spec(spec)
+    close = panel.xs("close", level=1, axis=1)
+    split_metrics = _split_metrics()
+    cost_stress_result = _cost_stress()
+    walk_forward_result = {"method": "true_rolling_oos", "status": "ok"}
+    persisted = []
+
+    monkeypatch.setattr(runner, "_load_daily_data_bundle", lambda config, symbols=None: _bundle(panel, source="eodhd", provider="eodhd"))
+    monkeypatch.setattr(
+        runner,
+        "select_daily_candidates",
+        lambda *args, **kwargs: {
+            "specs": [spec],
+            "diagnostics": {
+                "selection_mode": "bounded_recovery",
+                "recovery_target": 1,
+                "selected_new": 1,
+                "covered_by_recent_real": 0,
+                "recovery_resolved": 1,
+                "recovery_shortfall": 0,
+            },
+        },
+    )
+    monkeypatch.setattr(runner, "build_weights", lambda *args: pd.DataFrame({"SPY": 1.0}, index=close.index))
+    monkeypatch.setattr(
+        runner,
+        "weighted_backtest",
+        lambda *args: {
+            "metrics": {"cagr": 0.1},
+            "split_metrics": split_metrics,
+            "equity": pd.Series([1.0, 1.1], index=close.index),
+            "returns": pd.Series([0.0, 0.1], index=close.index),
+            "average_turnover": 0.0,
+            "average_exposure": 1.0,
+        },
+    )
+    monkeypatch.setattr(runner, "cost_stress", lambda *args: cost_stress_result)
+    monkeypatch.setattr(runner, "compute_drawdown_diagnostics", lambda *args, **kwargs: {"max_drawdown": 0.0})
+    monkeypatch.setattr(runner, "run_true_walk_forward", lambda *args, **kwargs: walk_forward_result)
+    monkeypatch.setattr(runner, "classify_strategy", lambda *args: ("C", "test"))
+    monkeypatch.setattr(runner, "_persist_result", lambda root, result: persisted.append(result))
+    monkeypatch.setattr(runner, "_persist_hypothesis_result", lambda *args: None)
+    monkeypatch.setattr(runner, "write_leaderboard", lambda *args: None)
+    monkeypatch.setattr(runner, "write_allocation_model", lambda *args: None)
+    monkeypatch.setattr(runner, "write_daily_report_artifacts", lambda *args, **kwargs: {"latest_report_path": tmp_path / "daily.md"})
+
+    [result] = run_daily_research(tmp_path, recovery_mode=True, recovery_day=1)
+
+    assert persisted == [result]
+    assert result["data_source"] == "eodhd"
+    assert result["split_metrics"]["data_source"] == "eodhd"
+    assert result["cost_stress"]["data_source"] == "eodhd"
+    assert result["walk_forward"]["data_source"] == "eodhd"
+    assert "data_source" not in split_metrics
+    assert "data_source" not in cost_stress_result
+    assert "data_source" not in walk_forward_result
+
+
+def test_runner_stamped_eodhd_result_counts_as_recent_real_coverage(tmp_path, monkeypatch):
+    import research_lab.runner as runner
+
+    monkeypatch.setenv("RESEARCH_LAB_DATA_PROVIDER", "eodhd_cache")
+    monkeypatch.setenv("RESEARCH_LAB_MODE", "research_only")
+    spec = recovery_manifest_specs(1)[0]
+    panel = _panel_for_spec(spec)
+    close = panel.xs("close", level=1, axis=1)
+    registry_result = {}
+
+    monkeypatch.setattr(runner, "_load_daily_data_bundle", lambda config, symbols=None: _bundle(panel, source="eodhd", provider="eodhd"))
+    monkeypatch.setattr(
+        runner,
+        "select_daily_candidates",
+        lambda *args, **kwargs: {
+            "specs": [spec],
+            "diagnostics": {
+                "selection_mode": "bounded_recovery",
+                "recovery_target": 1,
+                "selected_new": 1,
+                "covered_by_recent_real": 0,
+                "recovery_resolved": 1,
+                "recovery_shortfall": 0,
+            },
+        },
+    )
+    monkeypatch.setattr(runner, "build_weights", lambda *args: pd.DataFrame({str(panel.columns[0][0]): 1.0}, index=close.index))
+    monkeypatch.setattr(
+        runner,
+        "weighted_backtest",
+        lambda *args: {
+                "metrics": {"cagr": 0.1},
+                "split_metrics": {
+                    "train": {"cagr": 0.1},
+                    "validation": {"cagr": 0.1},
+                    "unseen": {
+                        "cagr": 0.05,
+                        "sharpe": 1.0,
+                        "mar": 0.6,
+                        "max_drawdown": -0.08,
+                        "profit_factor": 1.2,
+                        "trade_count": 42,
+                    },
+                },
+            "equity": pd.Series([1.0, 1.1], index=close.index),
+            "returns": pd.Series([0.0, 0.1], index=close.index),
+            "average_turnover": 0.0,
+            "average_exposure": 1.0,
+        },
+    )
+    monkeypatch.setattr(
+        runner,
+        "cost_stress",
+        lambda *args: {
+            "normal_cost_bps": 5.0,
+            "double_cost_bps": 10.0,
+            "survives_double_cost": True,
+            "double_unseen_cagr": 0.04,
+        },
+    )
+    monkeypatch.setattr(runner, "compute_drawdown_diagnostics", lambda *args, **kwargs: {"max_drawdown": 0.0})
+    monkeypatch.setattr(
+        runner,
+        "run_true_walk_forward",
+        lambda *args, **kwargs: {"window_count": 4, "pass_rate": 0.75},
+    )
+    monkeypatch.setattr(runner, "classify_strategy", lambda *args: ("C", "test"))
+    monkeypatch.setattr(runner, "write_leaderboard", lambda *args: None)
+    monkeypatch.setattr(runner, "write_allocation_model", lambda *args: None)
+    monkeypatch.setattr(runner, "_persist_result", lambda root, result: registry_result.update(result))
+    monkeypatch.setattr(runner, "_persist_hypothesis_result", lambda *args: None)
+    monkeypatch.setattr(runner, "write_daily_report_artifacts", lambda *args, **kwargs: {"latest_report_path": tmp_path / "daily.md"})
+
+    run_daily_research(tmp_path, recovery_mode=True, recovery_day=1)
+
+    experiments_path = tmp_path / "registry" / "experiments.jsonl"
+    experiments_path.parent.mkdir(parents=True, exist_ok=True)
+    experiments_path.write_text(json.dumps(registry_result) + "\n", encoding="utf-8")
+
+    selection = select_daily_experiment_candidates(tmp_path, recovery_day=1, budget=18, recent_window=50)
+
+    assert selection["diagnostics"]["covered_by_recent_real"] == 1
+    assert selection["diagnostics"]["selected_new"] == 3
+
+
+def test_runner_stamps_non_eodhd_sources_and_keeps_them_ineligible_for_real_coverage(tmp_path, monkeypatch):
+    import research_lab.runner as runner
+
+    monkeypatch.setenv("RESEARCH_LAB_DATA_PROVIDER", "synthetic")
+    monkeypatch.setenv("RESEARCH_LAB_MODE", "research_only")
+    spec = recovery_manifest_specs(1)[0]
+    panel = _panel_for_spec(spec)
+    close = panel.xs("close", level=1, axis=1)
+    persisted = []
+
+    monkeypatch.setattr(runner, "_load_daily_data_bundle", lambda config, symbols=None: _bundle(panel, source="synthetic"))
+    monkeypatch.setattr(
+        runner,
+        "select_daily_candidates",
+        lambda *args, **kwargs: {
+            "specs": [spec],
+            "diagnostics": {
+                "selection_mode": "bounded_recovery",
+                "recovery_target": 1,
+                "selected_new": 1,
+                "covered_by_recent_real": 0,
+                "recovery_resolved": 1,
+                "recovery_shortfall": 0,
+            },
+        },
+    )
+    monkeypatch.setattr(runner, "build_weights", lambda *args: pd.DataFrame({"SPY": 1.0}, index=close.index))
+    _stub_completed_backtest(monkeypatch, runner, close)
+    monkeypatch.setattr(runner, "_persist_result", lambda root, result: persisted.append(result))
+    monkeypatch.setattr(runner, "_persist_hypothesis_result", lambda *args: None)
+    monkeypatch.setattr(runner, "write_daily_report_artifacts", lambda *args, **kwargs: {"latest_report_path": tmp_path / "daily.md"})
+
+    [result] = run_daily_research(tmp_path, recovery_mode=True, recovery_day=1)
+
+    assert result["data_source"] == "synthetic"
+    assert result["split_metrics"]["data_source"] == "synthetic"
+    assert result["cost_stress"]["data_source"] == "synthetic"
+    assert result["walk_forward"]["data_source"] == "synthetic"
+    assert _proven_eodhd_result_rejection_reason(result) == "non_real_eodhd_source"
+    assert persisted == [result]
+
+
+def test_unresolved_recovery_fails_before_data_loading_or_artifact_mutation(tmp_path, monkeypatch):
+    import research_lab.runner as runner
+
+    monkeypatch.setenv("RESEARCH_LAB_MODE", "research_only")
+    monkeypatch.setattr(
+        runner,
+        "select_daily_candidates",
+        lambda *args, **kwargs: {
+            "specs": [_spec("H1")],
+            "diagnostics": {
+                "selection_mode": "bounded_recovery",
+                "recovery_target": 4,
+                "selected_new": 1,
+                "covered_by_recent_real": 0,
+                "recovery_resolved": 1,
+                "recovery_shortfall": 3,
+            },
+        },
+    )
+
+    def blocked(*args, **kwargs):
+        raise AssertionError("mutation or execution path reached")
+
+    monkeypatch.setattr(runner, "ensure_project_structure", blocked)
+    monkeypatch.setattr(runner, "_load_daily_data_bundle", blocked)
+    monkeypatch.setattr(runner, "write_daily_report_artifacts", blocked)
+    monkeypatch.setattr(runner, "append_jsonl", blocked)
+
+    with pytest.raises(RuntimeError, match="recovery.*shortfall|resolve all",):
+        run_daily_research(tmp_path, recovery_mode=True, recovery_day=1)
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_normal_daily_preserves_structure_setup_before_selection(tmp_path, monkeypatch):
+    import research_lab.runner as runner
+
+    order = []
+    monkeypatch.setenv("RESEARCH_LAB_MODE", "research_only")
+    monkeypatch.setattr(runner, "ensure_project_structure", lambda root: order.append("ensure"))
+    monkeypatch.setattr(
+        runner,
+        "select_daily_candidates",
+        lambda *args, **kwargs: order.append("select")
+        or {
+            "specs": [],
+            "diagnostics": {
+                "selection_mode": "normal_daily",
+                "proposed": 0,
+                "selected": 0,
+            },
+        },
+    )
+    monkeypatch.setattr(runner, "write_leaderboard", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "write_allocation_model", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "write_daily_report_artifacts",
+        lambda *args, **kwargs: {"latest_report_path": tmp_path / "daily.md"},
+    )
+
+    assert run_daily_research(tmp_path) == []
+    assert order == ["ensure", "select"]
+
+
 def test_used_note_ids_stream_queue_once_for_all_selected_candidates(tmp_path, monkeypatch):
     import json
     from pathlib import Path
@@ -300,19 +568,50 @@ def _panel():
     )
 
 
-def _bundle(panel):
+def _panel_for_spec(spec: StrategySpec):
+    symbols = []
+    for key in ("symbol", "risk_symbol"):
+        value = spec.parameters.get(key)
+        if value and value not in symbols:
+            symbols.append(value)
+    for key in ("symbols", "risk_assets", "defensive_assets"):
+        for value in spec.parameters.get(key, []):
+            if value not in symbols:
+                symbols.append(value)
+    index = pd.bdate_range("2026-01-01", periods=2)
+    return pd.concat(
+        {
+            symbol: pd.DataFrame(
+                {
+                    "open": [100.0, 101.0],
+                    "high": [100.0, 101.0],
+                    "low": [100.0, 101.0],
+                    "close": [100.0, 101.0],
+                    "volume": [1_000_000, 1_000_000],
+                },
+                index=index,
+            )
+            for symbol in symbols
+        },
+        axis=1,
+    )
+
+
+def _bundle(panel, *, source="synthetic", provider=None):
     return DataBundle(
         "daily_universe",
         "1D",
         panel,
         {
             "name": "daily_universe",
-            "source": "synthetic",
-            "symbols": ["SPY"],
+            "source": source,
+            **({"provider": provider} if provider is not None else {}),
+            "symbols": list(panel.columns.get_level_values(0).unique()),
             "rows": len(panel),
             "start": str(panel.index.min()),
             "end": str(panel.index.max()),
             "years": 0.01,
+            "fallback_used": False,
         },
     )
 
@@ -369,6 +668,19 @@ def test_zero_selected_run_writes_completed_report_without_loading_data(
                 "queue_inspected": queue_inspected,
                 "queue_consumed": False,
                 "candidate_source": candidate_source,
+                **(
+                    {
+                        "proposed": 4,
+                        "recovery_target": 4,
+                        "selected_new": 0,
+                        "covered_by_recent_real": 4,
+                        "recovery_resolved": 4,
+                        "recovery_shortfall": 0,
+                        "covered_recent_results": [],
+                    }
+                    if selection_mode == "bounded_recovery"
+                    else {}
+                ),
             },
         },
     )
