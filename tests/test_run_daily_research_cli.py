@@ -267,6 +267,92 @@ def test_recovery_preflight_rejects_every_non_cache_provider_without_side_effect
     assert list(tmp_path.iterdir()) == []
 
 
+@pytest.mark.parametrize("day", [1, 7])
+def test_bounded_recovery_preflight_boundary_still_rejects_non_cache_provider(
+    tmp_path, monkeypatch, capsys, day
+):
+    monkeypatch.setenv("RESEARCH_LAB_MODE", "research_only")
+    monkeypatch.setenv("RESEARCH_LAB_DATA_PROVIDER", "synthetic")
+    module = _load_script_module()
+
+    exit_code = module.main(
+        ["--root", str(tmp_path), "--preflight-only", "--recovery-mode", "--recovery-day", str(day)]
+    )
+
+    assert exit_code == 1
+    output = capsys.readouterr().out
+    assert "recovery_preflight=true" in output
+    assert "blocker_reason=invalid_data_provider" in output
+
+
+def test_day_eight_recovery_preflight_with_non_cache_provider_matches_normal_preflight(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("RESEARCH_LAB_MODE", "research_only")
+    monkeypatch.setenv("RESEARCH_LAB_DATA_PROVIDER", "synthetic")
+    reached = []
+
+    def blocked(name):
+        def fail(*args, **kwargs):
+            reached.append(name)
+            raise AssertionError(f"day 8 preflight should not reach {name}")
+        return fail
+
+    monkeypatch.setattr("research_lab.runner.select_daily_candidates", blocked("select_daily_candidates"))
+    monkeypatch.setattr("research_lab.data.validate_cached_eodhd_daily_universe_metadata", blocked("validate_cached_eodhd_daily_universe_metadata"))
+    monkeypatch.setattr("research_lab.data.load_cached_eodhd_daily_universe", blocked("load_cached_eodhd_daily_universe"))
+    monkeypatch.setattr("research_lab.runner.run_daily_research", blocked("run_daily_research"))
+    module = _load_script_module()
+
+    day_eight_exit = module.main(
+        ["--root", str(tmp_path), "--preflight-only", "--recovery-mode", "--recovery-day", "8"]
+    )
+    day_eight_output = capsys.readouterr().out
+
+    normal_exit = module.main(["--root", str(tmp_path), "--preflight-only"])
+    normal_output = capsys.readouterr().out
+
+    assert day_eight_exit == normal_exit == 0
+    assert day_eight_output == normal_output
+    assert "invalid_data_provider" not in day_eight_output
+    assert "unresolved_recovery" not in day_eight_output
+    assert reached == []
+
+
+def test_day_eight_recovery_preflight_with_cache_provider_skips_bounded_recovery_resolution(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("RESEARCH_LAB_MODE", "research_only")
+    monkeypatch.setenv("RESEARCH_LAB_DATA_PROVIDER", "eodhd_cache")
+    reached = []
+
+    def blocked(name):
+        def fail(*args, **kwargs):
+            reached.append(name)
+            raise AssertionError(f"day 8 cache preflight should not reach {name}")
+        return fail
+
+    monkeypatch.setattr("research_lab.runner.select_daily_candidates", blocked("select_daily_candidates"))
+    monkeypatch.setattr("research_lab.data.validate_cached_eodhd_daily_universe_metadata", blocked("validate_cached_eodhd_daily_universe_metadata"))
+    monkeypatch.setattr("research_lab.data.load_cached_eodhd_daily_universe", blocked("load_cached_eodhd_daily_universe"))
+    monkeypatch.setattr("research_lab.runner.run_daily_research", blocked("run_daily_research"))
+    module = _load_script_module()
+
+    day_eight_exit = module.main(
+        ["--root", str(tmp_path), "--preflight-only", "--recovery-mode", "--recovery-day", "8"]
+    )
+    day_eight_output = capsys.readouterr().out
+
+    normal_exit = module.main(["--root", str(tmp_path), "--preflight-only"])
+    normal_output = capsys.readouterr().out
+
+    assert day_eight_exit == normal_exit == 1
+    assert day_eight_output == normal_output
+    assert "recovery_target=" not in day_eight_output
+    assert "unresolved_recovery" not in day_eight_output
+    assert reached == []
+
+
 def test_unresolved_recovery_preflight_stops_before_cache_metadata_or_market_data(
     tmp_path, monkeypatch, capsys
 ):

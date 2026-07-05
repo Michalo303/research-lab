@@ -131,6 +131,10 @@ def run_daily_research(
         if "walk_forward" in classify_strategy.__code__.co_varnames[: classify_strategy.__code__.co_argcount]:
             tier_args.append(walk_forward)
         tier, tier_reason = classify_strategy(*tier_args)
+        data_source = data_bundle.manifest["source"]
+        split_metrics_result = {**backtest["split_metrics"], "data_source": data_source}
+        cost_stress_result = {**stress, "data_source": data_source}
+        walk_forward_result = {**walk_forward, "data_source": data_source}
         result = {
             "strategy_id": strategy_id,
             "family": spec.family,
@@ -145,7 +149,7 @@ def run_daily_research(
             "parameter_count": len(spec.parameters),
             "variants_tried": 1,
             "data_manifest": data_bundle.manifest,
-            "data_source": data_bundle.manifest["source"],
+            "data_source": data_source,
             "data_start": data_bundle.manifest["start"],
             "data_end": data_bundle.manifest["end"],
             "history_length": float(data_bundle.manifest.get("years", 0.0)),
@@ -156,11 +160,11 @@ def run_daily_research(
                 "turnover_source": "target_weight_diff_abs_sum",
             },
             "universe": list(data_bundle.manifest.get("symbols", [])),
-            "cost_stress": stress,
+            "cost_stress": cost_stress_result,
             "metrics": backtest["metrics"],
-            "split_metrics": backtest["split_metrics"],
+            "split_metrics": split_metrics_result,
             "drawdown_diagnostics": compute_drawdown_diagnostics(backtest["equity"], cagr=backtest["metrics"].get("cagr")),
-            "walk_forward": walk_forward,
+            "walk_forward": walk_forward_result,
             "average_turnover": backtest["average_turnover"],
             "average_exposure": backtest["average_exposure"],
             "return_series": _series_records(backtest["returns"]),

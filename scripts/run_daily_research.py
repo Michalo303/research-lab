@@ -73,13 +73,18 @@ def _print_preflight(
 
     resolved_root = root.resolve()
     effective_provider = LabConfig.data_provider_from_env()
+    bounded_recovery = (
+        recovery_mode
+        and recovery_day is not None
+        and recovery_day <= 7
+    )
     print(f"preflight_only=true root={resolved_root}")
     print("entrypoint=research_lab.runner.run_daily_research")
     print(f"root_exists={resolved_root.exists()}")
     print(f"data_provider={effective_provider}")
     print("manual_cli_loads_dotenv=false")
     print("systemd_service_loads_environmentfile=if_configured")
-    if recovery_mode:
+    if bounded_recovery:
         provider_valid = effective_provider == "eodhd_cache"
         if not provider_valid:
             print("eodhd_credentials_present=false")
@@ -106,7 +111,7 @@ def _print_preflight(
     print(f"cached_eodhd_manifest_present={_bool(manifest_path.is_file())}")
     print("provider_request_allowed=false")
 
-    if not recovery_mode or recovery_day is None:
+    if not bounded_recovery:
         print("cache_requested_symbols_present=false")
         print("recovery_ready=false")
         return 1
