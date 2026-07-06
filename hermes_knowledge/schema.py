@@ -7,6 +7,8 @@ from pathlib import Path
 import re
 from typing import Any
 
+from hermes_knowledge.blocker_taxonomy import canonicalize_blocker_id
+
 
 MAX_EXCERPT_CHARS = 280
 MAX_SUMMARY_CHARS = 600
@@ -24,6 +26,9 @@ CANDIDATE_SAFE_FIELDS = (
     "thesis",
     "evidence_summary",
     "risk_control_hint",
+)
+CANDIDATE_OPTIONAL_FIELDS = (
+    "promoted_entry",
 )
 
 LIST_ITEM_MAX_CHARS = {
@@ -256,7 +261,7 @@ def validate_reextract_candidate_entry(raw: dict[str, Any]) -> dict[str, Any]:
         raise KnowledgeValidationError(
             f"missing candidate fields: {', '.join(missing)}"
         )
-    unexpected = sorted(raw.keys() - set(CANDIDATE_SAFE_FIELDS))
+    unexpected = sorted(raw.keys() - (set(CANDIDATE_SAFE_FIELDS) | set(CANDIDATE_OPTIONAL_FIELDS)))
     if unexpected:
         raise KnowledgeValidationError(
             f"unexpected candidate fields: {', '.join(unexpected)}"
@@ -283,6 +288,35 @@ def validate_reextract_candidate_entry(raw: dict[str, Any]) -> dict[str, Any]:
         )
 
     _require_text_list(entry, "blocker_tags", CANDIDATE_BLOCKER_MAX_CHARS)
+    if "promoted_entry" in entry:
+        promoted_entry = entry.get("promoted_entry")
+        if not isinstance(promoted_entry, dict):
+            raise KnowledgeValidationError("promoted_entry must be an object")
+        validated_promoted_entry = validate_entry(promoted_entry)
+        for field in ("note_id", "source_location", "source_passage_id"):
+            if entry[field] != validated_promoted_entry[field]:
+                raise KnowledgeValidationError(
+                    f"promoted_entry {field} must match candidate"
+                )
+        candidate_blockers = {
+            canonicalize_blocker_id(blocker)
+            for blocker in entry["blocker_tags"]
+            if canonicalize_blocker_id(blocker) is not None
+        }
+        entry_blockers = {
+            canonicalize_blocker_id(blocker)
+            for blocker in validated_promoted_entry["addresses_blockers"]
+            if canonicalize_blocker_id(blocker) is not None
+        }
+        if len(candidate_blockers) != 1:
+            raise KnowledgeValidationError(
+                "promoted_entry requires exactly one canonical candidate blocker"
+            )
+        if entry_blockers != candidate_blockers:
+            raise KnowledgeValidationError(
+                "promoted_entry canonical blockers must match candidate"
+            )
+        entry["promoted_entry"] = validated_promoted_entry
     total_text_chars = sum(
         len(value) for value in entry.values() if isinstance(value, str)
     ) + sum(

@@ -1,5 +1,7 @@
 import json
 from pathlib import Path
+import copy
+import hashlib
 
 import pytest
 
@@ -148,6 +150,83 @@ def _resolved_candidate_review_entry(base: Path, **overrides):
     }
     entry.update(overrides)
     return entry
+
+
+def _full_promoted_entry(
+    *,
+    note_id: str = "note-1111111111111111",
+    book_id: str = "book-aaaaaaaaaaaa",
+    source_title: str = "Trading Systems and Methods",
+    source_path: str = "private-book:book-aaaaaaaaaaaa",
+    source_sha256: str = "a" * 64,
+    source_excerpt: str = "Parameter stability and walk-forward robustness reduce overfitting.",
+    source_location: str = "page:214",
+    source_passage_id: str = "passage-1111111111111111",
+    addresses_blockers: list[str] | None = None,
+    **overrides,
+):
+    entry = {
+        "book_id": book_id,
+        "source_title": source_title,
+        "source_path": source_path,
+        "source_sha256": source_sha256,
+        "concept": "Current-equity fixed-fractional position sizing",
+        "hypothesis": "Risking a fixed fraction of current equity can reduce drawdown escalation after losses.",
+        "summary": "Risk a fixed fraction of current equity and recalculate before each trade.",
+        "source_excerpt": source_excerpt,
+        "testable_rules": [
+            "risk_fraction = 0.02",
+            "risk_budget = current_equity * risk_fraction",
+            "Define risk_per_unit before entry.",
+            "units = floor(risk_budget / risk_per_unit)",
+            "Recalculate from current equity before every new trade.",
+            "Reject when risk_per_unit is missing, non-positive, or units < 1.",
+        ],
+        "compatible_builders": ["risk_overlay"],
+        "asset_classes": ["ETF"],
+        "timeframes": ["1D"],
+        "expected_edge": "Reduce drawdown escalation after losses.",
+        "known_failure_modes": [
+            "Gap moves can exceed planned loss.",
+            "Portfolio correlation can exceed one-position sizing assumptions.",
+        ],
+        "addresses_blockers": addresses_blockers or ["walk_forward_fail"],
+        "priority_score": 60.0,
+        "implementation_hint": "Recompute the risk budget from current equity before every trade.",
+        "note_id": note_id,
+        "source_location": source_location,
+        "source_passage_id": source_passage_id,
+    }
+    entry.update(overrides)
+    return entry
+
+
+def _drawdown_promotion_fixture(tmp_path):
+    base = _promotion_base(tmp_path)
+    index = base / "index" / "book_index.json"
+    text = base / "text" / "book-bbbbbbbbbbbb.txt"
+    index.parent.mkdir(parents=True, exist_ok=True)
+    text.parent.mkdir(parents=True, exist_ok=True)
+    index.write_text(
+        json.dumps(
+            {
+                "books": [
+                    {
+                        "name": "Money Management Risk Control.pdf",
+                        "path": str(base / "raw" / "risk.pdf"),
+                        "size_bytes": 100,
+                        "sha256": "b" * 64,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    text.write_text(
+        "Drawdown control and risk management require explicit position sizing.",
+        encoding="utf-8",
+    )
+    return base
 
 
 def test_generated_note_has_repository_owned_provenance_and_stable_id():
@@ -1404,9 +1483,9 @@ def test_promote_reextract_candidate_refuses_existing_active_note_id(tmp_path):
         json.dumps(_resolved_candidate_review_entry(base)) + "\n",
         encoding="utf-8",
     )
-    target_path = base / "extracted_notes" / "walk_forward_robustness.jsonl"
+    target_path = base / "extracted_notes" / "walk_forward_fail.jsonl"
     target_path.write_text(
-        json.dumps(_audit_entry(addresses_blockers=["walk_forward_robustness"])) + "\n",
+        json.dumps(_audit_entry(addresses_blockers=["walk_forward_fail"])) + "\n",
         encoding="utf-8",
     )
 
@@ -1439,6 +1518,259 @@ def test_promote_reextract_candidate_refuses_unresolvable_current_source_identit
     assert promotion.promoted_note_id is None
 
 
+@pytest.mark.parametrize("candidate_blocker", ["drawdown", "drawdown_fail"])
+def test_promote_reextract_candidate_uses_canonical_blocker_for_lookup_and_destination(
+    tmp_path, monkeypatch, candidate_blocker
+):
+    base = _drawdown_promotion_fixture(tmp_path)
+    candidate_path = tmp_path / "candidate-output.jsonl"
+    candidate_path.write_text(
+        json.dumps(
+            _candidate_review_entry(
+                blocker_tags=[candidate_blocker],
+                note_id="note-2222222222222222",
+                source_location="page:1",
+                source_passage_id="passage-bbbbbbbbbbbbbbbb",
+                thesis="Fixed-fractional sizing can reduce drawdown escalation.",
+                evidence_summary="Use a fixed risk fraction and recalculate after losses.",
+                risk_control_hint="Compute units from current equity and risk per unit.",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    calls = []
+
+    def fake_extract_passages(selected_books, blocker, *, text_dir, passages_per_book, pdf_reader=None):
+        calls.append(blocker)
+        assert blocker == "drawdown_fail"
+        return (
+            [
+                PassageCandidate(
+                    passage_id="passage-bbbbbbbbbbbbbbbb",
+                    book_id="book-bbbbbbbbbbbb",
+                    source_title="Money Management Risk Control",
+                    source_sha256="b" * 64,
+                    blocker="drawdown_fail",
+                    location="page:1",
+                    matched_terms=("drawdown",),
+                    text="Drawdown control requires explicit position sizing.",
+                    extraction_reason="matched",
+                )
+            ],
+            [],
+        )
+
+    monkeypatch.setattr(knowledge_runtime, "extract_passages", fake_extract_passages)
+
+    promotion = knowledge_runtime.promote_reextract_candidate(
+        base_dir=base,
+        input_path=candidate_path,
+        note_id="note-2222222222222222",
+    )
+
+    assert calls == ["drawdown_fail"]
+    assert promotion.promotion_allowed is True
+    assert promotion.promotion_succeeded is True
+    assert promotion.target_blocker == "drawdown_fail"
+    assert promotion.target_file_relative == "extracted_notes/drawdown_fail.jsonl"
+
+
+def test_promote_reextract_candidate_preserves_promoted_entry_semantics_and_input_immutability(
+    tmp_path
+):
+    base = _promotion_fixture(tmp_path)
+    book = load_book_index(base / "index" / "book_index.json")[0]
+    passages, diagnostics = extract_passages(
+        [SelectedBook(book=book, score=0.0, matched_terms=(), reasons=("reextract_candidate",))],
+        "walk_forward_fail",
+        text_dir=base / "text",
+        passages_per_book=1,
+    )
+    assert diagnostics == []
+    passage = passages[0]
+    promoted_entry = validate_entry(
+        _full_promoted_entry(
+            source_path=book.source_path,
+            source_location=passage.location,
+            source_passage_id=passage.passage_id,
+            addresses_blockers=["walk_forward_fail"],
+        )
+    )
+    candidate = _resolved_candidate_review_entry(
+        base,
+        promoted_entry=copy.deepcopy(promoted_entry),
+    )
+    candidate_before = copy.deepcopy(candidate)
+    nested_before = copy.deepcopy(candidate["promoted_entry"])
+    candidate_path = tmp_path / "candidate-output.jsonl"
+    candidate_path.write_text(json.dumps(candidate) + "\n", encoding="utf-8")
+
+    promotion = knowledge_runtime.promote_reextract_candidate(
+        base_dir=base,
+        input_path=candidate_path,
+        note_id="note-1111111111111111",
+    )
+
+    target_path = base / "extracted_notes" / "walk_forward_fail.jsonl"
+    rows = _read_jsonl(target_path)
+    assert promotion.promotion_allowed is True
+    assert promotion.promotion_succeeded is True
+    assert len(rows) == 1
+    assert validate_entry(rows[0]) == promoted_entry
+    assert hashlib.sha256(json.dumps(rows[0], sort_keys=True).encode("utf-8")).hexdigest() == hashlib.sha256(
+        json.dumps(promoted_entry, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    assert candidate == candidate_before
+    assert candidate["promoted_entry"] == nested_before
+
+
+@pytest.mark.parametrize(
+    ("field", "candidate_override", "entry_override"),
+    [
+        ("note_id", {"note_id": "note-2222222222222222"}, {"note_id": "note-3333333333333333"}),
+        ("book_id", {}, {"book_id": "book-bbbbbbbbbbbb", "source_path": "private-book:book-bbbbbbbbbbbb", "source_sha256": "b" * 64}),
+        ("source_location", {"source_location": "page:999"}, {"source_location": "page:111"}),
+        ("source_passage_id", {"source_passage_id": "passage-2222222222222222"}, {"source_passage_id": "passage-3333333333333333"}),
+        ("source_sha256", {}, {"source_sha256": "b" * 64}),
+        ("source_title", {}, {"source_title": "Different Title"}),
+        ("source_path", {}, {"source_path": "private-book:book-bbbbbbbbbbbb"}),
+    ],
+)
+def test_promote_reextract_candidate_rejects_promoted_entry_identity_mismatches(
+    tmp_path, field, candidate_override, entry_override
+):
+    base = _promotion_fixture(tmp_path)
+    resolved = _resolved_candidate_review_entry(base, **candidate_override)
+    promoted_entry_kwargs = {
+        "source_location": resolved["source_location"],
+        "source_passage_id": resolved["source_passage_id"],
+        "addresses_blockers": ["walk_forward_fail"],
+    }
+    promoted_entry_kwargs.update(entry_override)
+    promoted_entry = _full_promoted_entry(**promoted_entry_kwargs)
+    candidate = {**resolved, "promoted_entry": promoted_entry}
+    candidate_path = tmp_path / "candidate-output.jsonl"
+    candidate_path.write_text(json.dumps(candidate) + "\n", encoding="utf-8")
+
+    promotion = knowledge_runtime.promote_reextract_candidate(
+        base_dir=base,
+        input_path=candidate_path,
+        note_id=resolved["note_id"],
+    )
+
+    assert promotion.promotion_allowed is False, field
+    assert promotion.promotion_succeeded is False, field
+    assert list((base / "extracted_notes").glob("*.jsonl")) == []
+
+
+@pytest.mark.parametrize(
+    "candidate_blocker,entry_blockers",
+    [
+        ("drawdown", ["walk_forward_fail"]),
+        ("drawdown", []),
+        ("drawdown", ["drawdown_fail", "walk_forward_fail"]),
+        ("drawdown_fail", ["walk_forward_fail"]),
+    ],
+)
+def test_promote_reextract_candidate_rejects_promoted_entry_blocker_mismatches(
+    tmp_path, candidate_blocker, entry_blockers
+):
+    base = _drawdown_promotion_fixture(tmp_path)
+    promoted_entry = _full_promoted_entry(
+        note_id="note-2222222222222222",
+        book_id="book-bbbbbbbbbbbb",
+        source_title="Money Management Risk Control",
+        source_path="private-book:book-bbbbbbbbbbbb",
+        source_sha256="b" * 64,
+        source_excerpt="Drawdown control requires explicit position sizing.",
+        source_location="page:1",
+        source_passage_id="passage-bbbbbbbbbbbbbbbb",
+        addresses_blockers=entry_blockers,
+    )
+    candidate = _candidate_review_entry(
+        note_id="note-2222222222222222",
+        source_location="page:1",
+        source_passage_id="passage-bbbbbbbbbbbbbbbb",
+        blocker_tags=[candidate_blocker],
+        thesis="Fixed-fractional sizing can reduce drawdown escalation.",
+        evidence_summary="Use a fixed risk fraction and recalculate after losses.",
+        risk_control_hint="Compute units from current equity and risk per unit.",
+        promoted_entry=promoted_entry,
+    )
+    candidate_path = tmp_path / "candidate-output.jsonl"
+    candidate_path.write_text(json.dumps(candidate) + "\n", encoding="utf-8")
+
+    promotion = knowledge_runtime.promote_reextract_candidate(
+        base_dir=base,
+        input_path=candidate_path,
+        note_id="note-2222222222222222",
+    )
+
+    assert promotion.promotion_allowed is False
+    assert promotion.promotion_succeeded is False
+
+
+@pytest.mark.parametrize(
+    "promoted_entry",
+    [
+        None,
+        "not-an-object",
+        {"note_id": "note-1111111111111111"},
+        {"book_id": "book-aaaaaaaaaaaa"},
+    ],
+)
+def test_promote_reextract_candidate_rejects_invalid_promoted_entry(tmp_path, promoted_entry):
+    base = _promotion_fixture(tmp_path)
+    candidate = _resolved_candidate_review_entry(base)
+    if promoted_entry is not None:
+        candidate["promoted_entry"] = promoted_entry
+    else:
+        candidate["promoted_entry"] = None
+    candidate_path = tmp_path / "candidate-output.jsonl"
+    candidate_path.write_text(json.dumps(candidate) + "\n", encoding="utf-8")
+
+    promotion = knowledge_runtime.promote_reextract_candidate(
+        base_dir=base,
+        input_path=candidate_path,
+        note_id="note-1111111111111111",
+    )
+
+    assert promotion.promotion_allowed is False
+    assert promotion.promotion_succeeded is False
+    assert list((base / "extracted_notes").glob("*.jsonl")) == []
+
+
+def test_promote_reextract_candidate_write_failure_preserves_existing_destination_bytes(
+    tmp_path, monkeypatch
+):
+    base = _promotion_fixture(tmp_path)
+    candidate_path = tmp_path / "candidate-output.jsonl"
+    candidate_path.write_text(json.dumps(_resolved_candidate_review_entry(base)) + "\n", encoding="utf-8")
+    target_path = base / "extracted_notes" / "walk_forward_fail.jsonl"
+    target_path.write_text(
+        json.dumps(_audit_entry(note_id="note-9999999999999999", addresses_blockers=["walk_forward_fail"])) + "\n",
+        encoding="utf-8",
+    )
+    before = target_path.read_bytes()
+
+    def fail_atomic(*_args, **_kwargs):
+        raise OSError("boom")
+
+    monkeypatch.setattr("hermes_knowledge.note_store._atomic_jsonl", fail_atomic)
+
+    promotion = knowledge_runtime.promote_reextract_candidate(
+        base_dir=base,
+        input_path=candidate_path,
+        note_id="note-1111111111111111",
+    )
+
+    assert promotion.promotion_allowed is False
+    assert promotion.promotion_succeeded is False
+    assert target_path.read_bytes() == before
+
+
 def test_promote_reextract_candidate_writes_exactly_one_active_note(tmp_path):
     base = _promotion_fixture(tmp_path)
     candidate_path = tmp_path / "candidate-output.jsonl"
@@ -1453,14 +1785,14 @@ def test_promote_reextract_candidate_writes_exactly_one_active_note(tmp_path):
         note_id="note-1111111111111111",
     )
 
-    target_path = base / "extracted_notes" / "walk_forward_robustness.jsonl"
+    target_path = base / "extracted_notes" / "walk_forward_fail.jsonl"
     rows = _read_jsonl(target_path)
     assert promotion.promotion_attempted is True
     assert promotion.promotion_allowed is True
     assert promotion.promotion_succeeded is True
     assert promotion.promoted_note_id == "note-1111111111111111"
-    assert promotion.target_blocker == "walk_forward_robustness"
-    assert promotion.target_file_relative == "extracted_notes/walk_forward_robustness.jsonl"
+    assert promotion.target_blocker == "walk_forward_fail"
+    assert promotion.target_file_relative == "extracted_notes/walk_forward_fail.jsonl"
     assert promotion.explicit_promotion_used is True
     assert promotion.active_generation_still_blocked is True
     assert promotion.queue_insertion_allowed is False
@@ -1471,7 +1803,7 @@ def test_promote_reextract_candidate_writes_exactly_one_active_note(tmp_path):
     assert entry["hypothesis"] == "Stable parameter neighborhoods improve walk-forward reliability."
     assert entry["summary"] == "Prefer broad stable regions over isolated optima."
     assert entry["implementation_hint"] == "Measure adjacent parameter dispersion."
-    assert entry["addresses_blockers"] == ["walk_forward_robustness"]
+    assert entry["addresses_blockers"] == ["walk_forward_fail"]
     assert entry["source_excerpt"] == ""
     context = load_book_knowledge_context(
         book_index_path=base / "index" / "book_index.json",

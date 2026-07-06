@@ -10,6 +10,7 @@ from pathlib import Path
 import tempfile
 from typing import Any, Iterable
 
+from hermes_knowledge.blocker_taxonomy import canonicalize_blocker_id
 from hermes_knowledge.books import load_book_index
 from hermes_knowledge.passage_extractor import PassageCandidate
 from hermes_knowledge.schema import (
@@ -83,7 +84,7 @@ def _read_raw_jsonl(path: Path) -> list[Any]:
 def write_passage_candidates(
     path: str | Path, candidates: Iterable[PassageCandidate]
 ) -> WriteSummary:
-    destination = Path(path)
+    destination = _ensure_private_path(Path(path))
     existing = _read_raw_jsonl(destination)
     rows = list(existing)
     seen = {str(row.get("passage_id", "")) for row in rows if isinstance(row, dict)}
@@ -117,7 +118,7 @@ def _semantic_fingerprint(entry: dict[str, Any]) -> str:
 def write_proposed_notes(
     path: str | Path, proposals: Iterable[dict[str, Any]]
 ) -> WriteSummary:
-    destination = Path(path)
+    destination = _ensure_private_path(Path(path))
     existing = [validate_proposed_note(row) for row in _read_raw_jsonl(destination)]
     rows = list(existing)
     note_ids = {str(row["entry"]["note_id"]) for row in rows}
@@ -222,17 +223,44 @@ def write_promoted_reextract_note(
     *,
     source_book_id: str,
     source_title: str,
+    source_path: str,
     source_sha256: str,
     canonical_blocker: str,
+    promoted_entry: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    destination = Path(path)
-    entry = _build_promoted_reextract_entry(
-        candidate_entry,
-        source_book_id=source_book_id,
-        source_title=source_title,
-        source_sha256=source_sha256,
-        canonical_blocker=canonical_blocker,
-    )
+    destination = _ensure_private_path(Path(path))
+    candidate = validate_reextract_candidate_entry(candidate_entry)
+    if promoted_entry is None:
+        entry = _build_promoted_reextract_entry(
+            candidate,
+            source_book_id=source_book_id,
+            source_title=source_title,
+            source_sha256=source_sha256,
+            canonical_blocker=canonical_blocker,
+        )
+    else:
+        entry = validate_entry(promoted_entry)
+        if entry["book_id"] != source_book_id:
+            raise ValueError("promoted entry book_id does not match source")
+        if entry["source_title"] != source_title:
+            raise ValueError("promoted entry source_title does not match source")
+        if entry["source_sha256"] != source_sha256:
+            raise ValueError("promoted entry source_sha256 does not match source")
+        if entry["source_path"] != source_path:
+            raise ValueError("promoted entry source_path does not match source")
+        if entry["note_id"] != candidate["note_id"]:
+            raise ValueError("promoted entry note_id does not match candidate")
+        if entry["source_location"] != candidate["source_location"]:
+            raise ValueError("promoted entry source_location does not match candidate")
+        if entry["source_passage_id"] != candidate["source_passage_id"]:
+            raise ValueError("promoted entry source_passage_id does not match candidate")
+        blockers = {
+            canonicalize_blocker_id(blocker)
+            for blocker in entry["addresses_blockers"]
+            if canonicalize_blocker_id(blocker) is not None
+        }
+        if blockers != {canonical_blocker}:
+            raise ValueError("promoted entry canonical blockers do not match target")
     existing = load_knowledge_jsonl(destination) if destination.exists() else []
     note_id = str(entry["note_id"])
     if any(str(row.get("note_id", "")) == note_id for row in existing):

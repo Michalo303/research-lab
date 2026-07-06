@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 from typing import Any
 
+from hermes_knowledge.blocker_taxonomy import canonicalize_blocker_id
 from hermes_knowledge.books import load_book_index
 from hermes_knowledge.book_selector import SelectedBook
 from hermes_knowledge.note_store import write_promoted_reextract_note
@@ -340,7 +341,7 @@ def promote_reextract_candidate(
     if len(blocker_tags) != 1:
         return ReextractCandidatePromotion()
     raw_blocker = str(blocker_tags[0]).strip()
-    canonical_blocker = _normalize_retrieval_blocker_id(raw_blocker)
+    canonical_blocker = canonicalize_blocker_id(raw_blocker)
     if canonical_blocker is None:
         return ReextractCandidatePromotion()
 
@@ -348,6 +349,7 @@ def promote_reextract_candidate(
         books = load_book_index(Path(base_dir) / "index" / "book_index.json")
     except (OSError, ValueError, TypeError, KeyError):
         return ReextractCandidatePromotion()
+    indexed_books = {book.book_id: book for book in books}
     indexed_hashes = {book.book_id: book.source_sha256 for book in books}
     try:
         passages, _diagnostics = extract_passages(
@@ -360,7 +362,7 @@ def promote_reextract_candidate(
                 )
                 for book in books
             ],
-            raw_blocker,
+            canonical_blocker,
             text_dir=Path(base_dir) / "text",
             passages_per_book=3,
         )
@@ -377,6 +379,9 @@ def promote_reextract_candidate(
     source = source_matches[0]
     if indexed_hashes.get(source.book_id) != source.source_sha256:
         return ReextractCandidatePromotion()
+    source_book = indexed_books.get(source.book_id)
+    if source_book is None:
+        return ReextractCandidatePromotion()
 
     target_relative = Path("extracted_notes") / f"{canonical_blocker}.jsonl"
     try:
@@ -385,8 +390,10 @@ def promote_reextract_candidate(
             candidate,
             source_book_id=source.book_id,
             source_title=source.source_title,
+            source_path=source_book.source_path,
             source_sha256=source.source_sha256,
             canonical_blocker=canonical_blocker,
+            promoted_entry=candidate.get("promoted_entry"),
         )
     except (OSError, ValueError, KnowledgeValidationError):
         return ReextractCandidatePromotion(

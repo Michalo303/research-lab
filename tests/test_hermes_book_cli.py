@@ -1469,7 +1469,7 @@ def test_reextract_promote_cli_emits_success_json_and_writes_one_active_note(tmp
     )
 
     report = json.loads(capsys.readouterr().out)
-    target_path = extracted_dir / "walk_forward_robustness.jsonl"
+    target_path = extracted_dir / "walk_forward_fail.jsonl"
     rows = [
         json.loads(line)
         for line in target_path.read_text(encoding="utf-8").splitlines()
@@ -1484,8 +1484,8 @@ def test_reextract_promote_cli_emits_success_json_and_writes_one_active_note(tmp
         "promotion_succeeded": True,
         "provider_calls_used": 0,
         "queue_insertion_allowed": False,
-        "target_blocker": "walk_forward_robustness",
-        "target_file_relative": "extracted_notes/walk_forward_robustness.jsonl",
+        "target_blocker": "walk_forward_fail",
+        "target_file_relative": "extracted_notes/walk_forward_fail.jsonl",
     }
     assert len(rows) == 1
     assert str(target_path) not in json.dumps(report)
