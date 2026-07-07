@@ -1,13 +1,45 @@
+from contextlib import contextmanager
 import json
+import sys
+import time
 
 import pytest
 
 import hermes_knowledge.cli as book_cli
+import hermes_knowledge.note_store as note_store
 from hermes_knowledge.book_selector import SelectedBook
 from hermes_knowledge.books import load_book_index
 from hermes_knowledge.cli import main
 from hermes_knowledge.passage_extractor import extract_passages
 from research_lab.hermes.providers import ProviderResult
+
+
+@contextmanager
+def _held_jsonl_lock(path):
+    lock_path = path.with_name(f"{path.name}.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+b") as handle:
+        if sys.platform == "win32":
+            import msvcrt
+
+            handle.seek(0)
+            handle.write(b"0")
+            handle.flush()
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def _provider_note(**overrides):
@@ -34,6 +66,9 @@ def _private_fixture(tmp_path, *, title="Trading Systems and Methods.pdf"):
     text = base / "text" / "book-aaaaaaaaaaaa.txt"
     index.parent.mkdir(parents=True)
     text.parent.mkdir(parents=True)
+    source = base / "raw" / "book.pdf"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(b"%PDF-1.4 synthetic fixture")
     index.write_text(
         json.dumps(
             {
@@ -119,6 +154,28 @@ def _resolved_candidate_review_entry(base, **overrides):
         "thesis": "Stable parameter neighborhoods improve walk-forward reliability.",
         "evidence_summary": "Prefer broad stable regions over isolated optima.",
         "risk_control_hint": "Measure adjacent parameter dispersion.",
+        "promoted_entry": {
+            "book_id": book.book_id,
+            "source_title": book.title,
+            "source_path": book.source_path,
+            "source_sha256": book.source_sha256,
+            "concept": "Parameter neighborhood stability",
+            "hypothesis": "Stable parameter neighborhoods improve walk-forward reliability.",
+            "summary": "Prefer broad stable regions over isolated optima.",
+            "source_excerpt": passage.text,
+            "testable_rules": ["Measure adjacent parameter dispersion."],
+            "compatible_builders": ["active_momentum_rotation"],
+            "asset_classes": ["ETF"],
+            "timeframes": ["1D"],
+            "expected_edge": "Increase walk-forward pass rate.",
+            "known_failure_modes": ["Regime changes can invalidate old regions."],
+            "addresses_blockers": ["walk_forward_fail"],
+            "priority_score": 70,
+            "implementation_hint": "Measure adjacent parameter dispersion.",
+            "note_id": "note-1111111111111111",
+            "source_location": passage.location,
+            "source_passage_id": passage.passage_id,
+        },
     }
     entry.update(overrides)
     return entry
@@ -285,7 +342,7 @@ def test_broken_pdf_skips_provider_and_note_output(tmp_path, monkeypatch, capsys
     sidecar = base / "text" / "book-aaaaaaaaaaaa.txt"
     sidecar.unlink()
     pdf_path = base / "raw" / "book.pdf"
-    pdf_path.parent.mkdir(parents=True)
+    pdf_path.parent.mkdir(parents=True, exist_ok=True)
     pdf_path.write_bytes(b"%PDF-1.7\n")
     provider_calls = []
 
@@ -1433,6 +1490,7 @@ def test_reextract_promote_cli_rejects_empty_candidate_file(tmp_path, capsys):
     assert report == {
         "active_generation_still_blocked": True,
         "explicit_promotion_used": False,
+        "failure_reason": "candidate_review_invalid",
         "promoted_note_id": None,
         "promotion_allowed": False,
         "promotion_attempted": True,
@@ -1478,6 +1536,7 @@ def test_reextract_promote_cli_emits_success_json_and_writes_one_active_note(tmp
     assert report == {
         "active_generation_still_blocked": True,
         "explicit_promotion_used": True,
+        "failure_reason": "none",
         "promoted_note_id": "note-1111111111111111",
         "promotion_allowed": True,
         "promotion_attempted": True,
@@ -1489,6 +1548,61 @@ def test_reextract_promote_cli_emits_success_json_and_writes_one_active_note(tmp
     }
     assert len(rows) == 1
     assert str(target_path) not in json.dumps(report)
+
+
+def test_reextract_promote_cli_emits_structured_failure_when_destination_lock_is_held(
+    tmp_path, capsys, monkeypatch
+):
+    base = _private_fixture(tmp_path)
+    input_path = tmp_path / "candidate-output.jsonl"
+    input_path.write_text(
+        json.dumps(_resolved_candidate_review_entry(base)) + "\n",
+        encoding="utf-8",
+    )
+    destination = base / "extracted_notes" / "walk_forward_fail.jsonl"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(json.dumps(_legacy_extracted_note()) + "\n", encoding="utf-8")
+    before = destination.read_bytes()
+    monkeypatch.setattr(note_store, "PROMOTION_LOCK_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(note_store, "PROMOTION_LOCK_POLL_SECONDS", 0.01)
+
+    started = time.monotonic()
+    with _held_jsonl_lock(destination):
+        assert (
+            main(
+                [
+                    "reextract-promote",
+                    "--base-dir",
+                    str(base),
+                    "--input-path",
+                    str(input_path),
+                    "--note-id",
+                    "note-1111111111111111",
+                ]
+            )
+            == 1
+        )
+    elapsed = time.monotonic() - started
+
+    captured = capsys.readouterr()
+    report = json.loads(captured.out)
+    assert report == {
+        "active_generation_still_blocked": True,
+        "explicit_promotion_used": False,
+        "failure_reason": "promotion_lock_timeout",
+        "promoted_note_id": None,
+        "promotion_allowed": False,
+        "promotion_attempted": True,
+        "promotion_succeeded": False,
+        "provider_calls_used": 0,
+        "queue_insertion_allowed": False,
+        "target_blocker": "walk_forward_fail",
+        "target_file_relative": "extracted_notes/walk_forward_fail.jsonl",
+    }
+    assert captured.err == ""
+    assert len(captured.out.splitlines()) == 1
+    assert elapsed < 1.0
+    assert destination.read_bytes() == before
 
 
 def test_reextract_promote_cli_emits_failed_json_for_invalid_candidate_file_without_touching_active_notes(
@@ -1522,6 +1636,7 @@ def test_reextract_promote_cli_emits_failed_json_for_invalid_candidate_file_with
     assert report == {
         "active_generation_still_blocked": True,
         "explicit_promotion_used": False,
+        "failure_reason": "candidate_review_invalid",
         "promoted_note_id": None,
         "promotion_allowed": False,
         "promotion_attempted": True,
@@ -1539,7 +1654,9 @@ def test_reextract_promote_cli_fails_when_current_source_identity_cannot_be_reso
 ):
     base = _private_fixture(tmp_path)
     input_path = tmp_path / "candidate-output.jsonl"
-    unresolved = _resolved_candidate_review_entry(base, source_passage_id="passage-ffffffffffffffff")
+    unresolved = _resolved_candidate_review_entry(base)
+    unresolved["source_passage_id"] = "passage-ffffffffffffffff"
+    unresolved["promoted_entry"]["source_passage_id"] = "passage-ffffffffffffffff"
     input_path.write_text(json.dumps(unresolved) + "\n", encoding="utf-8")
 
     assert (
@@ -1561,6 +1678,7 @@ def test_reextract_promote_cli_fails_when_current_source_identity_cannot_be_reso
     assert report == {
         "active_generation_still_blocked": True,
         "explicit_promotion_used": False,
+        "failure_reason": "source_passage_not_unique",
         "promoted_note_id": None,
         "promotion_allowed": False,
         "promotion_attempted": True,

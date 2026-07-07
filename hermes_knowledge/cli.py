@@ -622,6 +622,7 @@ def _reextract_promote(args: argparse.Namespace) -> int:
             {
                 "active_generation_still_blocked": promotion.active_generation_still_blocked,
                 "explicit_promotion_used": promotion.explicit_promotion_used,
+                "failure_reason": promotion.failure_reason,
                 "promoted_note_id": promotion.promoted_note_id,
                 "promotion_allowed": promotion.promotion_allowed,
                 "promotion_attempted": promotion.promotion_attempted,
