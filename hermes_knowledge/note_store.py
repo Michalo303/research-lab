@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 import hashlib
 import json
 import os
 from pathlib import Path
 import tempfile
+import time
 from typing import Any, Iterable
 
 from hermes_knowledge.blocker_taxonomy import canonicalize_blocker_id
@@ -23,6 +25,8 @@ from hermes_knowledge.schema import (
 
 
 SOURCE_ROOT = Path(__file__).resolve().parents[1]
+PROMOTION_LOCK_TIMEOUT_SECONDS = 5.0
+PROMOTION_LOCK_POLL_SECONDS = 0.05
 
 
 @dataclass(frozen=True)
@@ -36,6 +40,14 @@ class ValidationSummary:
     valid: int
     invalid: int
     duplicates: int
+
+
+class PromotionLockTimeoutError(TimeoutError):
+    """Promotion could not acquire its destination-specific lock in time."""
+
+
+class DuplicatePromotionError(ValueError):
+    """The canonical destination already contains the promoted note ID."""
 
 
 def _ensure_private_path(path: Path) -> Path:
@@ -68,6 +80,65 @@ def _atomic_jsonl(path: Path, rows: Iterable[dict[str, Any]]) -> None:
     finally:
         if temporary.exists():
             temporary.unlink()
+
+
+@contextmanager
+def _promotion_lock(
+    path: Path,
+    *,
+    timeout_seconds: float | None = None,
+    poll_seconds: float | None = None,
+):
+    path = _ensure_private_path(path)
+    lock_path = path.with_name(f"{path.name}.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    timeout_value = (
+        PROMOTION_LOCK_TIMEOUT_SECONDS
+        if timeout_seconds is None
+        else timeout_seconds
+    )
+    poll_value = PROMOTION_LOCK_POLL_SECONDS if poll_seconds is None else poll_seconds
+    deadline = time.monotonic() + max(float(timeout_value), 0.0)
+    with lock_path.open("a+b") as lock_handle:
+        if os.name == "nt":
+            import msvcrt
+
+            lock_handle.seek(0)
+            lock_handle.write(b"0")
+            lock_handle.flush()
+            while True:
+                try:
+                    lock_handle.seek(0)
+                    msvcrt.locking(lock_handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise PromotionLockTimeoutError(
+                            "timed out waiting for promotion lock"
+                        )
+                    time.sleep(max(float(poll_value), 0.0))
+            try:
+                yield
+            finally:
+                lock_handle.seek(0)
+                msvcrt.locking(lock_handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            while True:
+                try:
+                    fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise PromotionLockTimeoutError(
+                            "timed out waiting for promotion lock"
+                        )
+                    time.sleep(max(float(poll_value), 0.0))
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
 
 
 def _read_raw_jsonl(path: Path) -> list[Any]:
@@ -261,11 +332,12 @@ def write_promoted_reextract_note(
         }
         if blockers != {canonical_blocker}:
             raise ValueError("promoted entry canonical blockers do not match target")
-    existing = load_knowledge_jsonl(destination) if destination.exists() else []
-    note_id = str(entry["note_id"])
-    if any(str(row.get("note_id", "")) == note_id for row in existing):
-        raise ValueError(f"note already promoted: {note_id}")
-    _atomic_jsonl(destination, [*existing, entry])
+    with _promotion_lock(destination):
+        existing = load_knowledge_jsonl(destination) if destination.exists() else []
+        note_id = str(entry["note_id"])
+        if any(str(row.get("note_id", "")) == note_id for row in existing):
+            raise DuplicatePromotionError(f"note already promoted: {note_id}")
+        _atomic_jsonl(destination, [*existing, entry])
     return entry
 
 

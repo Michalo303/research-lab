@@ -13,7 +13,11 @@ from typing import Any
 from hermes_knowledge.blocker_taxonomy import canonicalize_blocker_id
 from hermes_knowledge.books import load_book_index
 from hermes_knowledge.book_selector import SelectedBook
-from hermes_knowledge.note_store import write_promoted_reextract_note
+from hermes_knowledge.note_store import (
+    DuplicatePromotionError,
+    PromotionLockTimeoutError,
+    write_promoted_reextract_note,
+)
 from hermes_knowledge.passage_extractor import extract_passages
 from hermes_knowledge.prompt import build_hermes_knowledge_prompt
 from hermes_knowledge.retriever import retrieve_for_blocker
@@ -238,6 +242,7 @@ class ReextractCandidatePromotion:
     active_generation_still_blocked: bool = True
     queue_insertion_allowed: bool = False
     provider_calls_used: int = 0
+    failure_reason: str = "none"
 
 
 def _normalize_retrieval_blocker_id(raw: str) -> str | None:
@@ -316,9 +321,9 @@ def promote_reextract_candidate(
     try:
         review = review_reextract_candidate_file(input_path)
     except OSError:
-        return ReextractCandidatePromotion()
+        return ReextractCandidatePromotion(failure_reason="candidate_read_failed")
     if not review.review_valid:
-        return ReextractCandidatePromotion()
+        return ReextractCandidatePromotion(failure_reason="candidate_review_invalid")
 
     candidate_path = Path(input_path)
     try:
@@ -332,25 +337,43 @@ def promote_reextract_candidate(
                 if entry["note_id"] == note_id:
                     matches.append(entry)
     except (OSError, json.JSONDecodeError, KnowledgeValidationError):
-        return ReextractCandidatePromotion()
+        return ReextractCandidatePromotion(failure_reason="candidate_read_failed")
 
     if len(matches) != 1:
-        return ReextractCandidatePromotion()
+        return ReextractCandidatePromotion(failure_reason="candidate_not_unique")
     candidate = matches[0]
     blocker_tags = candidate["blocker_tags"]
     if len(blocker_tags) != 1:
-        return ReextractCandidatePromotion()
+        return ReextractCandidatePromotion(failure_reason="candidate_blocker_invalid")
     raw_blocker = str(blocker_tags[0]).strip()
     canonical_blocker = canonicalize_blocker_id(raw_blocker)
     if canonical_blocker is None:
-        return ReextractCandidatePromotion()
+        return ReextractCandidatePromotion(failure_reason="candidate_blocker_invalid")
 
     try:
         books = load_book_index(Path(base_dir) / "index" / "book_index.json")
     except (OSError, ValueError, TypeError, KeyError):
-        return ReextractCandidatePromotion()
-    indexed_books = {book.book_id: book for book in books}
-    indexed_hashes = {book.book_id: book.source_sha256 for book in books}
+        return ReextractCandidatePromotion(failure_reason="book_index_invalid")
+    promoted_entry = candidate.get("promoted_entry")
+    if not isinstance(promoted_entry, dict):
+        return ReextractCandidatePromotion(
+            failure_reason="promoted_entry_required"
+        )
+    promoted_book_id = str(promoted_entry["book_id"]).strip()
+    source_books = [book for book in books if book.book_id == promoted_book_id]
+    if len(source_books) != 1:
+        return ReextractCandidatePromotion(failure_reason="source_book_not_unique")
+    source_book = source_books[0]
+    if source_book.source_path != str(promoted_entry["source_path"]):
+        return ReextractCandidatePromotion(failure_reason="source_path_mismatch")
+    if source_book.source_sha256.casefold() != str(
+        promoted_entry["source_sha256"]
+    ).casefold():
+        return ReextractCandidatePromotion(failure_reason="source_sha256_mismatch")
+    if source_book.title != str(promoted_entry["source_title"]):
+        return ReextractCandidatePromotion(failure_reason="source_title_mismatch")
+    if not Path(source_book.source_path).is_file():
+        return ReextractCandidatePromotion(failure_reason="source_artifact_missing")
     try:
         passages, _diagnostics = extract_passages(
             [
@@ -360,14 +383,14 @@ def promote_reextract_candidate(
                     matched_terms=(),
                     reasons=("reextract_candidate",),
                 )
-                for book in books
+                for book in [source_book]
             ],
             canonical_blocker,
             text_dir=Path(base_dir) / "text",
             passages_per_book=3,
         )
     except (OSError, ValueError, TypeError):
-        return ReextractCandidatePromotion()
+        return ReextractCandidatePromotion(failure_reason="source_verification_failed")
     source_matches = [
         passage
         for passage in passages
@@ -375,13 +398,12 @@ def promote_reextract_candidate(
         and passage.location == candidate["source_location"]
     ]
     if len(source_matches) != 1:
-        return ReextractCandidatePromotion()
+        return ReextractCandidatePromotion(failure_reason="source_passage_not_unique")
     source = source_matches[0]
-    if indexed_hashes.get(source.book_id) != source.source_sha256:
-        return ReextractCandidatePromotion()
-    source_book = indexed_books.get(source.book_id)
-    if source_book is None:
-        return ReextractCandidatePromotion()
+    if source.book_id != source_book.book_id:
+        return ReextractCandidatePromotion(failure_reason="source_identity_mismatch")
+    if source.source_sha256 != source_book.source_sha256:
+        return ReextractCandidatePromotion(failure_reason="source_identity_mismatch")
 
     target_relative = Path("extracted_notes") / f"{canonical_blocker}.jsonl"
     try:
@@ -395,8 +417,21 @@ def promote_reextract_candidate(
             canonical_blocker=canonical_blocker,
             promoted_entry=candidate.get("promoted_entry"),
         )
+    except PromotionLockTimeoutError:
+        return ReextractCandidatePromotion(
+            failure_reason="promotion_lock_timeout",
+            target_blocker=canonical_blocker,
+            target_file_relative=target_relative.as_posix(),
+        )
+    except DuplicatePromotionError:
+        return ReextractCandidatePromotion(
+            failure_reason="duplicate_note",
+            target_blocker=canonical_blocker,
+            target_file_relative=target_relative.as_posix(),
+        )
     except (OSError, ValueError, KnowledgeValidationError):
         return ReextractCandidatePromotion(
+            failure_reason="persistence_failed",
             target_blocker=canonical_blocker,
             target_file_relative=target_relative.as_posix(),
         )
