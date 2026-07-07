@@ -260,6 +260,22 @@ def _normalize_retrieval_blocker_id(raw: str) -> str | None:
     return None
 
 
+RETRIEVAL_STORAGE_FILENAMES: dict[str, tuple[str, ...]] = {
+    "drawdown": ("drawdown_fail.jsonl", "drawdown.jsonl"),
+    "walk_forward_robustness": (
+        "walk_forward_fail.jsonl",
+        "walk_forward_robustness.jsonl",
+    ),
+    "cost_stress": ("cost_stress.jsonl",),
+}
+LEGACY_RETRIEVAL_STORAGE_FILENAMES: tuple[str, ...] = ("notes.jsonl",)
+ALL_RETRIEVAL_STORAGE_FILENAMES = frozenset(
+    filename
+    for filenames in RETRIEVAL_STORAGE_FILENAMES.values()
+    for filename in filenames
+)
+
+
 def review_reextract_candidate_file(path: str | Path) -> ReextractCandidateReview:
     candidate_path = Path(path)
     total_candidates = 0
@@ -992,6 +1008,99 @@ def _priority_overlays(notes_dir: Path) -> dict[str, float]:
         return {}
 
 
+def _load_retrieval_entries_from_path(
+    path: Path,
+    indexed_hashes: dict[str, str],
+) -> tuple[list[dict[str, Any]], int]:
+    if not path.exists():
+        return [], 0
+    try:
+        line_count = sum(
+            1
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        )
+    except OSError:
+        line_count = 1
+    try:
+        candidates = load_knowledge_jsonl(path)
+    except (OSError, KnowledgeValidationError, ValueError):
+        return [], line_count
+
+    entries: list[dict[str, Any]] = []
+    skipped_note_count = 0
+    for entry in candidates:
+        if float(entry["priority_score"]) <= 0:
+            skipped_note_count += 1
+            continue
+        if indexed_hashes.get(entry["book_id"]) != entry["source_sha256"]:
+            skipped_note_count += 1
+            continue
+        entries.append(entry)
+    return entries, skipped_note_count
+
+
+def _deduplicate_retrieval_entries(
+    entries: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    deduplicated: list[dict[str, Any]] = []
+    seen_note_ids: set[str] = set()
+    seen_fingerprints: set[str] = set()
+    for entry in entries:
+        note_id = str(entry.get("note_id", "")).strip()
+        if note_id:
+            if note_id in seen_note_ids:
+                continue
+            seen_note_ids.add(note_id)
+            deduplicated.append(entry)
+            continue
+        fingerprint = json.dumps(entry, sort_keys=True)
+        if fingerprint in seen_fingerprints:
+            continue
+        seen_fingerprints.add(fingerprint)
+        deduplicated.append(entry)
+    return deduplicated
+
+
+def _load_retrieval_entries(
+    notes_path: Path,
+    *,
+    canonical_blocker: str,
+    indexed_hashes: dict[str, str],
+) -> tuple[list[dict[str, Any]], int]:
+    skipped_note_count = 0
+    preferred_entries: list[dict[str, Any]] = []
+    preferred_files = RETRIEVAL_STORAGE_FILENAMES.get(canonical_blocker, ())
+    for filename in preferred_files:
+        loaded, skipped = _load_retrieval_entries_from_path(
+            notes_path / filename,
+            indexed_hashes,
+        )
+        preferred_entries.extend(loaded)
+        skipped_note_count += skipped
+    if preferred_entries:
+        return _deduplicate_retrieval_entries(preferred_entries), skipped_note_count
+
+    legacy_entries: list[dict[str, Any]] = []
+    fallback_paths: list[Path] = []
+    for filename in LEGACY_RETRIEVAL_STORAGE_FILENAMES:
+        fallback_paths.append(notes_path / filename)
+    for path in sorted(notes_path.glob("*.jsonl")):
+        if path.name in LEGACY_RETRIEVAL_STORAGE_FILENAMES:
+            continue
+        if path.name in ALL_RETRIEVAL_STORAGE_FILENAMES:
+            continue
+        fallback_paths.append(path)
+    for path in fallback_paths:
+        loaded, skipped = _load_retrieval_entries_from_path(
+            path,
+            indexed_hashes,
+        )
+        legacy_entries.extend(loaded)
+        skipped_note_count += skipped
+    return _deduplicate_retrieval_entries(legacy_entries), skipped_note_count
+
+
 def load_book_knowledge_context(
     book_index_path: str | Path = DEFAULT_BOOK_INDEX_PATH,
     notes_dir: str | Path = DEFAULT_BOOK_NOTES_DIR,
@@ -1011,30 +1120,11 @@ def load_book_knowledge_context(
             return BookKnowledgeContext()
         if not notes_path.is_dir():
             return BookKnowledgeContext()
-        entries = []
-        skipped_note_count = 0
-        for path in sorted(notes_path.glob("*.jsonl")):
-            try:
-                line_count = sum(
-                    1
-                    for line in path.read_text(encoding="utf-8").splitlines()
-                    if line.strip()
-                )
-            except OSError:
-                line_count = 1
-            try:
-                candidates = load_knowledge_jsonl(path)
-            except (OSError, KnowledgeValidationError, ValueError):
-                skipped_note_count += line_count
-                continue
-            for entry in candidates:
-                if float(entry["priority_score"]) <= 0:
-                    skipped_note_count += 1
-                    continue
-                if indexed_hashes.get(entry["book_id"]) != entry["source_sha256"]:
-                    skipped_note_count += 1
-                    continue
-                entries.append(entry)
+        entries, skipped_note_count = _load_retrieval_entries(
+            notes_path,
+            canonical_blocker=canonical_blocker,
+            indexed_hashes=indexed_hashes,
+        )
         if not entries:
             return BookKnowledgeContext(skipped_note_count=skipped_note_count)
         selected = retrieve_for_blocker(

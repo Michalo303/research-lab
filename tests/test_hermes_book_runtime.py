@@ -71,6 +71,14 @@ def _write_note(root, entry=None):
     return notes_dir
 
 
+def _write_notes_jsonl(notes_dir, filename, entries):
+    notes_dir.mkdir(parents=True, exist_ok=True)
+    (notes_dir / filename).write_text(
+        "".join(json.dumps(entry) + "\n" for entry in entries),
+        encoding="utf-8",
+    )
+
+
 def test_prompt_includes_valid_book_context_and_safe_metadata(tmp_path):
     index_path = _write_index(tmp_path)
     notes_dir = _write_note(tmp_path)
@@ -469,6 +477,188 @@ def test_runtime_canonicalizes_walk_forward_fail_alias_without_global_fallback(
     assert context.blocker_diagnostic == "canonicalized"
     assert context.selected_note_ids == ("note-1111111111111111",)
     assert "High priority unrelated note" not in context.prompt
+
+
+def test_runtime_prefers_drawdown_storage_files_over_legacy_generic_notes(tmp_path):
+    index_path = _write_index(tmp_path)
+    notes_dir = tmp_path / "extracted_notes"
+    legacy_notes = [
+        _note(
+            note_id=f"note-{index + 1:016d}",
+            source_passage_id=f"passage-{index + 1:016d}",
+            concept=f"Legacy drawdown note {index}",
+            addresses_blockers=["drawdown"],
+            priority_score=200 - index,
+        )
+        for index in range(5)
+    ]
+    for entry in legacy_notes:
+        entry.pop("source_location")
+    promoted_note = _note(
+        note_id="note-9000000000000001",
+        source_passage_id="passage-9000000000000001",
+        concept="Promoted canonical drawdown note",
+        addresses_blockers=["drawdown_fail"],
+        priority_score=10,
+    )
+    _write_notes_jsonl(notes_dir, "notes.jsonl", legacy_notes)
+    _write_notes_jsonl(notes_dir, "drawdown_fail.jsonl", [promoted_note])
+
+    context = load_book_knowledge_context(
+        index_path,
+        notes_dir,
+        dominant_blocker="drawdown",
+        limit=5,
+    )
+
+    assert context.canonical_blocker_id == "drawdown"
+    assert context.selected_note_ids == ("note-9000000000000001",)
+    assert "Promoted canonical drawdown note" in context.prompt
+
+
+def test_runtime_retrieves_drawdown_fail_storage_note_for_drawdown_aliases(tmp_path):
+    index_path = _write_index(tmp_path)
+    notes_dir = tmp_path / "extracted_notes"
+    promoted_note = _note(
+        note_id="note-9000000000000002",
+        source_passage_id="passage-9000000000000002",
+        concept="Alias-resolved drawdown note",
+        addresses_blockers=["drawdown_fail"],
+        priority_score=50,
+    )
+    _write_notes_jsonl(notes_dir, "drawdown_fail.jsonl", [promoted_note])
+
+    drawdown = load_book_knowledge_context(
+        index_path,
+        notes_dir,
+        dominant_blocker="drawdown",
+        limit=5,
+    )
+    drawdown_fail = load_book_knowledge_context(
+        index_path,
+        notes_dir,
+        dominant_blocker="drawdown_fail",
+        limit=5,
+    )
+
+    assert drawdown.selected_note_ids == ("note-9000000000000002",)
+    assert drawdown_fail.selected_note_ids == ("note-9000000000000002",)
+    assert drawdown.selected_note_ids == drawdown_fail.selected_note_ids
+    assert drawdown.canonical_blocker_id == "drawdown"
+    assert drawdown_fail.canonical_blocker_id == "drawdown"
+
+
+def test_runtime_deduplicates_drawdown_alias_storage_files_by_note_id(tmp_path):
+    index_path = _write_index(tmp_path)
+    notes_dir = tmp_path / "extracted_notes"
+    promoted_note = _note(
+        note_id="note-9000000000000003",
+        source_passage_id="passage-9000000000000003",
+        concept="Duplicate across alias files",
+        addresses_blockers=["drawdown_fail"],
+        priority_score=60,
+    )
+    duplicate = {
+        **promoted_note,
+        "addresses_blockers": ["drawdown"],
+    }
+    _write_notes_jsonl(notes_dir, "drawdown_fail.jsonl", [promoted_note])
+    _write_notes_jsonl(notes_dir, "drawdown.jsonl", [duplicate])
+
+    context = load_book_knowledge_context(
+        index_path,
+        notes_dir,
+        dominant_blocker="drawdown",
+        limit=5,
+    )
+
+    assert context.selected_note_ids == ("note-9000000000000003",)
+    assert context.note_count == 1
+
+
+def test_runtime_drawdown_alias_files_do_not_affect_unrelated_blockers(tmp_path):
+    index_path = _write_index(tmp_path)
+    notes_dir = tmp_path / "extracted_notes"
+    promoted_note = _note(
+        note_id="note-9000000000000004",
+        source_passage_id="passage-9000000000000004",
+        concept="Drawdown only note",
+        addresses_blockers=["drawdown_fail"],
+        priority_score=70,
+    )
+    _write_notes_jsonl(notes_dir, "drawdown_fail.jsonl", [promoted_note])
+
+    context = load_book_knowledge_context(
+        index_path,
+        notes_dir,
+        dominant_blocker="cost_stress",
+        limit=5,
+    )
+
+    assert context.selected_note_ids == ()
+    assert context.prompt == ""
+
+
+def test_runtime_missing_drawdown_alias_files_fall_back_to_legacy_notes(tmp_path):
+    index_path = _write_index(tmp_path)
+    notes_dir = tmp_path / "extracted_notes"
+    _write_notes_jsonl(
+        notes_dir,
+        "notes.jsonl",
+        [
+                _note(
+                    note_id="note-9000000000000005",
+                    source_passage_id="passage-9000000000000005",
+                    concept="Legacy fallback drawdown note",
+                    addresses_blockers=["drawdown_fail"],
+                    priority_score=80,
+                )
+        ],
+    )
+
+    drawdown = load_book_knowledge_context(
+        index_path,
+        notes_dir,
+        dominant_blocker="drawdown",
+        limit=5,
+    )
+    drawdown_fail = load_book_knowledge_context(
+        index_path,
+        notes_dir,
+        dominant_blocker="drawdown_fail",
+        limit=5,
+    )
+
+    assert drawdown.selected_note_ids == ("note-9000000000000005",)
+    assert drawdown_fail.selected_note_ids == ("note-9000000000000005",)
+
+
+def test_runtime_malformed_optional_drawdown_alias_file_remains_fail_open(tmp_path):
+    index_path = _write_index(tmp_path)
+    notes_dir = tmp_path / "extracted_notes"
+    _write_notes_jsonl(
+        notes_dir,
+        "drawdown_fail.jsonl",
+        [
+                _note(
+                    note_id="note-9000000000000006",
+                    source_passage_id="passage-9000000000000006",
+                    concept="Fail-open drawdown note",
+                    addresses_blockers=["drawdown_fail"],
+                    priority_score=85,
+                )
+        ],
+    )
+    (notes_dir / "drawdown.jsonl").write_text("{not json}\n", encoding="utf-8")
+
+    context = load_book_knowledge_context(
+        index_path,
+        notes_dir,
+        dominant_blocker="drawdown",
+        limit=5,
+    )
+
+    assert context.selected_note_ids == ("note-9000000000000006",)
 
 
 def test_runtime_rejects_unrecognized_blocker_instead_of_global_fallback(tmp_path):
