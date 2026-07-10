@@ -11,6 +11,9 @@ from research_lab.execution.risk_overlay_isolated_executor_v1 import (
 from research_lab.execution.risk_overlay_candidate_synthetic_acceptance_v1 import (
     run_candidate_synthetic_acceptance,
 )
+from research_lab.execution.strategy_execution_capability_bridge_v1 import (
+    build_strategy_execution_bridge_request,
+)
 from research_lab.execution.strategy_execution_capabilities_v1 import (
     get_strategy_execution_capability,
     supported_strategy_execution_builders,
@@ -24,6 +27,7 @@ __all__ = [
     "build_strategy_event",
     "run_isolated_risk_overlay_execution",
     "run_candidate_synthetic_acceptance",
+    "build_strategy_execution_bridge_request",
     "get_strategy_execution_capability",
     "supported_strategy_execution_builders",
 ]
