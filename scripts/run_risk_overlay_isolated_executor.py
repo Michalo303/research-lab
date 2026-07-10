@@ -64,14 +64,58 @@ def _emit_failure(failure_reason: str, exit_code: int) -> int:
 
 
 def _is_unsafe_output_path(output_path: Path, *, repo_root: Path) -> bool:
-    repo_root = repo_root.resolve()
+    resolved_output = _resolved_destination_path(output_path)
+    for protected_root in _protected_output_roots(repo_root):
+        try:
+            resolved_output.relative_to(protected_root)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
+def _protected_output_roots(repo_root: Path) -> list[Path]:
+    resolved_repo_root = repo_root.resolve()
+    roots = [
+        resolved_repo_root,
+        Path("/opt/trading/private"),
+        Path("/opt/trading/private/hermes_books"),
+        Path("/opt/trading/research-lab/reports"),
+        Path("/opt/trading/research-lab/backtests_runs"),
+        Path("/opt/trading/research-lab/leaderboard"),
+        Path("/opt/trading/research-lab/cache"),
+        Path("/opt/trading/research-lab/deployment"),
+        Path("/opt/trading/research-lab/data"),
+        Path("/opt/trading/research-lab/tests/fixtures"),
+        resolved_repo_root / "reports",
+        resolved_repo_root / "backtests_runs",
+        resolved_repo_root / "leaderboard",
+        resolved_repo_root / "cache",
+        resolved_repo_root / "deployment",
+        resolved_repo_root / "data",
+        resolved_repo_root / "tests" / "fixtures",
+        resolved_repo_root / "research_lab",
+        resolved_repo_root / "scripts",
+        resolved_repo_root / "tests",
+    ]
+    return [_normalize_path(root) for root in roots]
+
+
+def _resolved_destination_path(path: Path) -> Path:
+    output_path = path.expanduser()
     resolved_parent = _resolved_existing_parent(output_path)
-    resolved_output = resolved_parent.joinpath(*output_path.parts[-_missing_part_count(output_path):]) if not output_path.exists() else output_path.resolve()
-    try:
-        resolved_output.relative_to(repo_root)
-        return True
-    except ValueError:
-        return False
+    if output_path.exists():
+        return output_path.resolve()
+    missing_parts = []
+    current = output_path
+    while not current.exists():
+        missing_parts.append(current.name)
+        current = current.parent
+    return resolved_parent.joinpath(*reversed(missing_parts))
+
+
+def _normalize_path(path: Path) -> Path:
+    return path.expanduser().resolve(strict=False)
 
 
 def _resolved_existing_parent(path: Path) -> Path:
@@ -79,15 +123,6 @@ def _resolved_existing_parent(path: Path) -> Path:
     while not current.exists():
         current = current.parent
     return current.resolve()
-
-
-def _missing_part_count(path: Path) -> int:
-    count = 0
-    current = path
-    while not current.exists():
-        count += 1
-        current = current.parent
-    return count
 
 
 if __name__ == "__main__":

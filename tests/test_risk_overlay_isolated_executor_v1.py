@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import ast
 import copy
+import importlib.util
+import io
 import json
 import math
 import subprocess
 import sys
+from contextlib import redirect_stdout
 from pathlib import Path
 
 import pytest
@@ -85,6 +88,15 @@ def _request() -> dict[str, object]:
 
 def _run(request: dict[str, object]) -> dict[str, object]:
     return run_isolated_risk_overlay_execution(copy.deepcopy(request))
+
+
+def _load_cli_module():
+    spec = importlib.util.spec_from_file_location("risk_overlay_isolated_executor_cli", SCRIPT_PATH)
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_valid_synthetic_entry_exit_path_completes_with_deterministic_accounting():
@@ -432,7 +444,7 @@ def test_semantically_equivalent_threshold_and_reentry_payloads_hash_identically
     assert first == second
 
 
-def test_cli_refuses_overwrite_and_paths_inside_repository(tmp_path):
+def test_cli_refuses_overwrite_and_protected_paths(tmp_path):
     input_path = tmp_path / "input.json"
     input_path.write_text(json.dumps(_request(), indent=2) + "\n", encoding="utf-8")
 
@@ -449,17 +461,63 @@ def test_cli_refuses_overwrite_and_paths_inside_repository(tmp_path):
     assert overwrite.returncode != 0
     assert overwrite_stdout["failure_reason"] == "overwrite_forbidden"
 
-    inside_repo_output = ROOT / "tests" / "fixtures" / "unsafe-risk-overlay-output.json"
-    unsafe = subprocess.run(
-        [sys.executable, str(SCRIPT_PATH), "--input", str(input_path), "--output", str(inside_repo_output)],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
+    for protected_output in (
+        ROOT / "unsafe-risk-overlay-output.json",
+        ROOT / "research_lab" / "unsafe-risk-overlay-output.json",
+        ROOT / "tests" / "fixtures" / "unsafe-risk-overlay-output.json",
+        ROOT / "reports" / "unsafe-risk-overlay-output.json",
+        ROOT / "cache" / "unsafe-risk-overlay-output.json",
+        ROOT / "deployment" / "unsafe-risk-overlay-output.json",
+    ):
+        unsafe = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), "--input", str(input_path), "--output", str(protected_output)],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        unsafe_stdout = json.loads(unsafe.stdout.strip())
+        assert unsafe.returncode != 0
+        assert unsafe_stdout["failure_reason"] == "unsafe_output_path"
+
+
+def test_cli_refuses_external_protected_root_and_symlink_traversal(tmp_path, monkeypatch):
+    input_path = tmp_path / "input.json"
+    input_path.write_text(json.dumps(_request(), indent=2) + "\n", encoding="utf-8")
+
+    cli_module = _load_cli_module()
+    external_protected_root = tmp_path / "external-protected-root"
+    external_protected_root.mkdir()
+
+    monkeypatch.setattr(
+        cli_module,
+        "_protected_output_roots",
+        lambda repo_root: [repo_root.resolve(), external_protected_root.resolve()],
     )
-    unsafe_stdout = json.loads(unsafe.stdout.strip())
-    assert unsafe.returncode != 0
-    assert unsafe_stdout["failure_reason"] == "unsafe_output_path"
+
+    stdout = io.StringIO()
+    with redirect_stdout(stdout):
+        exit_code = cli_module.main(["--input", str(input_path), "--output", str(external_protected_root / "out.json")])
+    protected_result = json.loads(stdout.getvalue().strip())
+    assert exit_code == cli_module.EXIT_UNSAFE_OUTPUT_PATH
+    assert protected_result["failure_reason"] == "unsafe_output_path"
+
+    symlink_root = tmp_path / "symlink-root"
+    symlink_root.mkdir()
+    symlink_path = symlink_root / "linked-protected"
+    try:
+        symlink_path.symlink_to(external_protected_root, target_is_directory=True)
+        symlink_target = symlink_path / "child.json"
+    except OSError:
+        monkeypatch.setattr(cli_module, "_resolved_existing_parent", lambda _path: external_protected_root.resolve())
+        symlink_target = symlink_root / "apparent-safe" / "child.json"
+
+    stdout = io.StringIO()
+    with redirect_stdout(stdout):
+        exit_code = cli_module.main(["--input", str(input_path), "--output", str(symlink_target)])
+    symlink_result = json.loads(stdout.getvalue().strip())
+    assert exit_code == cli_module.EXIT_UNSAFE_OUTPUT_PATH
+    assert symlink_result["failure_reason"] == "unsafe_output_path"
 
 
 def test_module_and_cli_do_not_import_provider_registry_backtest_or_deployment_modules():
