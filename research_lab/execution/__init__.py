@@ -8,6 +8,9 @@ from research_lab.execution.risk_execution_contract_v1 import (
 from research_lab.execution.risk_overlay_isolated_executor_v1 import (
     run_isolated_risk_overlay_execution,
 )
+from research_lab.execution.risk_overlay_candidate_synthetic_acceptance_v1 import (
+    run_candidate_synthetic_acceptance,
+)
 from research_lab.execution.strategy_execution_capabilities_v1 import (
     get_strategy_execution_capability,
     supported_strategy_execution_builders,
@@ -20,6 +23,7 @@ __all__ = [
     "build_protective_exit_contract",
     "build_strategy_event",
     "run_isolated_risk_overlay_execution",
+    "run_candidate_synthetic_acceptance",
     "get_strategy_execution_capability",
     "supported_strategy_execution_builders",
 ]
