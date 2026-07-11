@@ -38,6 +38,9 @@ from research_lab.execution.rd_agent_proposal_contract_v1 import (
 from research_lab.execution.strategy_robustness_review_contract_v1 import (
     build_strategy_robustness_review_contract,
 )
+from research_lab.execution.deterministic_ablation_evaluator_v1 import (
+    evaluate_deterministic_ablations,
+)
 from research_lab.execution.swing_trend_filtered_pullback_strategy_contract_v1 import (
     build_swing_trend_filtered_pullback_strategy_contract,
 )
@@ -63,6 +66,7 @@ __all__ = [
     "build_ultracode_shim_artifact",
     "build_rd_agent_proposal_contract",
     "build_strategy_robustness_review_contract",
+    "evaluate_deterministic_ablations",
     "build_swing_trend_filtered_pullback_strategy_contract",
     "get_strategy_execution_capability",
     "supported_strategy_execution_builders",
