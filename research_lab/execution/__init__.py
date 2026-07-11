@@ -26,6 +26,9 @@ from research_lab.execution.result_review_gate_v1 import (
 from research_lab.execution.qlib_isolated_evaluator_v1 import (
     run_qlib_isolated_evaluator,
 )
+from research_lab.execution.markov_hmm_regime_pilot_v1 import (
+    run_markov_hmm_regime_pilot,
+)
 from research_lab.execution.swing_trend_filtered_pullback_strategy_contract_v1 import (
     build_swing_trend_filtered_pullback_strategy_contract,
 )
@@ -47,6 +50,7 @@ __all__ = [
     "build_isolated_real_data_adapter_contract",
     "build_result_review_gate",
     "run_qlib_isolated_evaluator",
+    "run_markov_hmm_regime_pilot",
     "build_swing_trend_filtered_pullback_strategy_contract",
     "get_strategy_execution_capability",
     "supported_strategy_execution_builders",
