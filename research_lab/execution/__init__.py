@@ -17,6 +17,9 @@ from research_lab.execution.strategy_execution_capability_bridge_v1 import (
 from research_lab.execution.strategy_execution_bridge_synthetic_executor_v1 import (
     run_strategy_execution_bridge_synthetic_executor,
 )
+from research_lab.execution.isolated_real_data_adapter_contract_v1 import (
+    build_isolated_real_data_adapter_contract,
+)
 from research_lab.execution.swing_trend_filtered_pullback_strategy_contract_v1 import (
     build_swing_trend_filtered_pullback_strategy_contract,
 )
@@ -35,6 +38,7 @@ __all__ = [
     "run_candidate_synthetic_acceptance",
     "build_strategy_execution_bridge_request",
     "run_strategy_execution_bridge_synthetic_executor",
+    "build_isolated_real_data_adapter_contract",
     "build_swing_trend_filtered_pullback_strategy_contract",
     "get_strategy_execution_capability",
     "supported_strategy_execution_builders",
