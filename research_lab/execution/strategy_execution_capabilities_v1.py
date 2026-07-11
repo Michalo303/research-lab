@@ -35,10 +35,19 @@ def get_strategy_execution_capability(builder: str) -> dict[str, Any]:
         raise ValueError("builder is required.")
     reason = "builder is not explicitly supported"
     if normalized_builder == "swing_trend_filtered_pullback":
-        reason = (
-            "ATR stop remains embedded in local weight-builder state; no reusable execution-time "
-            "protective-exit or per-unit loss-distance contract exists yet."
+        payload = _unsupported_capability(
+            normalized_builder,
+            reason=(
+                "A synthetic-only contract helper exists for entry, exit, protective-exit, per-unit loss, "
+                "and stop-refresh derivation, but production runtime and live risk-overlay execution remain unsupported."
+            ),
         )
+        payload["emits_entry_events"] = True
+        payload["emits_exit_events"] = True
+        payload["emits_rebalance_events"] = False
+        payload["exposes_protective_exit"] = True
+        payload["exposes_per_unit_loss_distance"] = True
+        return validate_strategy_execution_capability(payload)
     return _unsupported_capability(normalized_builder, reason=reason)
 
 

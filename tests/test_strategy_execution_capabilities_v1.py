@@ -81,9 +81,12 @@ def test_swing_trend_filtered_pullback_remains_explicitly_unsupported():
     capability = get_strategy_execution_capability("swing_trend_filtered_pullback")
 
     assert capability["supported_for_risk_overlay_execution"] is False
-    assert "ATR stop remains embedded in local weight-builder state" in capability["unsupported_reason"]
-    assert capability["exposes_protective_exit"] is False
-    assert capability["exposes_per_unit_loss_distance"] is False
+    assert "synthetic-only contract helper exists" in capability["unsupported_reason"]
+    assert capability["emits_entry_events"] is True
+    assert capability["emits_exit_events"] is True
+    assert capability["emits_rebalance_events"] is False
+    assert capability["exposes_protective_exit"] is True
+    assert capability["exposes_per_unit_loss_distance"] is True
 
 
 def test_existing_strategy_output_remains_unchanged():
