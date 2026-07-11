@@ -32,6 +32,9 @@ from research_lab.execution.markov_hmm_regime_pilot_v1 import (
 from research_lab.execution.ultracode_shim_v1 import (
     build_ultracode_shim_artifact,
 )
+from research_lab.execution.rd_agent_proposal_contract_v1 import (
+    build_rd_agent_proposal_contract,
+)
 from research_lab.execution.swing_trend_filtered_pullback_strategy_contract_v1 import (
     build_swing_trend_filtered_pullback_strategy_contract,
 )
@@ -55,6 +58,7 @@ __all__ = [
     "run_qlib_isolated_evaluator",
     "run_markov_hmm_regime_pilot",
     "build_ultracode_shim_artifact",
+    "build_rd_agent_proposal_contract",
     "build_swing_trend_filtered_pullback_strategy_contract",
     "get_strategy_execution_capability",
     "supported_strategy_execution_builders",
