@@ -86,6 +86,9 @@ from research_lab.execution.knihomol_readonly_evidence_adapter_v1 import (
 from research_lab.execution.knihomol_orchestrator_evidence_binding_v1 import (
     build_knihomol_orchestrator_evidence_binding,
 )
+from research_lab.execution.review_only_orchestrator_cli_v1 import (
+    prepare_review_only_orchestrator_bundle,
+)
 from research_lab.execution.strategy_execution_capabilities_v1 import (
     get_strategy_execution_capability,
     supported_strategy_execution_builders,
@@ -124,6 +127,7 @@ __all__ = [
     "build_local_ohlcv_file_input_adapter",
     "build_knihomol_readonly_evidence_adapter",
     "build_knihomol_orchestrator_evidence_binding",
+    "prepare_review_only_orchestrator_bundle",
     "get_strategy_execution_capability",
     "supported_strategy_execution_builders",
 ]
