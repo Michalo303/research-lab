@@ -186,6 +186,17 @@ def test_cli_refuses_external_protected_root_and_symlink_traversal(tmp_path, mon
     assert symlink_result["failure_reason"] == "unsafe_output_dir"
 
 
+def test_private_research_orchestrator_run_root_is_explicitly_allowed(monkeypatch):
+    module = sys.modules["research_lab.execution.isolated_orchestrator_runner_v1"]
+    allowed_root = Path("/opt/trading/private/research_orchestrator_runs")
+    blocked_root = Path("/opt/trading/private")
+    monkeypatch.setattr(module, "_resolved_destination_path", lambda _path: allowed_root / "pilot-run")
+    monkeypatch.setattr(module, "_protected_output_roots", lambda repo_root: [blocked_root])
+    monkeypatch.setattr(module, "_permitted_output_roots", lambda repo_root: [allowed_root])
+
+    module._validate_output_dir_path(Path("/apparent-safe/pilot-run"), repo_root=ROOT)
+
+
 def test_module_and_cli_do_not_import_provider_registry_or_runtime_modules():
     forbidden_roots = (
         "research_lab.runner",
