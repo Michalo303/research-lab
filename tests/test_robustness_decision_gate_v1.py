@@ -279,6 +279,42 @@ def test_required_risk_controls_are_preserved_even_when_simpler_variant_exists()
     ]
 
 
+def test_preserves_review_context_needed_for_downstream_review_only_consumers():
+    request = _request()
+    request["robustness_review_result"]["required_selection_bias_checks"] = ["reduce_trial_count_or_strengthen_bias_controls"]
+    request["robustness_review_result"]["required_drawdown_checks"] = ["reduce_drawdown_under_policy"]
+    request["robustness_review_result"]["required_parameter_checks"] = ["reduce_parameter_surface_area"]
+    request["robustness_review_result"]["complexity_budget"] = {
+        "allowed_parameter_count": 3,
+        "observed_parameter_count": 4,
+        "within_budget": False,
+    }
+
+    result = _run(request)
+
+    assert result["ablation_classifications"] == [
+        {"variant_id": "BASELINE", "classification": "DECORATIVE"},
+        {"variant_id": "RISKY", "classification": "REQUIRED_FOR_RISK_SAFETY"},
+        {"variant_id": "SIMPLER_SAFE", "classification": "DECORATIVE"},
+    ]
+    assert result["selection_bias_findings"] == {
+        "required_checks": ["reduce_trial_count_or_strengthen_bias_controls"],
+        "blocking_reasons": [],
+    }
+    assert result["drawdown_findings"] == {
+        "required_checks": ["reduce_drawdown_under_policy"],
+        "blocking_reasons": [],
+    }
+    assert result["complexity_findings"] == {
+        "required_parameter_checks": ["reduce_parameter_surface_area"],
+        "complexity_budget": {
+            "allowed_parameter_count": 3,
+            "observed_parameter_count": 4,
+            "within_budget": False,
+        },
+    }
+
+
 def test_rejects_identity_mismatch():
     request = _request()
     request["walk_forward_fold_evidence"]["strategy_id"] = "MISMATCH"

@@ -119,8 +119,24 @@ def build_robustness_decision_gate(request: dict[str, object]) -> dict[str, obje
         "recommended_variant_id": selected_variant_id,
         "accepted_variants": accepted_variants,
         "rejected_variants": rejected_variants,
+        "ablation_classifications": _ablation_classifications(validated["ablation_result"]["ablation_results"]),
         "weak_parameters": weak_parameters,
         "fold_failures": fold_failures,
+        "selection_bias_findings": {
+            "required_checks": validated["robustness_review_result"]["required_selection_bias_checks"],
+            "blocking_reasons": _matching_blocking_reasons(
+                blocking_reasons,
+                prefixes=("overfit", "selection_bias", "incomplete_trial_accounting", "unbounded_search"),
+            ),
+        },
+        "drawdown_findings": {
+            "required_checks": validated["robustness_review_result"]["required_drawdown_checks"],
+            "blocking_reasons": _matching_blocking_reasons(blocking_reasons, prefixes=("drawdown",)),
+        },
+        "complexity_findings": {
+            "required_parameter_checks": validated["robustness_review_result"]["required_parameter_checks"],
+            "complexity_budget": validated["robustness_review_result"]["complexity_budget"],
+        },
         "knowledge_note_ids_used": knowledge_note_ids_used,
         "missing_evidence": missing_evidence,
         "blocking_reasons": blocking_reasons,
@@ -550,6 +566,20 @@ def _fold_failures(walk_forward_fold_evidence: dict[str, Any]) -> list[dict[str,
         if (not item["passed"]) or item["failure_reasons"]
     ]
     return sorted(failures, key=lambda item: item["fold_id"])
+
+
+def _ablation_classifications(ablation_results: list[dict[str, Any]]) -> list[dict[str, str]]:
+    return [
+        {
+            "variant_id": item["variant_id"],
+            "classification": item["classification"],
+        }
+        for item in ablation_results
+    ]
+
+
+def _matching_blocking_reasons(blocking_reasons: list[str], *, prefixes: tuple[str, ...]) -> list[str]:
+    return [item for item in blocking_reasons if item.startswith(prefixes)]
 
 
 def _evidence_status(
