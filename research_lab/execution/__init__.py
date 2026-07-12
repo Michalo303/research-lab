@@ -62,6 +62,9 @@ from research_lab.execution.bounded_revise_retest_loop_v1 import (
 from research_lab.execution.research_failure_memory_contract_v1 import (
     build_research_failure_memory_contract,
 )
+from research_lab.execution.human_approval_gate_v1 import (
+    build_human_approval_gate,
+)
 from research_lab.execution.strategy_execution_capabilities_v1 import (
     get_strategy_execution_capability,
     supported_strategy_execution_builders,
@@ -92,6 +95,7 @@ __all__ = [
     "build_orchestration_state_contract",
     "run_bounded_revise_retest_loop",
     "build_research_failure_memory_contract",
+    "build_human_approval_gate",
     "get_strategy_execution_capability",
     "supported_strategy_execution_builders",
 ]
