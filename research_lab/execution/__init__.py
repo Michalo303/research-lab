@@ -92,6 +92,9 @@ from research_lab.execution.review_only_orchestrator_cli_v1 import (
 from research_lab.execution.macro_series_contract_v1 import (
     build_macro_series_contract,
 )
+from research_lab.execution.fred_alfred_readonly_adapter_v1 import (
+    build_fred_alfred_readonly_adapter,
+)
 from research_lab.execution.strategy_execution_capabilities_v1 import (
     get_strategy_execution_capability,
     supported_strategy_execution_builders,
@@ -132,6 +135,7 @@ __all__ = [
     "build_knihomol_orchestrator_evidence_binding",
     "prepare_review_only_orchestrator_bundle",
     "build_macro_series_contract",
+    "build_fred_alfred_readonly_adapter",
     "get_strategy_execution_capability",
     "supported_strategy_execution_builders",
 ]
