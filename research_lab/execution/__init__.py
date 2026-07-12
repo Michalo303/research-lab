@@ -56,6 +56,9 @@ from research_lab.execution.experiment_manifest_contract_v1 import (
 from research_lab.execution.orchestration_state_contract_v1 import (
     build_orchestration_state_contract,
 )
+from research_lab.execution.bounded_revise_retest_loop_v1 import (
+    run_bounded_revise_retest_loop,
+)
 from research_lab.execution.strategy_execution_capabilities_v1 import (
     get_strategy_execution_capability,
     supported_strategy_execution_builders,
@@ -84,6 +87,7 @@ __all__ = [
     "build_swing_trend_filtered_pullback_strategy_contract",
     "build_experiment_manifest_contract",
     "build_orchestration_state_contract",
+    "run_bounded_revise_retest_loop",
     "get_strategy_execution_capability",
     "supported_strategy_execution_builders",
 ]
