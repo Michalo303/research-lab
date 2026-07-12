@@ -77,6 +77,7 @@ def _validate_adapter_result(value: Any, *, snapshot_date: str) -> dict[str, obj
         "status",
         "provider",
         "series_id",
+        "point_in_time_classification",
         "flow_ref",
         "series_key",
         "response_sha256",

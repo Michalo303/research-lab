@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 
@@ -528,7 +528,17 @@ def _validate_confidence_policy(value: Any) -> dict[str, float]:
 def _age_in_days(available_at: str, observed_at: str) -> float:
     available = _parse_timestamp(available_at)
     observed = _parse_timestamp(observed_at)
-    return (observed - available).total_seconds() / 86400.0
+    if observed < available:
+        return (observed - available).total_seconds() / 86400.0
+    if observed.date() == available.date():
+        return (observed - available).total_seconds() / 86400.0
+    business_days = 0
+    cursor = available.date() + timedelta(days=1)
+    while cursor <= observed.date():
+        if cursor.weekday() < 5:
+            business_days += 1
+        cursor += timedelta(days=1)
+    return float(business_days)
 
 
 def _parse_timestamp(value: str) -> datetime:

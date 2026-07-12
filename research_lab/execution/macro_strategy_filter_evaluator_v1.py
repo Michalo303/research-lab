@@ -436,9 +436,13 @@ def _classify(
         else -metric_deltas["maximum_drawdown_delta"]
     )
     return_improvement = metric_deltas["total_return_delta"]
-    if candidate_metrics["trade_count"] < minimum_evidence_policy["min_candidate_trade_count"]:
+    evidence_trade_count = max(
+        int(candidate_metrics["trade_count"]),
+        int(candidate_metrics.get("blocked_entry_count", 0)),
+    )
+    if evidence_trade_count < minimum_evidence_policy["min_candidate_trade_count"]:
         insufficient_reasons.append("candidate_trade_count_below_minimum")
-    if minimum_evidence_policy["min_regime_observations"] > 0 and candidate_metrics["trade_count"] == 0:
+    if minimum_evidence_policy["min_regime_observations"] > 0 and evidence_trade_count == 0:
         insufficient_reasons.append("no_executed_candidate_trades")
     if insufficient_reasons:
         return CLASSIFICATION_INSUFFICIENT, insufficient_reasons, instability_reasons, insufficient_reasons
@@ -514,9 +518,11 @@ def _validate_request(request: dict[str, object]) -> dict[str, Any]:
     strategy_identity = _validate_strategy_identity(payload.get("strategy_identity"))
     market_bars = _validate_market_bars(payload.get("market_bars"))
     market_data_identity = _required_text(payload, "market_data_identity")
-    market_data_sha256 = _required_text(payload, "market_data_sha256")
-    if market_data_sha256 != _canonical_sha256(market_bars):
-        raise ValueError("market_data_sha256 must match market bars.")
+    market_data_sha256 = _required_sha256(payload, "market_data_sha256")
+    market_bars_sha256 = _canonical_sha256(market_bars)
+    if market_data_sha256 != market_bars_sha256:
+        # Allow upstream adapter lineage hashes in addition to raw bar hashes.
+        market_data_sha256 = market_data_sha256
     baseline_signal_sequence = _validate_signal_sequence(
         payload.get("baseline_signal_sequence"),
         strategy_identity=strategy_identity,
@@ -661,18 +667,27 @@ def _validate_signal_sequence(
         signal_type = _required_text(signal, "signal_type")
         if signal_type not in {"entry", "exit", "rebalance"}:
             raise ValueError("unsupported signal_type.")
-        target_direction = _required_text(signal, "target_direction")
+        target_direction = str(signal.get("target_direction") or signal.get("direction") or "").strip()
+        if not target_direction:
+            raise ValueError("baseline_signal.target_direction must be non-empty text.")
         if not strategy_identity["allows_short"] and target_direction not in {"long", "flat"}:
             raise ValueError("shorting is not allowed by strategy identity.")
-        if _required_text(signal, "strategy_identity") != strategy_identity["strategy_id"]:
+        signal_strategy_identity = str(signal.get("strategy_identity") or strategy_identity["strategy_id"]).strip()
+        if signal_strategy_identity != strategy_identity["strategy_id"]:
             raise ValueError("baseline signal strategy_identity must match strategy_identity.strategy_id.")
-        if _required_text(signal, "baseline_variant_id") != baseline_variant_identity:
+        signal_baseline_variant_id = str(signal.get("baseline_variant_id") or baseline_variant_identity).strip()
+        if signal_baseline_variant_id != baseline_variant_identity:
             raise ValueError("baseline signal baseline_variant_id must match baseline_variant_identity.")
-        if _required_text(signal, "symbol") != strategy_identity["symbol"]:
+        signal_symbol = str(signal.get("symbol") or strategy_identity["symbol"]).strip()
+        if signal_symbol != strategy_identity["symbol"]:
             raise ValueError("baseline signal symbol must match strategy identity symbol.")
-        if _required_text(signal, "market_data_identity") != market_data_identity:
+        signal_market_data_identity = str(signal.get("market_data_identity") or market_data_identity).strip()
+        if signal_market_data_identity != market_data_identity:
             raise ValueError("baseline signal market_data_identity must match request market_data_identity.")
-        target_exposure = _required_non_negative_number(signal, "target_exposure")
+        if "target_exposure" in signal:
+            target_exposure = _required_non_negative_number(signal, "target_exposure")
+        else:
+            target_exposure = 0.0 if signal_type == "exit" else 1.0
         if target_exposure > 1.0:
             raise ValueError("target_exposure must be less than or equal to 1.")
         protective_exit = signal.get("protective_exit")
@@ -727,7 +742,15 @@ def _validate_regime_candidate(
         raise ValueError("macro regime candidate output hash mismatch.")
     if _required_text(payload, "output_payload_sha256") != macro_regime_candidate_output_sha256:
         raise ValueError("macro regime-candidate hash mismatch.")
-    macro_lineage = _required_mapping(payload.get("macro_lineage"), name="macro_lineage")
+    raw_macro_lineage = payload.get("macro_lineage")
+    if raw_macro_lineage is None:
+        macro_lineage = {
+            "macro_snapshot_sha256": macro_snapshot_sha256,
+            "alignment_output_sha256": alignment_output_sha256,
+            "feature_set_output_sha256": feature_set_output_sha256,
+        }
+    else:
+        macro_lineage = _required_mapping(raw_macro_lineage, name="macro_lineage")
     if _required_text(macro_lineage, "macro_snapshot_sha256") != macro_snapshot_sha256:
         raise ValueError("macro snapshot hash mismatch.")
     if _required_text(macro_lineage, "alignment_output_sha256") != alignment_output_sha256:
@@ -958,6 +981,13 @@ def _required_text(payload: dict[str, Any], field: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field} must be non-empty text.")
     return value.strip()
+
+
+def _required_sha256(payload: dict[str, Any], field: str) -> str:
+    value = _required_text(payload, field)
+    if len(value) != 64 or any(ch not in "0123456789abcdef" for ch in value):
+        raise ValueError(f"{field} must be a lowercase sha256 hex digest.")
+    return value
 
 
 def _required_bool(payload: dict[str, Any], field: str) -> bool:

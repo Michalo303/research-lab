@@ -68,10 +68,14 @@ def _build_signal_plan(
     high = frame["high"].astype(float)
     low = frame["low"].astype(float)
 
-    rsi = _rsi(close)
+    if len(frame.index) >= 14:
+        lookback = 14
+    else:
+        lookback = max(2, min(int(parameters["fast_sma"]), len(frame.index) - 1))
+    rsi = _rsi(close, window=lookback)
     fast = close.rolling(int(parameters["fast_sma"])).mean()
     slow = close.rolling(int(parameters["slow_sma"])).mean()
-    atr = (high - low).rolling(14).mean()
+    atr = (high - low).rolling(lookback).mean()
 
     active = False
     entry_price = 0.0
@@ -100,6 +104,7 @@ def _build_signal_plan(
                     "signal_id": signal_id,
                     "signal_type": "entry",
                     "direction": "long",
+                    "target_direction": "long",
                     "protective_exit": {
                         "type": "fixed_stop",
                         "stop_price": stop_price,
@@ -138,6 +143,7 @@ def _build_signal_plan(
                     "signal_id": signal_id,
                     "signal_type": "exit",
                     "direction": "long",
+                    "target_direction": "flat",
                 }
             )
             signal_contracts.append(
