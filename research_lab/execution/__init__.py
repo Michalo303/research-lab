@@ -101,6 +101,9 @@ from research_lab.execution.ecb_sdmx_readonly_adapter_v1 import (
 from research_lab.execution.immutable_macro_snapshot_contract_v1 import (
     build_immutable_macro_snapshot_contract,
 )
+from research_lab.execution.e2e_macro_data_layer_acceptance_v1 import (
+    run_e2e_macro_data_layer_acceptance,
+)
 from research_lab.execution.strategy_execution_capabilities_v1 import (
     get_strategy_execution_capability,
     supported_strategy_execution_builders,
@@ -144,6 +147,7 @@ __all__ = [
     "build_fred_alfred_readonly_adapter",
     "build_ecb_sdmx_readonly_adapter",
     "build_immutable_macro_snapshot_contract",
+    "run_e2e_macro_data_layer_acceptance",
     "get_strategy_execution_capability",
     "supported_strategy_execution_builders",
 ]
