@@ -128,6 +128,79 @@ def _regime_result() -> dict[str, object]:
     )
 
 
+def _reviewed_robustness_context(*, decision_status: str = "PASS_WITH_SIMPLIFICATION") -> dict[str, object]:
+    return {
+        "decision_status": decision_status,
+        "selected_variant_id": "SIMPLER_SAFE",
+        "recommended_variant_id": "SIMPLER_SAFE",
+        "rejected_variants": [
+            {"variant_id": "RISKY", "reason": "required_risk_safety_rule_removed"},
+        ],
+        "ablation_classifications": [
+            {"variant_id": "BASELINE", "classification": "DECORATIVE"},
+            {"variant_id": "SIMPLER_SAFE", "classification": "DECORATIVE"},
+            {"variant_id": "RISKY", "classification": "REQUIRED_FOR_RISK_SAFETY"},
+        ],
+        "required_risk_safety_rules": [
+            {"rule_id": "protective_stop", "rule_role": "risk_safety", "description": "Protective stop must stay active."},
+        ],
+        "parameter_stability_classifications": [
+            {"parameter_name": "fast_sma", "stability_classification": "BROAD_PLATEAU"},
+            {"parameter_name": "slow_sma", "stability_classification": "NARROW_PLATEAU"},
+        ],
+        "weak_parameters": [
+            {"parameter_name": "slow_sma", "stability_classification": "NARROW_PLATEAU"},
+        ],
+        "isolated_spike_findings": [],
+        "walk_forward_failures": [],
+        "effective_sample_findings": {
+            "available": True,
+            "passed": True,
+            "effective_sample_size": 160,
+            "minimum_required": 100,
+            "blocking_reasons": [],
+        },
+        "trial_accounting_findings": {
+            "total_trials": 12,
+            "complete_accounting": True,
+            "bounded_search": True,
+            "selection_mode": "bounded_grid",
+            "blocking_reasons": [],
+        },
+        "deflated_sharpe_findings": {
+            "available": True,
+            "passed": True,
+            "observed_value": 0.32,
+            "minimum_required": 0.10,
+            "blocking_reasons": [],
+        },
+        "pbo_cscv_findings": {
+            "available": True,
+            "passed": True,
+            "observed_value": 0.08,
+            "maximum_allowed": 0.20,
+            "blocking_reasons": [],
+        },
+        "selection_bias_findings": {
+            "required_checks": [],
+            "blocking_reasons": [],
+        },
+        "drawdown_findings": {
+            "required_checks": [],
+            "blocking_reasons": [],
+        },
+        "complexity_findings": {
+            "required_parameter_checks": [],
+            "complexity_budget": {
+                "allowed_parameter_count": 4,
+                "observed_parameter_count": 4,
+                "within_budget": True,
+            },
+        },
+        "knowledge_note_ids_used": ["KNIH-001"],
+    }
+
+
 def _run(request: dict[str, object]) -> dict[str, object]:
     return execution.build_rd_agent_proposal_contract(copy.deepcopy(request))
 
@@ -196,6 +269,38 @@ def test_can_consume_markov_hmm_regime_pilot_result():
     assert any("regime" in item.lower() for item in result["strategy_candidate_notes"])
 
 
+def test_can_consume_reviewed_robustness_context():
+    result = _run(
+        {
+            "version": "rd_agent_proposal_contract_request_v1",
+            "review_artifact": _review_artifact(),
+            "robustness_context": _reviewed_robustness_context(),
+            "parameters": {"mode": "deterministic_local"},
+            "provenance": {"source": "unit_test"},
+        }
+    )
+
+    assert result["proposal_run"] is True
+    assert result["reviewed_robustness_context"]["decision_status"] == "PASS_WITH_SIMPLIFICATION"
+    assert result["reviewed_robustness_context"]["required_risk_safety_rules"][0]["rule_id"] == "protective_stop"
+
+
+def test_blocking_reviewed_robustness_context_stops_proposal_authority():
+    result = _run(
+        {
+            "version": "rd_agent_proposal_contract_request_v1",
+            "review_artifact": _review_artifact(),
+            "robustness_context": _reviewed_robustness_context(decision_status="REJECT_OVERFIT"),
+            "parameters": {"mode": "deterministic_local"},
+            "provenance": {"source": "unit_test"},
+        }
+    )
+
+    assert result["proposal_run"] is False
+    assert result["review_status"] == "REJECTED"
+    assert result["failure_reason"] == "robustness_context blocks proposal generation"
+
+
 def test_malformed_input_fails_safely():
     result = _run(
         {
@@ -259,6 +364,7 @@ def test_stable_schema_on_pass_unavailable_and_fail():
         assert "rd_agent_available" in result
         assert "proposal_run" in result
         assert "input_hash" in result
+        assert "reviewed_robustness_context" in result
         assert "candidate_hypotheses" in result
         assert "factor_proposals" in result
         assert "strategy_candidate_notes" in result
