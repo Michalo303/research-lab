@@ -50,6 +50,9 @@ from research_lab.execution.robustness_decision_gate_v1 import (
 from research_lab.execution.swing_trend_filtered_pullback_strategy_contract_v1 import (
     build_swing_trend_filtered_pullback_strategy_contract,
 )
+from research_lab.execution.experiment_manifest_contract_v1 import (
+    build_experiment_manifest_contract,
+)
 from research_lab.execution.strategy_execution_capabilities_v1 import (
     get_strategy_execution_capability,
     supported_strategy_execution_builders,
@@ -76,6 +79,7 @@ __all__ = [
     "evaluate_parameter_stability",
     "build_robustness_decision_gate",
     "build_swing_trend_filtered_pullback_strategy_contract",
+    "build_experiment_manifest_contract",
     "get_strategy_execution_capability",
     "supported_strategy_execution_builders",
 ]
