@@ -31,6 +31,7 @@ def build_robustness_decision_gate(request: dict[str, object]) -> dict[str, obje
     parameter_status = _parameter_findings(validated["parameter_stability_results"])
     blocking_reasons.extend(parameter_status["blocking_reasons"])
     weak_parameters.extend(parameter_status["weak_parameters"])
+    blocking_reasons.extend(validated["robustness_review_result"]["blocking_reasons"])
 
     fold_failures = _fold_failures(validated["walk_forward_fold_evidence"])
     if fold_failures:
@@ -93,6 +94,7 @@ def build_robustness_decision_gate(request: dict[str, object]) -> dict[str, obje
     )
 
     decision_status = _decision_status(
+        robustness_status=validated["robustness_review_result"]["robustness_status"],
         blocking_reasons=blocking_reasons,
         evidence_statuses=evidence_statuses,
         complete_accounting=validated["trial_count_metadata"]["complete_accounting"],
@@ -600,6 +602,7 @@ def _select_variant_id(*, accepted_variants: list[dict[str, Any]], baseline_vari
 
 def _decision_status(
     *,
+    robustness_status: str,
     blocking_reasons: list[str],
     evidence_statuses: list[dict[str, Any] | None],
     complete_accounting: bool,
@@ -609,6 +612,10 @@ def _decision_status(
 ) -> str:
     if not accepted_variants:
         return STATUS_REJECT_RISK
+    if robustness_status == STATUS_REJECT_OVERFIT:
+        return STATUS_REJECT_OVERFIT
+    if robustness_status == STATUS_REVISE:
+        return STATUS_REVISE
     if not complete_accounting:
         return STATUS_REJECT_OVERFIT
     actions = [item["action"] for item in evidence_statuses if item is not None]

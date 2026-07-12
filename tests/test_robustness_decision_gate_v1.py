@@ -233,6 +233,17 @@ def test_rejects_risk_when_drawdown_stress_fails():
     assert "drawdown_stress_failed" in result["blocking_reasons"]
 
 
+def test_honors_upstream_robustness_review_blocking_status():
+    request = _request()
+    request["robustness_review_result"]["robustness_status"] = "REVISE"
+    request["robustness_review_result"]["blocking_reasons"] = ["walk_forward_evidence_below_policy"]
+
+    result = _run(request)
+
+    assert result["decision_status"] == "REVISE"
+    assert "walk_forward_evidence_below_policy" in result["blocking_reasons"]
+
+
 def test_missing_evidence_is_distinct_from_failed_evidence():
     request = _request()
     request["pbo_cscv_result"]["available"] = False
