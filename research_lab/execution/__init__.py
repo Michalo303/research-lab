@@ -95,6 +95,9 @@ from research_lab.execution.macro_series_contract_v1 import (
 from research_lab.execution.fred_alfred_readonly_adapter_v1 import (
     build_fred_alfred_readonly_adapter,
 )
+from research_lab.execution.ecb_sdmx_readonly_adapter_v1 import (
+    build_ecb_sdmx_readonly_adapter,
+)
 from research_lab.execution.strategy_execution_capabilities_v1 import (
     get_strategy_execution_capability,
     supported_strategy_execution_builders,
@@ -136,6 +139,7 @@ __all__ = [
     "prepare_review_only_orchestrator_bundle",
     "build_macro_series_contract",
     "build_fred_alfred_readonly_adapter",
+    "build_ecb_sdmx_readonly_adapter",
     "get_strategy_execution_capability",
     "supported_strategy_execution_builders",
 ]
