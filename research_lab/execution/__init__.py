@@ -113,6 +113,9 @@ from research_lab.execution.macro_feature_set_contract_v1 import (
 from research_lab.execution.macro_regime_filter_candidate_v1 import (
     build_macro_regime_filter_candidate,
 )
+from research_lab.execution.macro_strategy_filter_evaluator_v1 import (
+    build_macro_strategy_filter_evaluator,
+)
 from research_lab.execution.strategy_execution_capabilities_v1 import (
     get_strategy_execution_capability,
     supported_strategy_execution_builders,
@@ -160,6 +163,7 @@ __all__ = [
     "build_macro_market_asof_alignment_contract",
     "build_macro_feature_set_contract",
     "build_macro_regime_filter_candidate",
+    "build_macro_strategy_filter_evaluator",
     "get_strategy_execution_capability",
     "supported_strategy_execution_builders",
 ]
