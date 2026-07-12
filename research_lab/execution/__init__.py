@@ -77,6 +77,9 @@ from research_lab.execution.isolated_orchestrator_runner_v1 import (
 from research_lab.execution.orchestrator_run_verifier_replay_v1 import (
     verify_orchestrator_run_directory,
 )
+from research_lab.execution.local_ohlcv_file_input_adapter_v1 import (
+    build_local_ohlcv_file_input_adapter,
+)
 from research_lab.execution.strategy_execution_capabilities_v1 import (
     get_strategy_execution_capability,
     supported_strategy_execution_builders,
@@ -112,6 +115,7 @@ __all__ = [
     "build_orchestrator_run_bundle_contract",
     "run_isolated_orchestrator_runner",
     "verify_orchestrator_run_directory",
+    "build_local_ohlcv_file_input_adapter",
     "get_strategy_execution_capability",
     "supported_strategy_execution_builders",
 ]
