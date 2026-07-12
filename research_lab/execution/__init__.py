@@ -71,6 +71,9 @@ from research_lab.execution.e2e_research_orchestrator_acceptance_v1 import (
 from research_lab.execution.orchestrator_run_bundle_contract_v1 import (
     build_orchestrator_run_bundle_contract,
 )
+from research_lab.execution.isolated_orchestrator_runner_v1 import (
+    run_isolated_orchestrator_runner,
+)
 from research_lab.execution.strategy_execution_capabilities_v1 import (
     get_strategy_execution_capability,
     supported_strategy_execution_builders,
@@ -104,6 +107,7 @@ __all__ = [
     "build_human_approval_gate",
     "run_e2e_research_orchestrator_acceptance",
     "build_orchestrator_run_bundle_contract",
+    "run_isolated_orchestrator_runner",
     "get_strategy_execution_capability",
     "supported_strategy_execution_builders",
 ]
