@@ -218,6 +218,10 @@ def _protected_output_roots(repo_root: Path) -> list[Path]:
     return [_normalize_path(root) for root in roots]
 
 
+def _permitted_output_roots(repo_root: Path) -> list[Path]:
+    return [_normalize_path(Path("/opt/trading/private/research_orchestrator_runs"))]
+
+
 def _resolved_destination_path(path: Path) -> Path:
     resolved_parent = _resolved_existing_parent(path)
     if path.exists():
@@ -242,6 +246,12 @@ def _normalize_path(path: Path) -> Path:
 
 
 def _is_under_protected_root(path: Path, *, repo_root: Path) -> bool:
+    for permitted_root in _permitted_output_roots(repo_root):
+        try:
+            path.relative_to(permitted_root)
+            return False
+        except ValueError:
+            continue
     for protected_root in _protected_output_roots(repo_root):
         try:
             path.relative_to(protected_root)
