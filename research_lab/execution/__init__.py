@@ -133,6 +133,9 @@ from research_lab.execution.strategy_execution_capabilities_v1 import (
 from research_lab.execution.multi_strategy_signal_aggregation_contract_v1 import (
     build_multi_strategy_signal_aggregation_contract,
 )
+from research_lab.execution.portfolio_capital_allocation_contract_v1 import (
+    build_portfolio_capital_allocation_contract,
+)
 
 __all__ = [
     "build_circuit_breaker_transition",
@@ -184,4 +187,5 @@ __all__ = [
     "get_strategy_execution_capability",
     "supported_strategy_execution_builders",
     "build_multi_strategy_signal_aggregation_contract",
+    "build_portfolio_capital_allocation_contract",
 ]
