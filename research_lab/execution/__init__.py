@@ -119,6 +119,13 @@ from research_lab.execution.macro_strategy_filter_evaluator_v1 import (
 from research_lab.execution.e2e_macro_aware_research_acceptance_v1 import (
     run_e2e_macro_aware_research_acceptance,
 )
+from research_lab.execution.macro_aware_pilot_runner_v1 import (
+    run_macro_aware_pilot,
+)
+from research_lab.execution.macro_aware_pilot_verifier_replay_v1 import (
+    replay_macro_aware_pilot,
+    verify_macro_aware_pilot_run,
+)
 from research_lab.execution.strategy_execution_capabilities_v1 import (
     get_strategy_execution_capability,
     supported_strategy_execution_builders,
@@ -168,6 +175,9 @@ __all__ = [
     "build_macro_regime_filter_candidate",
     "build_macro_strategy_filter_evaluator",
     "run_e2e_macro_aware_research_acceptance",
+    "run_macro_aware_pilot",
+    "verify_macro_aware_pilot_run",
+    "replay_macro_aware_pilot",
     "get_strategy_execution_capability",
     "supported_strategy_execution_builders",
 ]
