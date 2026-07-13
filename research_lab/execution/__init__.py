@@ -145,6 +145,10 @@ from research_lab.execution.portfolio_position_sizing_contract_v1 import (
 from research_lab.execution.portfolio_backtest_acceptance_v1 import (
     run_portfolio_backtest_acceptance,
 )
+from research_lab.execution.e2e_portfolio_research_orchestrator_acceptance_v1 import (
+    replay_e2e_portfolio_research_orchestrator_acceptance,
+    run_e2e_portfolio_research_orchestrator_acceptance,
+)
 
 __all__ = [
     "build_circuit_breaker_transition",
@@ -200,4 +204,6 @@ __all__ = [
     "build_portfolio_risk_overlay",
     "build_portfolio_position_sizing_contract",
     "run_portfolio_backtest_acceptance",
+    "run_e2e_portfolio_research_orchestrator_acceptance",
+    "replay_e2e_portfolio_research_orchestrator_acceptance",
 ]
