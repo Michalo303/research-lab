@@ -131,6 +131,29 @@ def test_output_can_feed_existing_bridge_path_without_rebalance_for_stop_only_re
     }
 
 
+def test_short_synthetic_series_uses_bounded_indicator_lookback_for_review_only_e2e_composition():
+    request = _request()
+    request["synthetic_bars"] = [
+        {"timestamp": "2026-01-01T21:00:00Z", "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0},
+        {"timestamp": "2026-01-02T21:00:00Z", "open": 100.0, "high": 103.0, "low": 99.0, "close": 102.0},
+        {"timestamp": "2026-01-03T21:00:00Z", "open": 102.0, "high": 105.0, "low": 101.0, "close": 104.0},
+        {"timestamp": "2026-01-06T21:00:00Z", "open": 104.0, "high": 105.0, "low": 102.0, "close": 103.0},
+        {"timestamp": "2026-01-07T21:00:00Z", "open": 103.0, "high": 104.0, "low": 100.0, "close": 101.0},
+        {"timestamp": "2026-01-08T21:00:00Z", "open": 101.0, "high": 102.0, "low": 98.0, "close": 99.0},
+        {"timestamp": "2026-01-09T21:00:00Z", "open": 99.0, "high": 101.0, "low": 98.0, "close": 100.0},
+        {"timestamp": "2026-01-10T21:00:00Z", "open": 100.0, "high": 102.0, "low": 99.0, "close": 101.0},
+    ]
+    request["strategy_parameters"]["fast_sma"] = 2
+    request["strategy_parameters"]["slow_sma"] = 3
+    request["strategy_parameters"]["max_exposure"] = 1.0
+
+    result = _run(request)
+
+    assert result["strategy_signal_plan"]
+    assert result["strategy_signal_plan"][0]["signal_type"] == "entry"
+    assert result["production_runtime_supported"] is False
+
+
 def test_missing_protective_exit_fails_before_executor_boundary():
     result = _run(_request())
     request = _bridge_request(result)
