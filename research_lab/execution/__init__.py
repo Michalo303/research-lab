@@ -152,6 +152,9 @@ from research_lab.execution.e2e_portfolio_research_orchestrator_acceptance_v1 im
 from research_lab.execution.point_in_time_universe_contract_v1 import (
     build_point_in_time_universe_contract,
 )
+from research_lab.execution.multi_asset_immutable_ohlcv_snapshot_contract_v1 import (
+    build_multi_asset_immutable_ohlcv_snapshot_contract,
+)
 
 __all__ = [
     "build_circuit_breaker_transition",
@@ -210,4 +213,5 @@ __all__ = [
     "run_e2e_portfolio_research_orchestrator_acceptance",
     "replay_e2e_portfolio_research_orchestrator_acceptance",
     "build_point_in_time_universe_contract",
+    "build_multi_asset_immutable_ohlcv_snapshot_contract",
 ]
