@@ -142,6 +142,9 @@ from research_lab.execution.portfolio_risk_overlay_v1 import (
 from research_lab.execution.portfolio_position_sizing_contract_v1 import (
     build_portfolio_position_sizing_contract,
 )
+from research_lab.execution.portfolio_backtest_acceptance_v1 import (
+    run_portfolio_backtest_acceptance,
+)
 
 __all__ = [
     "build_circuit_breaker_transition",
@@ -196,4 +199,5 @@ __all__ = [
     "build_portfolio_capital_allocation_contract",
     "build_portfolio_risk_overlay",
     "build_portfolio_position_sizing_contract",
+    "run_portfolio_backtest_acceptance",
 ]
