@@ -104,7 +104,6 @@ def _build_signal_plan(
                     "signal_id": signal_id,
                     "signal_type": "entry",
                     "direction": "long",
-                    "target_direction": "long",
                     "protective_exit": {
                         "type": "fixed_stop",
                         "stop_price": stop_price,
@@ -143,7 +142,6 @@ def _build_signal_plan(
                     "signal_id": signal_id,
                     "signal_type": "exit",
                     "direction": "long",
-                    "target_direction": "flat",
                 }
             )
             signal_contracts.append(

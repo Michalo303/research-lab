@@ -157,19 +157,7 @@ def _validate_signal_plan(
         payload = _required_mapping(item, name="signal")
         _reject_unknown_fields(
             payload,
-            allowed={
-                "timestamp",
-                "signal_id",
-                "signal_type",
-                "direction",
-                "target_direction",
-                "target_exposure",
-                "strategy_identity",
-                "baseline_variant_id",
-                "symbol",
-                "market_data_identity",
-                "protective_exit",
-            },
+            allowed={"timestamp", "signal_id", "signal_type", "direction", "protective_exit"},
             name="signal",
         )
         timestamp = _required_text(payload, "timestamp")

@@ -208,6 +208,7 @@ def _request() -> dict[str, object]:
         "baseline_signal_sequence": _baseline_signal_sequence(),
         "market_data_identity": "spy-synth-daily-v1",
         "market_data_sha256": _canonical_sha256(bars),
+        "market_source_artifact_sha256": "4" * 64,
         "market_bars": bars,
         "macro_snapshot_sha256": "1" * 64,
         "alignment_output_sha256": "2" * 64,
@@ -385,6 +386,35 @@ def test_rejects_ordering_identity_and_hash_mismatches(mutator, match):
 
     with pytest.raises(ValueError, match=match):
         _run(request)
+
+
+def test_market_bar_hash_must_bind_exact_evaluated_bars():
+    request = _request()
+    assert _run(request)["input_sha256"]
+
+    wrong_hash = _request()
+    wrong_hash["market_data_sha256"] = "5" * 64
+    with pytest.raises(ValueError, match="market_data_sha256 must match market bars"):
+        _run(wrong_hash)
+
+    changed_bar = _request()
+    changed_bar["market_bars"][0]["close"] = 999.0
+    with pytest.raises(ValueError, match="market_data_sha256 must match market bars"):
+        _run(changed_bar)
+
+    reordered = _request()
+    reordered["market_bars"][0], reordered["market_bars"][1] = reordered["market_bars"][1], reordered["market_bars"][0]
+    with pytest.raises(ValueError, match="strictly increasing"):
+        _run(reordered)
+
+
+def test_adapter_artifact_hash_is_separate_from_market_bar_hash():
+    request = _request()
+    request["market_source_artifact_sha256"] = "9" * 64
+    result = _run(request)
+
+    assert result["input_sha256"]
+    assert result["market_data_identity"] == "spy-synth-daily-v1"
 
 
 def test_rejects_future_candidate_runtime_and_auto_application():

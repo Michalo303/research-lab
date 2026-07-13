@@ -494,6 +494,7 @@ def _validate_request(request: dict[str, object]) -> dict[str, Any]:
             "baseline_signal_sequence",
             "market_data_identity",
             "market_data_sha256",
+            "market_source_artifact_sha256",
             "market_bars",
             "macro_snapshot_sha256",
             "alignment_output_sha256",
@@ -519,10 +520,9 @@ def _validate_request(request: dict[str, object]) -> dict[str, Any]:
     market_bars = _validate_market_bars(payload.get("market_bars"))
     market_data_identity = _required_text(payload, "market_data_identity")
     market_data_sha256 = _required_sha256(payload, "market_data_sha256")
-    market_bars_sha256 = _canonical_sha256(market_bars)
-    if market_data_sha256 != market_bars_sha256:
-        # Allow upstream adapter lineage hashes in addition to raw bar hashes.
-        market_data_sha256 = market_data_sha256
+    if market_data_sha256 != _canonical_sha256(market_bars):
+        raise ValueError("market_data_sha256 must match market bars.")
+    market_source_artifact_sha256 = _optional_sha256(payload, "market_source_artifact_sha256")
     baseline_signal_sequence = _validate_signal_sequence(
         payload.get("baseline_signal_sequence"),
         strategy_identity=strategy_identity,
@@ -562,6 +562,7 @@ def _validate_request(request: dict[str, object]) -> dict[str, Any]:
         "baseline_signal_sequence": baseline_signal_sequence,
         "market_data_identity": market_data_identity,
         "market_data_sha256": market_data_sha256,
+        "market_source_artifact_sha256": market_source_artifact_sha256,
         "macro_lineage": regime_candidate["macro_lineage"],
         "macro_regime_candidate_output_sha256": regime_candidate["output_payload_sha256"],
         "filter_policy": filter_policy,
@@ -582,6 +583,7 @@ def _validate_request(request: dict[str, object]) -> dict[str, Any]:
         "baseline_signal_sequence": baseline_signal_sequence,
         "baseline_signal_sequence_original": baseline_signal_sequence_original,
         "market_data_identity": market_data_identity,
+        "market_source_artifact_sha256": market_source_artifact_sha256,
         "market_bars": market_bars,
         "macro_lineage": regime_candidate["macro_lineage"],
         "regime_observations": regime_candidate["regime_observations"],
@@ -667,27 +669,18 @@ def _validate_signal_sequence(
         signal_type = _required_text(signal, "signal_type")
         if signal_type not in {"entry", "exit", "rebalance"}:
             raise ValueError("unsupported signal_type.")
-        target_direction = str(signal.get("target_direction") or signal.get("direction") or "").strip()
-        if not target_direction:
-            raise ValueError("baseline_signal.target_direction must be non-empty text.")
+        target_direction = _required_text(signal, "target_direction")
         if not strategy_identity["allows_short"] and target_direction not in {"long", "flat"}:
             raise ValueError("shorting is not allowed by strategy identity.")
-        signal_strategy_identity = str(signal.get("strategy_identity") or strategy_identity["strategy_id"]).strip()
-        if signal_strategy_identity != strategy_identity["strategy_id"]:
+        if _required_text(signal, "strategy_identity") != strategy_identity["strategy_id"]:
             raise ValueError("baseline signal strategy_identity must match strategy_identity.strategy_id.")
-        signal_baseline_variant_id = str(signal.get("baseline_variant_id") or baseline_variant_identity).strip()
-        if signal_baseline_variant_id != baseline_variant_identity:
+        if _required_text(signal, "baseline_variant_id") != baseline_variant_identity:
             raise ValueError("baseline signal baseline_variant_id must match baseline_variant_identity.")
-        signal_symbol = str(signal.get("symbol") or strategy_identity["symbol"]).strip()
-        if signal_symbol != strategy_identity["symbol"]:
+        if _required_text(signal, "symbol") != strategy_identity["symbol"]:
             raise ValueError("baseline signal symbol must match strategy identity symbol.")
-        signal_market_data_identity = str(signal.get("market_data_identity") or market_data_identity).strip()
-        if signal_market_data_identity != market_data_identity:
+        if _required_text(signal, "market_data_identity") != market_data_identity:
             raise ValueError("baseline signal market_data_identity must match request market_data_identity.")
-        if "target_exposure" in signal:
-            target_exposure = _required_non_negative_number(signal, "target_exposure")
-        else:
-            target_exposure = 0.0 if signal_type == "exit" else 1.0
+        target_exposure = _required_non_negative_number(signal, "target_exposure")
         if target_exposure > 1.0:
             raise ValueError("target_exposure must be less than or equal to 1.")
         protective_exit = signal.get("protective_exit")
@@ -988,6 +981,13 @@ def _required_sha256(payload: dict[str, Any], field: str) -> str:
     if len(value) != 64 or any(ch not in "0123456789abcdef" for ch in value):
         raise ValueError(f"{field} must be a lowercase sha256 hex digest.")
     return value
+
+
+def _optional_sha256(payload: dict[str, Any], field: str) -> str | None:
+    value = payload.get(field)
+    if value is None:
+        return None
+    return _required_sha256(payload, field)
 
 
 def _required_bool(payload: dict[str, Any], field: str) -> bool:

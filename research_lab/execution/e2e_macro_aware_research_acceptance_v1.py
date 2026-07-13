@@ -48,12 +48,27 @@ def run_e2e_macro_aware_research_acceptance(request: dict[str, object]) -> dict[
     validated = _validate_request(request)
     market_adapter_result = build_isolated_real_data_adapter_contract(validated["market_data_request"])
     series_results = [build_macro_series_contract(item) for item in validated["macro_series_requests"]]
-    macro_series_results = [_macro_series_adapter_result(item) for item in series_results]
+    snapshot_series_results = [_macro_series_snapshot_adapter_result(item) for item in series_results]
+    macro_series_results = [_macro_series_alignment_result(item) for item in series_results]
+    market_bars_sha256 = _canonical_sha256(market_adapter_result["synthetic_bars"])
+
+    _validate_symbol_alignment(
+        market_symbol=str(market_adapter_result["symbol"]),
+        expected_market_symbol=validated["expected_identities"]["market_symbol"],
+        strategy_request_symbol=_required_text(validated["strategy_request"], "symbol"),
+        evaluator_strategy_symbol=_required_text(
+            _required_mapping(
+                validated["macro_filter_evaluation_request"].get("strategy_identity"),
+                name="macro_filter_evaluation_request.strategy_identity",
+            ),
+            "symbol",
+        ),
+    )
 
     macro_snapshot_result = build_immutable_macro_snapshot_contract(
         {
             **validated["macro_snapshot_request"],
-            "series_adapter_results": macro_series_results,
+            "series_adapter_results": snapshot_series_results,
             "provenance": validated["provenance"],
         }
     )
@@ -88,10 +103,19 @@ def run_e2e_macro_aware_research_acceptance(request: dict[str, object]) -> dict[
     strategy_contract_result = build_swing_trend_filtered_pullback_strategy_contract(
         {
             **validated["strategy_request"],
-            "symbol": market_adapter_result["symbol"],
             "synthetic_bars": market_adapter_result["synthetic_bars"],
             "provenance": validated["provenance"],
         }
+    )
+    evaluator_signal_sequence = _build_evaluator_signal_sequence(
+        strategy_contract_result=strategy_contract_result,
+        strategy_identity=_required_mapping(
+            validated["macro_filter_evaluation_request"].get("strategy_identity"),
+            name="macro_filter_evaluation_request.strategy_identity",
+        ),
+        baseline_variant_identity=_required_text(validated["macro_filter_evaluation_request"], "baseline_variant_identity"),
+        market_data_identity=_required_text(validated["macro_filter_evaluation_request"], "market_data_identity"),
+        market_symbol=str(market_adapter_result["symbol"]),
     )
     bridge_result = build_strategy_execution_bridge_request(
         {
@@ -106,9 +130,10 @@ def run_e2e_macro_aware_research_acceptance(request: dict[str, object]) -> dict[
     evaluator_result = build_macro_strategy_filter_evaluator(
         {
             **validated["macro_filter_evaluation_request"],
-            "baseline_signal_sequence": strategy_contract_result["strategy_signal_plan"],
+            "baseline_signal_sequence": evaluator_signal_sequence,
             "market_bars": market_adapter_result["synthetic_bars"],
-            "market_data_sha256": market_adapter_result["output_payload_sha256"],
+            "market_data_sha256": market_bars_sha256,
+            "market_source_artifact_sha256": market_adapter_result["output_payload_sha256"],
             "macro_snapshot_sha256": macro_snapshot_result["output_payload_sha256"],
             "alignment_output_sha256": alignment_result["output_payload_sha256"],
             "feature_set_output_sha256": feature_set_result["output_payload_sha256"],
@@ -139,7 +164,7 @@ def run_e2e_macro_aware_research_acceptance(request: dict[str, object]) -> dict[
     )
     _validate_expected_hashes(
         validated["expected_hashes"],
-        market_data_sha256=market_adapter_result["output_payload_sha256"],
+        market_data_sha256=market_bars_sha256,
         macro_snapshot_sha256=macro_snapshot_result["output_payload_sha256"],
         alignment_output_sha256=alignment_result["output_payload_sha256"],
         feature_set_output_sha256=feature_set_result["output_payload_sha256"],
@@ -164,21 +189,27 @@ def run_e2e_macro_aware_research_acceptance(request: dict[str, object]) -> dict[
         regime_candidate_result=regime_candidate_result,
         execution_policy=validated["macro_filter_evaluation_request"]["execution_policy"],
     )
+    validation_errors = _validation_errors(
+        review_artifact=review_artifact,
+        no_look_ahead_proof=no_look_ahead_proof,
+    )
 
     evaluator_classification = str(evaluator_result["classification"])
-    status = STATUS_ACCEPTED if evaluator_classification in {
-        "CANDIDATE_IMPROVES_RISK",
-        "CANDIDATE_IMPROVES_RETURN",
-        "CANDIDATE_MIXED",
-    } else STATUS_REVIEW_REQUIRED
-    if review_artifact["final_review_status"] == "FAILED_VALIDATION":
+    if validation_errors:
         status = STATUS_FAILED
+    else:
+        status = STATUS_ACCEPTED if evaluator_classification in {
+            "CANDIDATE_IMPROVES_RISK",
+            "CANDIDATE_IMPROVES_RETURN",
+            "CANDIDATE_MIXED",
+        } else STATUS_REVIEW_REQUIRED
 
     lineage = {
         "acceptance_id": validated["acceptance_id"],
         "market_data_identity": validated["expected_identities"]["market_data_identity"],
         "market_symbol": market_adapter_result["symbol"],
-        "market_data_sha256": market_adapter_result["output_payload_sha256"],
+        "market_data_sha256": market_bars_sha256,
+        "market_source_artifact_sha256": market_adapter_result["output_payload_sha256"],
         "macro_provider_identities": [item["provider"] for item in macro_series_results],
         "macro_series_identities": [f"{item['provider']}:{item['series_id']}" for item in macro_series_results],
         "macro_snapshot_sha256": macro_snapshot_result["output_payload_sha256"],
@@ -220,6 +251,8 @@ def run_e2e_macro_aware_research_acceptance(request: dict[str, object]) -> dict[
         "baseline_preservation_proof": baseline_preservation_proof,
         "protective_exit_preservation_proof": protective_exit_preservation_proof,
         "no_look_ahead_proof": no_look_ahead_proof,
+        "validation_errors": validation_errors,
+        "failure_reason": "; ".join(validation_errors) if validation_errors else None,
         "safety_flags": safety_flags,
         "provenance": validated["provenance"],
     }
@@ -294,11 +327,9 @@ def _validate_request(request: dict[str, object]) -> dict[str, Any]:
     }
 
 
-def _macro_series_adapter_result(series_result: dict[str, Any]) -> dict[str, Any]:
+def _macro_series_snapshot_adapter_result(series_result: dict[str, Any]) -> dict[str, Any]:
     provider = str(series_result["provider"])
     series_id = str(series_result["series_id"])
-    classifications = {item["point_in_time"]["classification"] for item in series_result["observations"]}
-    point_in_time_classification = "VINTAGE_AWARE" if "vintage_date_only" in classifications else "RELEASE_AWARE"
     return {
         "version": "fred_alfred_readonly_adapter_result_v1",
         "adapter_version": "fred_alfred_readonly_adapter_v1",
@@ -316,8 +347,86 @@ def _macro_series_adapter_result(series_result: dict[str, Any]) -> dict[str, Any
         "provenance": {"source": "macro_aware_acceptance"},
         "input_sha256": series_result["input_sha256"],
         "output_payload_sha256": series_result["output_payload_sha256"],
-        "point_in_time_classification": point_in_time_classification,
     }
+
+
+def _macro_series_alignment_result(series_result: dict[str, Any]) -> dict[str, Any]:
+    result = _macro_series_snapshot_adapter_result(series_result)
+    classifications = {item["point_in_time"]["classification"] for item in series_result["observations"]}
+    result["point_in_time_classification"] = "VINTAGE_AWARE" if "vintage_date_only" in classifications else "RELEASE_AWARE"
+    return result
+
+
+def _validate_symbol_alignment(
+    *,
+    market_symbol: str,
+    expected_market_symbol: str,
+    strategy_request_symbol: str,
+    evaluator_strategy_symbol: str,
+) -> None:
+    if market_symbol != expected_market_symbol:
+        raise ValueError("market symbol identity mismatch.")
+    if strategy_request_symbol != market_symbol:
+        raise ValueError("strategy symbol mismatch.")
+    if evaluator_strategy_symbol != market_symbol:
+        raise ValueError("strategy symbol mismatch.")
+
+
+def _build_evaluator_signal_sequence(
+    *,
+    strategy_contract_result: dict[str, Any],
+    strategy_identity: dict[str, Any],
+    baseline_variant_identity: str,
+    market_data_identity: str,
+    market_symbol: str,
+) -> list[dict[str, Any]]:
+    if str(strategy_contract_result.get("symbol")) != market_symbol:
+        raise ValueError("strategy symbol mismatch.")
+    contracts_by_id = {
+        str(item["signal_id"]): _required_mapping(item, name="signal_contract")
+        for item in _required_list(strategy_contract_result.get("signal_contracts"), name="signal_contracts")
+    }
+    normalized: list[dict[str, Any]] = []
+    for raw in _required_list(strategy_contract_result.get("strategy_signal_plan"), name="strategy_signal_plan"):
+        signal = _required_mapping(raw, name="strategy_signal")
+        signal_id = _required_text(signal, "signal_id")
+        contract = _required_mapping(contracts_by_id.get(signal_id), name=f"signal_contracts[{signal_id}]")
+        signal_type = _required_text(signal, "signal_type")
+        if "symbol" in signal and _required_text(signal, "symbol") != market_symbol:
+            raise ValueError("strategy symbol mismatch.")
+        target_direction = "flat" if signal_type == "exit" else "long"
+        if "target_direction" in signal and _required_text(signal, "target_direction") != target_direction:
+            raise ValueError("strategy signal target_direction mismatch.")
+        normalized.append(
+            {
+                "timestamp": _required_text(signal, "timestamp"),
+                "signal_id": signal_id,
+                "signal_type": signal_type,
+                "target_direction": target_direction,
+                "target_exposure": 0.0 if signal_type == "exit" else float(contract["target_exposure"]),
+                "strategy_identity": _required_text(strategy_identity, "strategy_id"),
+                "baseline_variant_id": baseline_variant_identity,
+                "symbol": market_symbol,
+                "market_data_identity": market_data_identity,
+                "protective_exit": contract.get("protective_exit"),
+            }
+        )
+    return normalized
+
+
+def _validation_errors(
+    *,
+    review_artifact: dict[str, Any],
+    no_look_ahead_proof: dict[str, bool],
+) -> list[str]:
+    errors: list[str] = []
+    if review_artifact["final_review_status"] == "FAILED_VALIDATION":
+        reason = review_artifact.get("failure_reason")
+        errors.append(str(reason) if reason else "review_artifact.failed_validation")
+    for key, value in no_look_ahead_proof.items():
+        if value is not True:
+            errors.append(f"no_look_ahead_proof.{key}")
+    return errors
 
 
 def _validate_regime_candidate(result: dict[str, Any]) -> None:

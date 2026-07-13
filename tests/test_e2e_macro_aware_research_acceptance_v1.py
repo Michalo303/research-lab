@@ -41,6 +41,10 @@ from research_lab.execution.swing_trend_filtered_pullback_strategy_contract_v1 i
 MODULE_PATH = Path("research_lab/execution/e2e_macro_aware_research_acceptance_v1.py")
 
 
+def _canonical_sha256(payload: object) -> str:
+    return build_macro_strategy_filter_evaluator.__globals__["_canonical_sha256"](payload)
+
+
 def _market_data_request() -> dict[str, object]:
     rows = [
         ("2026-01-01T21:00:00Z", 100.0, 100.0),
@@ -232,20 +236,21 @@ def _macro_regime_request() -> dict[str, object]:
         "minimum_supporting_features": 1,
         "minimum_available_features": 1,
         "transition_policy": {"count_label_changes": True},
-        "confidence_policy": {"max_feature_age_days": 2},
+        "confidence_policy": {"max_feature_age_days": 7},
     }
 
 
 def _strategy_request() -> dict[str, object]:
     return {
         "version": "swing_trend_filtered_pullback_strategy_contract_request_v1",
+        "symbol": "SYNTH_SPY",
         "strategy_parameters": {
             "fast_sma": 2,
             "slow_sma": 3,
             "rsi_entry": 80.0,
             "rsi_exit": 85.0,
             "atr_stop": 2.0,
-            "max_exposure": 0.5,
+            "max_exposure": 1.0,
         },
     }
 
@@ -336,11 +341,9 @@ def _request() -> dict[str, object]:
     return request
 
 
-def _macro_series_adapter_result(series_result: dict[str, object]) -> dict[str, object]:
+def _macro_series_snapshot_adapter_result(series_result: dict[str, object]) -> dict[str, object]:
     provider = str(series_result["provider"])
     series_id = str(series_result["series_id"])
-    classifications = {item["point_in_time"]["classification"] for item in series_result["observations"]}
-    pit_classification = "VINTAGE_AWARE" if "vintage_date_only" in classifications else "RELEASE_AWARE"
     return {
         "version": "fred_alfred_readonly_adapter_result_v1",
         "adapter_version": "fred_alfred_readonly_adapter_v1",
@@ -358,18 +361,25 @@ def _macro_series_adapter_result(series_result: dict[str, object]) -> dict[str, 
         "provenance": {"source": "unit_test"},
         "input_sha256": series_result["input_sha256"],
         "output_payload_sha256": series_result["output_payload_sha256"],
-        "point_in_time_classification": pit_classification,
     }
+
+
+def _macro_series_alignment_result(series_result: dict[str, object]) -> dict[str, object]:
+    result = _macro_series_snapshot_adapter_result(series_result)
+    classifications = {item["point_in_time"]["classification"] for item in series_result["observations"]}
+    result["point_in_time_classification"] = "VINTAGE_AWARE" if "vintage_date_only" in classifications else "RELEASE_AWARE"
+    return result
 
 
 def _expected_hashes(request: dict[str, object]) -> dict[str, str]:
     market_adapter = build_isolated_real_data_adapter_contract(copy.deepcopy(request["market_data_request"]))
     series_results = [build_macro_series_contract(copy.deepcopy(item)) for item in request["macro_series_requests"]]
-    adapter_results = [_macro_series_adapter_result(item) for item in series_results]
+    snapshot_adapter_results = [_macro_series_snapshot_adapter_result(item) for item in series_results]
+    alignment_adapter_results = [_macro_series_alignment_result(item) for item in series_results]
     snapshot_result = build_immutable_macro_snapshot_contract(
         {
             **copy.deepcopy(request["macro_snapshot_request"]),
-            "series_adapter_results": adapter_results,
+            "series_adapter_results": snapshot_adapter_results,
             "provenance": copy.deepcopy(request["provenance"]),
         }
     )
@@ -377,7 +387,7 @@ def _expected_hashes(request: dict[str, object]) -> dict[str, str]:
         {
             **copy.deepcopy(request["macro_alignment_request"]),
             "market_bars": copy.deepcopy(request["market_data_request"]["input_bars"]),
-            "macro_series_results": adapter_results,
+            "macro_series_results": alignment_adapter_results,
             "provenance": copy.deepcopy(request["provenance"]),
         }
     )
@@ -406,9 +416,32 @@ def _expected_hashes(request: dict[str, object]) -> dict[str, str]:
     evaluator_result = build_macro_strategy_filter_evaluator(
         {
             **copy.deepcopy(request["macro_filter_evaluation_request"]),
-            "baseline_signal_sequence": copy.deepcopy(strategy_result["strategy_signal_plan"]),
+            "baseline_signal_sequence": [
+                {
+                    "timestamp": item["timestamp"],
+                    "signal_id": item["signal_id"],
+                    "signal_type": item["signal_type"],
+                    "target_direction": "flat" if item["signal_type"] == "exit" else "long",
+                    "target_exposure": 0.0 if item["signal_type"] == "exit" else next(
+                        contract["target_exposure"]
+                        for contract in strategy_result["signal_contracts"]
+                        if contract["signal_id"] == item["signal_id"]
+                    ),
+                    "strategy_identity": request["macro_filter_evaluation_request"]["strategy_identity"]["strategy_id"],
+                    "baseline_variant_id": request["macro_filter_evaluation_request"]["baseline_variant_identity"],
+                    "symbol": request["macro_filter_evaluation_request"]["strategy_identity"]["symbol"],
+                    "market_data_identity": request["macro_filter_evaluation_request"]["market_data_identity"],
+                    "protective_exit": None if item["signal_type"] == "exit" else next(
+                        contract["protective_exit"]
+                        for contract in strategy_result["signal_contracts"]
+                        if contract["signal_id"] == item["signal_id"]
+                    ),
+                }
+                for item in copy.deepcopy(strategy_result["strategy_signal_plan"])
+            ],
             "market_bars": copy.deepcopy(market_adapter["synthetic_bars"]),
-            "market_data_sha256": market_adapter["output_payload_sha256"],
+            "market_data_sha256": _canonical_sha256(market_adapter["synthetic_bars"]),
+            "market_source_artifact_sha256": market_adapter["output_payload_sha256"],
             "macro_snapshot_sha256": snapshot_result["output_payload_sha256"],
             "alignment_output_sha256": alignment_result["output_payload_sha256"],
             "feature_set_output_sha256": feature_result["output_payload_sha256"],
@@ -418,7 +451,7 @@ def _expected_hashes(request: dict[str, object]) -> dict[str, str]:
         }
     )
     return {
-        "market_data_sha256": market_adapter["output_payload_sha256"],
+        "market_data_sha256": _canonical_sha256(market_adapter["synthetic_bars"]),
         "macro_snapshot_sha256": snapshot_result["output_payload_sha256"],
         "alignment_output_sha256": alignment_result["output_payload_sha256"],
         "feature_set_output_sha256": feature_result["output_payload_sha256"],
@@ -483,6 +516,69 @@ def test_hash_mismatch_and_identity_mismatch_fail_closed():
     bad_identity["expected_identities"]["strategy_id"] = "BROKEN"
     with pytest.raises(ValueError, match="strategy identity"):
         _run(bad_identity)
+
+
+def test_same_bar_fill_fails_closed_and_delayed_fill_boundary_accepts():
+    invalid = _request()
+    invalid["macro_filter_evaluation_request"]["execution_policy"]["allow_same_bar_fill"] = True
+    invalid["macro_filter_evaluation_request"]["execution_policy"]["decision_to_fill_delay_bars"] = 0
+    invalid["expected_hashes"] = _expected_hashes(invalid)
+
+    invalid_result = _run(invalid)
+
+    assert invalid_result["no_look_ahead_proof"]["no_future_market_fill_used"] is False
+    assert invalid_result["status"] == "FAILED_VALIDATION"
+    assert "no_look_ahead_proof.no_future_market_fill_used" in invalid_result["validation_errors"]
+    assert invalid_result["safety_flags"]["provider_calls_used"] == 0
+    assert invalid_result["safety_flags"]["broker_actions_used"] == 0
+    assert invalid_result["safety_flags"]["deployment_performed"] is False
+    assert invalid_result["safety_flags"]["promotion_performed"] is False
+
+    valid = _request()
+    valid["macro_filter_evaluation_request"]["execution_policy"]["allow_same_bar_fill"] = False
+    valid["macro_filter_evaluation_request"]["execution_policy"]["decision_to_fill_delay_bars"] = 1
+    valid["expected_hashes"] = _expected_hashes(valid)
+    valid_result = _run(valid)
+    assert valid_result["status"] == "ACCEPTED_REVIEW_ONLY"
+    assert valid_result["no_look_ahead_proof"]["no_future_market_fill_used"] is True
+
+
+def test_symbol_alignment_mismatches_fail_closed(monkeypatch):
+    strategy_symbol = _request()
+    strategy_symbol["strategy_request"]["symbol"] = "SYNTH_QQQ"
+    with pytest.raises(ValueError, match="strategy symbol"):
+        _run(strategy_symbol)
+
+    evaluator_symbol = _request()
+    evaluator_symbol["macro_filter_evaluation_request"]["strategy_identity"]["symbol"] = "SYNTH_QQQ"
+    with pytest.raises(ValueError, match="strategy symbol"):
+        _run(evaluator_symbol)
+
+    expected_symbol = _request()
+    expected_symbol["expected_identities"]["market_symbol"] = "SYNTH_QQQ"
+    with pytest.raises(ValueError, match="market symbol"):
+        _run(expected_symbol)
+
+    import research_lab.execution.e2e_macro_aware_research_acceptance_v1 as module
+
+    original_strategy = module.build_swing_trend_filtered_pullback_strategy_contract
+
+    def bad_strategy(*args, **kwargs):
+        result = original_strategy(*args, **kwargs)
+        result["symbol"] = "SYNTH_QQQ"
+        result["strategy_signal_plan"] = [
+            {**signal, "symbol": "SYNTH_QQQ"}
+            for signal in result["strategy_signal_plan"]
+        ]
+        return result
+
+    monkeypatch.setattr(module, "build_swing_trend_filtered_pullback_strategy_contract", bad_strategy)
+    with pytest.raises(ValueError, match="strategy symbol"):
+        _run(_request())
+
+    monkeypatch.setattr(module, "build_swing_trend_filtered_pullback_strategy_contract", original_strategy)
+    aligned = _run(_request())
+    assert aligned["status"] == "ACCEPTED_REVIEW_ONLY"
 
 
 def test_rejects_production_provider_and_automatic_application_child_results(monkeypatch):
