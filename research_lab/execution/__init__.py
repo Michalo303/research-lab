@@ -130,6 +130,9 @@ from research_lab.execution.strategy_execution_capabilities_v1 import (
     get_strategy_execution_capability,
     supported_strategy_execution_builders,
 )
+from research_lab.execution.multi_strategy_signal_aggregation_contract_v1 import (
+    build_multi_strategy_signal_aggregation_contract,
+)
 
 __all__ = [
     "build_circuit_breaker_transition",
@@ -180,4 +183,5 @@ __all__ = [
     "replay_macro_aware_pilot",
     "get_strategy_execution_capability",
     "supported_strategy_execution_builders",
+    "build_multi_strategy_signal_aggregation_contract",
 ]
