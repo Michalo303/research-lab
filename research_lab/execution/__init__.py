@@ -139,6 +139,9 @@ from research_lab.execution.portfolio_capital_allocation_contract_v1 import (
 from research_lab.execution.portfolio_risk_overlay_v1 import (
     build_portfolio_risk_overlay,
 )
+from research_lab.execution.portfolio_position_sizing_contract_v1 import (
+    build_portfolio_position_sizing_contract,
+)
 
 __all__ = [
     "build_circuit_breaker_transition",
@@ -192,4 +195,5 @@ __all__ = [
     "build_multi_strategy_signal_aggregation_contract",
     "build_portfolio_capital_allocation_contract",
     "build_portfolio_risk_overlay",
+    "build_portfolio_position_sizing_contract",
 ]
