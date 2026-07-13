@@ -54,12 +54,12 @@ def build_point_in_time_universe_contract(request: dict[str, object]) -> dict[st
                 "Unsafe research-only membership policy includes instruments that are not point-in-time safe."
             )
 
-        inclusion = _determine_inclusion(instrument, as_of_timestamp=validated["as_of_timestamp"])
-        if inclusion is None:
+        inclusion_reason = _determine_inclusion_reason(instrument, as_of_timestamp=validated["as_of_timestamp"])
+        if inclusion_reason is not None:
             excluded_instruments.append(
                 {
                     "instrument_id": instrument["instrument_id"],
-                    "reason": "instrument is inactive at as_of_timestamp",
+                    "reason": inclusion_reason,
                 }
             )
             continue
@@ -241,7 +241,7 @@ def _validate_instrument(value: Any) -> dict[str, Any]:
     }
 
 
-def _determine_inclusion(instrument: dict[str, Any], *, as_of_timestamp: str) -> dict[str, Any] | None:
+def _determine_inclusion_reason(instrument: dict[str, Any], *, as_of_timestamp: str) -> str | None:
     if as_of_timestamp < instrument["membership_from"]:
         raise ValueError("membership cannot start after as_of_timestamp.")
     if as_of_timestamp < instrument["active_from"]:
@@ -250,14 +250,10 @@ def _determine_inclusion(instrument: dict[str, Any], *, as_of_timestamp: str) ->
     active_to = instrument["active_to"]
     membership_to = instrument["membership_to"]
     if membership_to is not None and membership_to < as_of_timestamp:
-        if active_to is None:
-            raise ValueError("membership cannot end before as_of_timestamp.")
-        return None
+        return "instrument membership ended before as_of_timestamp"
     if active_to is not None and active_to < as_of_timestamp:
-        if membership_to is None:
-            raise ValueError("instrument cannot be active after active_to.")
-        return None
-    return instrument
+        return "instrument is inactive at as_of_timestamp"
+    return None
 
 
 def _require_unsafe_policy(*, allowed: bool, status: str) -> None:

@@ -134,7 +134,7 @@ def test_valid_point_in_time_membership_excludes_removed_instruments():
     assert result["excluded_instruments"] == [
         {
             "instrument_id": "instrument-b",
-            "reason": "instrument is inactive at as_of_timestamp",
+            "reason": "instrument membership ended before as_of_timestamp",
         }
     ]
     assert result["membership_intervals"] == [
@@ -149,21 +149,32 @@ def test_valid_point_in_time_membership_excludes_removed_instruments():
     ]
 
 
-def test_membership_before_entry_after_removal_and_inactive_instrument_fail_closed():
+def test_removed_but_still_active_instrument_is_excluded_without_invented_active_to():
+    request = _request(as_of_timestamp="2024-04-15T00:00:00Z")
+    request["instruments"] = [
+        _instrument("instrument-a", provider_symbol="SPY.US"),
+        _instrument(
+            "instrument-b",
+            provider_symbol="QQQ.US",
+            membership_to="2024-03-31T00:00:00Z",
+        ),
+    ]
+
+    result = _run(request)
+
+    assert [item["instrument_id"] for item in result["included_instruments"]] == ["instrument-a"]
+    assert result["excluded_instruments"] == [
+        {
+            "instrument_id": "instrument-b",
+            "reason": "instrument membership ended before as_of_timestamp",
+        }
+    ]
+
+
+def test_membership_before_entry_fails_and_inactive_instrument_is_excluded():
     before_entry = _request(as_of_timestamp="2014-12-31T00:00:00Z")
     with pytest.raises(ValueError, match="membership cannot start after as_of_timestamp"):
         _run(before_entry)
-
-    after_removal = _request(as_of_timestamp="2024-06-15T00:00:00Z")
-    after_removal["instruments"] = [
-        _instrument(
-            "instrument-a",
-            provider_symbol="SPY.US",
-            membership_to="2024-03-01T00:00:00Z",
-        )
-    ]
-    with pytest.raises(ValueError, match="membership cannot end before as_of_timestamp"):
-        _run(after_removal)
 
     inactive = _request()
     inactive["instruments"] = [
@@ -173,8 +184,15 @@ def test_membership_before_entry_after_removal_and_inactive_instrument_fail_clos
             active_to="2024-03-01T00:00:00Z",
         )
     ]
-    with pytest.raises(ValueError, match="instrument cannot be active after active_to"):
-        _run(inactive)
+    result = _run(inactive)
+
+    assert result["included_instruments"] == []
+    assert result["excluded_instruments"] == [
+        {
+            "instrument_id": "instrument-a",
+            "reason": "instrument is inactive at as_of_timestamp",
+        }
+    ]
 
 
 def test_duplicate_ids_duplicate_provider_symbols_and_invalid_metadata_fail():
