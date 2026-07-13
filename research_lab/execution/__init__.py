@@ -149,6 +149,9 @@ from research_lab.execution.e2e_portfolio_research_orchestrator_acceptance_v1 im
     replay_e2e_portfolio_research_orchestrator_acceptance,
     run_e2e_portfolio_research_orchestrator_acceptance,
 )
+from research_lab.execution.point_in_time_universe_contract_v1 import (
+    build_point_in_time_universe_contract,
+)
 
 __all__ = [
     "build_circuit_breaker_transition",
@@ -206,4 +209,5 @@ __all__ = [
     "run_portfolio_backtest_acceptance",
     "run_e2e_portfolio_research_orchestrator_acceptance",
     "replay_e2e_portfolio_research_orchestrator_acceptance",
+    "build_point_in_time_universe_contract",
 ]
