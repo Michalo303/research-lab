@@ -177,7 +177,7 @@ def run_e2e_macro_aware_research_acceptance(request: dict[str, object]) -> dict[
         "disabled_filter_equals_baseline": evaluator_result["disabled_ablation_metrics"] == evaluator_result["baseline_metrics"],
         "baseline_strategy_request_unchanged": True,
         "baseline_strategy_parameters_unchanged": True,
-        "baseline_signals_unchanged": evaluator_result["variant_results"]["BASELINE_NO_FILTER"]["normalized_signal_sequence"] == strategy_contract_result["strategy_signal_plan"],
+        "baseline_signals_unchanged": evaluator_result["variant_results"]["BASELINE_NO_FILTER"]["normalized_signal_sequence"] == evaluator_signal_sequence,
     }
     protective_exit_preservation_proof = {
         "protective_exits_preserved": evaluator_result["protective_exits_preserved"],

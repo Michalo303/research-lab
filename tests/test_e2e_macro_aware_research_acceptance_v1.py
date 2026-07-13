@@ -472,6 +472,7 @@ def test_deterministic_success_and_replay_equality():
     assert first["status"] == "ACCEPTED_REVIEW_ONLY"
     assert first["evaluator_classification"] == "CANDIDATE_MIXED"
     assert first["baseline_preservation_proof"]["baseline_unchanged"] is True
+    assert all(first["baseline_preservation_proof"].values())
     assert first["protective_exit_preservation_proof"]["protective_exits_preserved"] is True
     assert first["no_look_ahead_proof"]["no_future_release_used"] is True
     assert first["no_look_ahead_proof"]["no_future_feature_used"] is True
