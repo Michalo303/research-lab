@@ -158,6 +158,9 @@ from research_lab.execution.multi_asset_immutable_ohlcv_snapshot_contract_v1 imp
 from research_lab.execution.corporate_actions_contract_v1 import (
     build_corporate_actions_contract,
 )
+from research_lab.execution.exchange_session_calendar_contract_v1 import (
+    build_exchange_session_calendar_contract,
+)
 
 __all__ = [
     "build_circuit_breaker_transition",
@@ -218,4 +221,5 @@ __all__ = [
     "build_point_in_time_universe_contract",
     "build_multi_asset_immutable_ohlcv_snapshot_contract",
     "build_corporate_actions_contract",
+    "build_exchange_session_calendar_contract",
 ]
