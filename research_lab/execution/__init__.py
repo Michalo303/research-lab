@@ -171,6 +171,9 @@ from research_lab.execution.e2e_multi_asset_data_acceptance_v1 import (
     replay_e2e_multi_asset_data_acceptance,
     run_e2e_multi_asset_data_acceptance,
 )
+from research_lab.execution.instrument_identity_execution_routing_v1 import (
+    build_instrument_identity_execution_routing,
+)
 
 __all__ = [
     "build_circuit_breaker_transition",
@@ -236,4 +239,5 @@ __all__ = [
     "build_multi_asset_data_quality_gate",
     "run_e2e_multi_asset_data_acceptance",
     "replay_e2e_multi_asset_data_acceptance",
+    "build_instrument_identity_execution_routing",
 ]
