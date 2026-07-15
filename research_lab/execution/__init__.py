@@ -174,6 +174,9 @@ from research_lab.execution.e2e_multi_asset_data_acceptance_v1 import (
 from research_lab.execution.instrument_identity_execution_routing_v1 import (
     build_instrument_identity_execution_routing,
 )
+from research_lab.execution.research_execution_instrument_mapping_v1 import (
+    build_research_execution_instrument_mapping,
+)
 
 __all__ = [
     "build_circuit_breaker_transition",
@@ -240,4 +243,5 @@ __all__ = [
     "run_e2e_multi_asset_data_acceptance",
     "replay_e2e_multi_asset_data_acceptance",
     "build_instrument_identity_execution_routing",
+    "build_research_execution_instrument_mapping",
 ]
