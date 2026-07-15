@@ -180,6 +180,9 @@ from research_lab.execution.research_execution_instrument_mapping_v1 import (
 from research_lab.execution.fio_manual_long_term_inventory_v1 import (
     build_fio_manual_long_term_inventory,
 )
+from research_lab.execution.ibkr_active_execution_universe_v1 import (
+    build_ibkr_active_execution_universe,
+)
 
 __all__ = [
     "build_circuit_breaker_transition",
@@ -248,4 +251,5 @@ __all__ = [
     "build_instrument_identity_execution_routing",
     "build_research_execution_instrument_mapping",
     "build_fio_manual_long_term_inventory",
+    "build_ibkr_active_execution_universe",
 ]
