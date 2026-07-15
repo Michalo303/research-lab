@@ -131,9 +131,21 @@ def _bound_assets(value, blocking):
             _finding(blocking,"ADAPTER_RESULT_SAFETY_OR_STATUS_FAILURE",iid)
         for adapter_key,snapshot_key,code in (("source_sha256","source_artifact_sha256","SOURCE_FILE_HASH_MISMATCH"),("normalized_rows_hash","normalized_bars_sha256","NORMALIZED_BARS_HASH_MISMATCH"),("row_count","row_count","ROW_COUNT_MISMATCH"),("first_timestamp","first_timestamp","FIRST_TIMESTAMP_MISMATCH"),("last_timestamp","last_timestamp","LAST_TIMESTAMP_MISMATCH")):
             if adapter.get(adapter_key) != snapshot.get(snapshot_key): _finding(blocking,code,iid)
-        downstream=adapter.get("downstream_adapter_result")
-        bars=downstream.get("synthetic_bars") if isinstance(downstream,dict) else None
-        if not isinstance(bars,list): _finding(blocking,"MISSING_ADAPTER_SYNTHETIC_BARS",iid); bars=[]
+        bars=adapter.get("normalized_bars")
+        if bars is None:
+            _finding(blocking,"MISSING_NORMALIZED_BARS",iid); bars=[]
+        elif not isinstance(bars,list):
+            _finding(blocking,"MALFORMED_NORMALIZED_BARS",iid); bars=[]
+        else:
+            if _hash(bars) != adapter.get("normalized_rows_hash"):
+                _finding(blocking,"NORMALIZED_BARS_HASH_MISMATCH",iid)
+            timestamps=[bar.get("timestamp") for bar in bars if isinstance(bar,dict) and isinstance(bar.get("timestamp"),str)]
+            if len(bars) != adapter.get("row_count"):
+                _finding(blocking,"NORMALIZED_BARS_ROW_COUNT_MISMATCH",iid)
+            if not timestamps or timestamps[0] != adapter.get("first_timestamp"):
+                _finding(blocking,"NORMALIZED_BARS_FIRST_TIMESTAMP_MISMATCH",iid)
+            if not timestamps or timestamps[-1] != adapter.get("last_timestamp"):
+                _finding(blocking,"NORMALIZED_BARS_LAST_TIMESTAMP_MISMATCH",iid)
         bound.append({**snapshot,"bars":bars,"currency":instrument.get("currency"),"calendar_id":instrument.get("calendar_id"),"corporate_action_policy_id":instrument.get("corporate_action_policy_id"),"provider_symbol":instrument.get("provider_symbol")})
     return bound
 
