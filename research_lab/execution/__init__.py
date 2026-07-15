@@ -183,6 +183,9 @@ from research_lab.execution.fio_manual_long_term_inventory_v1 import (
 from research_lab.execution.ibkr_active_execution_universe_v1 import (
     build_ibkr_active_execution_universe,
 )
+from research_lab.execution.dual_broker_exposure_risk_v1 import (
+    build_dual_broker_exposure_risk,
+)
 
 __all__ = [
     "build_circuit_breaker_transition",
@@ -252,4 +255,5 @@ __all__ = [
     "build_research_execution_instrument_mapping",
     "build_fio_manual_long_term_inventory",
     "build_ibkr_active_execution_universe",
+    "build_dual_broker_exposure_risk",
 ]
