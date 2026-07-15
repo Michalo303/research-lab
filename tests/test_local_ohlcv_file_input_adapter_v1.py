@@ -93,6 +93,24 @@ def test_valid_json_and_jsonl_are_deterministic_and_bind_downstream_contract(tmp
     assert first["source_file_identity"]["path"].lower().startswith(str(tmp_path.drive).lower())
 
 
+def test_success_exposes_lossless_normalized_bars_separately_from_bridge_bars(tmp_path):
+    path = tmp_path / "bars.json"
+    _write_json(path, {"dataset_id": "QQQ_2026_SAMPLE", "symbol": "QQQ", "rows": _rows()})
+
+    result = _run(_request(path, format_name="json"))
+
+    assert result["normalized_bars"][0] == {
+        "timestamp": "2026-01-05T14:30:00Z", "open": 100.0, "high": 101.0,
+        "low": 99.5, "close": 100.5, "volume": 1_000_000.0,
+    }
+    assert result["normalized_rows_hash"] == hashlib.sha256(
+        json.dumps(result["normalized_bars"], sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
+    ).hexdigest()
+    assert "volume" not in result["downstream_adapter_result"]["synthetic_bars"][0]
+    result["downstream_adapter_result"]["synthetic_bars"][0]["open"] = -1
+    assert result["normalized_bars"][0]["open"] == 100.0
+
+
 def test_expected_sha_match_and_mismatch(tmp_path):
     path = tmp_path / "bars.json"
     _write_json(path, {"dataset_id": "QQQ_2026_SAMPLE", "symbol": "QQQ", "rows": _rows()})

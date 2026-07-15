@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import copy
 import re
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -51,6 +52,7 @@ def build_local_ohlcv_file_input_adapter(request: dict[str, object]) -> dict[str
             "first_timestamp": None,
             "last_timestamp": None,
             "normalized_rows_hash": None,
+            "normalized_bars": None,
             "downstream_adapter_result": None,
             "provenance": validated["provenance"],
             "source_modified": False,
@@ -98,6 +100,7 @@ def build_local_ohlcv_file_input_adapter(request: dict[str, object]) -> dict[str
         "first_timestamp": normalized_rows[0]["timestamp"],
         "last_timestamp": normalized_rows[-1]["timestamp"],
         "normalized_rows_hash": normalized_rows_hash,
+        "normalized_bars": copy.deepcopy(normalized_rows),
         "downstream_adapter_result": downstream_adapter_result,
         "provenance": validated["provenance"],
         "source_modified": False,
