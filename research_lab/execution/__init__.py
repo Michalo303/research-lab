@@ -177,6 +177,9 @@ from research_lab.execution.instrument_identity_execution_routing_v1 import (
 from research_lab.execution.research_execution_instrument_mapping_v1 import (
     build_research_execution_instrument_mapping,
 )
+from research_lab.execution.fio_manual_long_term_inventory_v1 import (
+    build_fio_manual_long_term_inventory,
+)
 
 __all__ = [
     "build_circuit_breaker_transition",
@@ -244,4 +247,5 @@ __all__ = [
     "replay_e2e_multi_asset_data_acceptance",
     "build_instrument_identity_execution_routing",
     "build_research_execution_instrument_mapping",
+    "build_fio_manual_long_term_inventory",
 ]
