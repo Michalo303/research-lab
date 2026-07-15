@@ -167,6 +167,10 @@ from research_lab.execution.point_in_time_fx_conversion_contract_v1 import (
 from research_lab.execution.multi_asset_data_quality_gate_v1 import (
     build_multi_asset_data_quality_gate,
 )
+from research_lab.execution.e2e_multi_asset_data_acceptance_v1 import (
+    replay_e2e_multi_asset_data_acceptance,
+    run_e2e_multi_asset_data_acceptance,
+)
 
 __all__ = [
     "build_circuit_breaker_transition",
@@ -230,4 +234,6 @@ __all__ = [
     "build_exchange_session_calendar_contract",
     "build_point_in_time_fx_conversion_contract",
     "build_multi_asset_data_quality_gate",
+    "run_e2e_multi_asset_data_acceptance",
+    "replay_e2e_multi_asset_data_acceptance",
 ]
