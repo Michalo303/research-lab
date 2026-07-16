@@ -191,6 +191,9 @@ from research_lab.execution.e2e_dual_broker_foundation_acceptance_v1 import (
 )
 from research_lab.execution.dual_broker_pilot_universe_manifest_v1 import build_dual_broker_pilot_universe_manifest
 from research_lab.execution.dual_broker_data_acquisition_readiness_v1 import build_dual_broker_data_acquisition_readiness
+from research_lab.execution.official_instrument_identity_manifest_v2 import (
+    build_official_instrument_identity_manifest,
+)
 
 __all__ = [
     "build_circuit_breaker_transition",
@@ -264,4 +267,5 @@ __all__ = [
     "build_e2e_dual_broker_foundation_acceptance",
     "build_dual_broker_pilot_universe_manifest",
     "build_dual_broker_data_acquisition_readiness",
+    "build_official_instrument_identity_manifest",
 ]
