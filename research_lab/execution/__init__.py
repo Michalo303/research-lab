@@ -200,6 +200,7 @@ from research_lab.execution.eodhd_symbol_resolution_readiness_v1 import (
 from research_lab.execution.eodhd_exact_identity_capability_v1 import (
     build_eodhd_exact_identity_capability,
 )
+from research_lab.execution.eodhd_exact_symbol_resolution_readiness_v2 import build_eodhd_exact_symbol_resolution_readiness
 
 __all__ = [
     "build_circuit_breaker_transition",
@@ -276,4 +277,5 @@ __all__ = [
     "build_official_instrument_identity_manifest",
     "build_eodhd_symbol_resolution_readiness",
     "build_eodhd_exact_identity_capability",
+    "build_eodhd_exact_symbol_resolution_readiness",
 ]
