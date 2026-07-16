@@ -189,6 +189,7 @@ from research_lab.execution.dual_broker_exposure_risk_v1 import (
 from research_lab.execution.e2e_dual_broker_foundation_acceptance_v1 import (
     build_e2e_dual_broker_foundation_acceptance,
 )
+from research_lab.execution.dual_broker_pilot_universe_manifest_v1 import build_dual_broker_pilot_universe_manifest
 
 __all__ = [
     "build_circuit_breaker_transition",
@@ -260,4 +261,5 @@ __all__ = [
     "build_ibkr_active_execution_universe",
     "build_dual_broker_exposure_risk",
     "build_e2e_dual_broker_foundation_acceptance",
+    "build_dual_broker_pilot_universe_manifest",
 ]
