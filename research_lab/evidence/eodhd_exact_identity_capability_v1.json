@@ -1,0 +1,42 @@
+{
+  "provider": "EODHD",
+  "accessed_date": "2026-07-16",
+  "search_capability_evidence": {
+    "authority": "EODHD_OFFICIAL_DOCUMENTATION",
+    "url": "https://eodhd.com/financial-apis/mcp-server-for-financial-data-by-eodhd",
+    "endpoint_template": "/api/search/{query_string}",
+    "query_string_support": ["ticker", "legal_name", "isin"],
+    "allowed_parameters": ["exchange", "fmt", "limit", "type"],
+    "response_fields": ["Code", "Exchange", "Name", "Type", "Country", "Currency", "ISIN", "isPrimary"],
+    "call_cost": "ONE_API_CALL_PER_REQUEST",
+    "evidence_status": "OFFICIAL"
+  },
+  "exchange_source": {
+    "authority": "EODHD_OFFICIAL_DOCUMENTATION",
+    "url": "https://eodhd.com/list-of-stock-markets",
+    "title": "List of Stock Market Exchanges",
+    "evidence_status": "OFFICIAL"
+  },
+  "mappings": {
+    "M31I:SMH": ["US", "VERIFIED_PROVIDER_EXCHANGE_CODE", "ETF"],
+    "M31I:USO": [null, "BLOCKED_PROVIDER_EXCHANGE_CODE", "ETF"],
+    "M31I:VWCE": ["XETRA", "VERIFIED_PROVIDER_EXCHANGE_CODE", "ETF"],
+    "M31I:EQQQ": ["XETRA", "VERIFIED_PROVIDER_EXCHANGE_CODE", "ETF"],
+    "M31I:EIMI": ["LSE", "VERIFIED_PROVIDER_EXCHANGE_CODE", "ETF"],
+    "M31I:IEAC": ["LSE", "VERIFIED_PROVIDER_EXCHANGE_CODE", "ETF"],
+    "M31I:4GLD": ["XETRA", "REVIEW_REQUIRED_PROVIDER_EXCHANGE_CODE", "all"],
+    "M31I:MSFT": ["US", "VERIFIED_PROVIDER_EXCHANGE_CODE", "Stock"],
+    "M31I:JNJ": ["US", "VERIFIED_PROVIDER_EXCHANGE_CODE", "Stock"],
+    "M31I:XOM": ["US", "VERIFIED_PROVIDER_EXCHANGE_CODE", "Stock"],
+    "M31I:ASML": ["AS", "VERIFIED_PROVIDER_EXCHANGE_CODE", "Stock"],
+    "M31I:SAP": ["XETRA", "VERIFIED_PROVIDER_EXCHANGE_CODE", "Stock"],
+    "M31I:NESN": ["SW", "VERIFIED_PROVIDER_EXCHANGE_CODE", "Stock"],
+    "M31I:NOVO-B": ["CO", "VERIFIED_PROVIDER_EXCHANGE_CODE", "Stock"],
+    "M31I:AIR": ["PA", "VERIFIED_PROVIDER_EXCHANGE_CODE", "Stock"]
+  },
+  "documented_alternatives": [{
+    "endpoint": "/api/id-mapping",
+    "status": "DOCUMENTED_ALTERNATIVE_NOT_SELECTED",
+    "reason": "bounded Search API is sufficient"
+  }]
+}
