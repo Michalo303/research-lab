@@ -194,6 +194,9 @@ from research_lab.execution.dual_broker_data_acquisition_readiness_v1 import bui
 from research_lab.execution.official_instrument_identity_manifest_v2 import (
     build_official_instrument_identity_manifest,
 )
+from research_lab.execution.eodhd_symbol_resolution_readiness_v1 import (
+    build_eodhd_symbol_resolution_readiness,
+)
 
 __all__ = [
     "build_circuit_breaker_transition",
@@ -268,4 +271,5 @@ __all__ = [
     "build_dual_broker_pilot_universe_manifest",
     "build_dual_broker_data_acquisition_readiness",
     "build_official_instrument_identity_manifest",
+    "build_eodhd_symbol_resolution_readiness",
 ]
