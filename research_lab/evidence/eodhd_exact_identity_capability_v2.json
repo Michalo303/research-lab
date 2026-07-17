@@ -1,0 +1,39 @@
+{
+  "provider": "EODHD",
+  "accessed_date": "2026-07-17",
+  "search_capability_evidence": {
+    "authority": "EODHD_OFFICIAL_DOCUMENTATION",
+    "title": "Search API for Stocks, ETFs, Mutual Funds",
+    "official_url": "https://eodhd.com/financial-apis/search-api-for-stocks-etfs-mutual-funds",
+    "endpoint_template": "/api/search/{query_string}",
+    "query_string_support": ["isin"],
+    "allowed_parameters": ["exchange", "fmt", "limit", "type"],
+    "documented_type_parameters": ["all", "stock", "etf", "fund", "bond", "index", "crypto"],
+    "response_is_json_list": true,
+    "active_tickers_only": true,
+    "response_type_examples": ["Common Stock", "ETF", "Fund", "Bond"]
+  },
+  "exchange_evidence": {
+    "authority": "EODHD_OFFICIAL_DOCUMENTATION",
+    "title": "Exchanges API: Get List of Supported Exchanges",
+    "official_url": "https://eodhd.com/financial-apis/list-supported-exchanges",
+    "required_metadata_fields": ["Code", "OperatingMIC"]
+  },
+  "mappings": {
+    "SMH": ["US", "NYSE / NASDAQ", ["XNAS", "XNYS", "ARCX"], "PROVIDER_MULTI_VENUE_NAMESPACE", "etf", ["ETF"], "EXACT_PROVIDER_TYPE_TAXONOMY"],
+    "USO": ["US", "NYSE / NASDAQ", ["XNAS", "XNYS", "ARCX"], "PROVIDER_MULTI_VENUE_NAMESPACE", "etf", ["ETF", "Fund"], "PROVIDER_TYPE_TAXONOMY_NOT_EXACT"],
+    "VWCE": ["XETRA", "XETRA", ["XETR"], "EXACT_PROVIDER_VENUE", "etf", ["ETF"], "EXACT_PROVIDER_TYPE_TAXONOMY"],
+    "EQQQ": ["XETRA", "XETRA", ["XETR"], "EXACT_PROVIDER_VENUE", "etf", ["ETF"], "EXACT_PROVIDER_TYPE_TAXONOMY"],
+    "EIMI": ["LSE", "London Stock Exchange", ["XLON"], "EXACT_PROVIDER_VENUE", "etf", ["ETF"], "EXACT_PROVIDER_TYPE_TAXONOMY"],
+    "IEAC": ["LSE", "London Stock Exchange", ["XLON"], "EXACT_PROVIDER_VENUE", "etf", ["ETF"], "EXACT_PROVIDER_TYPE_TAXONOMY"],
+    "4GLD": ["XETRA", "XETRA", ["XETR"], "EXACT_PROVIDER_VENUE", "all", ["ETF", "Fund"], "PROVIDER_TYPE_TAXONOMY_NOT_EXACT"],
+    "MSFT": ["US", "NYSE / NASDAQ", ["XNAS", "XNYS", "ARCX"], "PROVIDER_MULTI_VENUE_NAMESPACE", "stock", ["Common Stock"], "EXACT_PROVIDER_TYPE_TAXONOMY"],
+    "JNJ": ["US", "NYSE / NASDAQ", ["XNAS", "XNYS", "ARCX"], "PROVIDER_MULTI_VENUE_NAMESPACE", "stock", ["Common Stock"], "EXACT_PROVIDER_TYPE_TAXONOMY"],
+    "XOM": ["US", "NYSE / NASDAQ", ["XNAS", "XNYS", "ARCX"], "PROVIDER_MULTI_VENUE_NAMESPACE", "stock", ["Common Stock"], "EXACT_PROVIDER_TYPE_TAXONOMY"],
+    "ASML": ["AS", "Euronext Amsterdam", ["XAMS"], "EXACT_PROVIDER_VENUE", "stock", ["Common Stock"], "EXACT_PROVIDER_TYPE_TAXONOMY"],
+    "SAP": ["XETRA", "XETRA", ["XETR"], "EXACT_PROVIDER_VENUE", "stock", ["Common Stock"], "EXACT_PROVIDER_TYPE_TAXONOMY"],
+    "NESN": ["SW", "SIX Swiss Exchange", ["XSWX"], "EXACT_PROVIDER_VENUE", "stock", ["Common Stock"], "EXACT_PROVIDER_TYPE_TAXONOMY"],
+    "NOVO-B": ["CO", "Nasdaq Copenhagen", ["XCSE"], "EXACT_PROVIDER_VENUE", "stock", ["Common Stock"], "EXACT_PROVIDER_TYPE_TAXONOMY"],
+    "AIR": ["PA", "Euronext Paris", ["XPAR"], "EXACT_PROVIDER_VENUE", "stock", ["Common Stock"], "EXACT_PROVIDER_TYPE_TAXONOMY"]
+  }
+}
