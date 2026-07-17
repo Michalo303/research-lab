@@ -53,12 +53,16 @@ validation, creates an immutable schedule and deterministic audit output, and
 performs zero provider calls, credential accesses, journal writes, result-store
 writes, or filesystem writes. It cannot receive `allow_provider_calls=true`.
 
-The only execution root is
+The only journal execution root is
 `/opt/trading/private/research_market_data_snapshots/pending_exact_symbol_resolution_v3/run-3d4e7105b1637c37/`.
 Its suffix derives solely from the fixed approval hash; it is never clock based.
-Every result destination must be a normalized descendant of this root, with no
-traversal, symlink escape, canonical-snapshot collision, SPY collision, or
-duplicate. No code deletes, cleans up, overwrites, or recreates any artifact.
+It holds intent, markers, and summary only. M31P's already-hashed result
+destinations are immutable descendants of its
+`pending_exact_symbol_resolution_v3/` parent rather than the journal run
+directory; the result store may publish only this exact validated set and no
+other child of that parent. Every destination must be normalized, unique, and
+free of traversal, symlink escape, canonical-snapshot collision, and SPY
+collision. No code deletes, cleans up, overwrites, or recreates any artifact.
 
 ## Journal and result-store protocols
 
