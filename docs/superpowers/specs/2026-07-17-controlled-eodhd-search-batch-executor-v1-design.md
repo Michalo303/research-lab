@@ -1,61 +1,142 @@
 # M31Q Controlled EODHD Search Batch Executor V1 Design
 
-## Scope
+## Scope and fixed authorization
 
-M31Q executes only the externally authorized M31P V3 EODHD Search records. It
-does not construct, amend, retry, paginate, or otherwise expand that call set.
-The reusable module has no credential discovery and accepts its provider client,
-credentials, journal, and result store by injection.
+M31Q is an injected, controlled executor for exactly the 15 externally approved
+M31P V3 EODHD Search records. It neither creates nor amends authorization. Its
+only executable authorization is `AUTHORIZE_CONTROLLED_EODHD_SEARCH_RESOLUTION_V2`
+with approval-manifest hash
+`3d4e7105b1637c37708fd6462460a3d6e18a686f2ef9ca9addc50ab36d6a4b0c`,
+acquisition-plan hash
+`dc7c89fb7212dac8c564d3f04759f82b39add96dae090750d2716ab52c995b43`,
+M31I hash `d32525c57a865b3d2f4447ff9ac87da0466bb7a1a3096ab49b80eb17d5bd9c02`,
+M31N hash `6822c2a00d7365b8f04c43e4e799829ea7eb9e2e9efea99f05c631fb3d07836b`,
+and adapter version `eodhd_approval_bound_search_metadata_adapter_v2`.
 
-## Architecture
+The executor requires metadata calls max=15, total calls max=15, response
+limit=10, all non-metadata budgets=0, retries=0, sequential-only=true,
+stop-on-first-failure=true, fallback=false, pagination=0, and health checks=0.
+It rejects the superseded approval hashes named in M31P and any hash other than
+the fixed authorization above. It never calls SPY or any historical,
+corporate-action, dividend, split, calendar, fundamental, price, broker, or
+health endpoint. Production runtime remains unsupported.
 
-The module has three strict layers:
+## Request and immutable upstream binding
 
-1. Pure validation and schedule construction recompute the canonical hashes,
-   validate the exact 15-record M31P plan, sequence, budgets, request shapes,
-   and destinations, and return immutable schedule data. `DRY_RUN` ends here.
-2. The journal layer owns atomic exclusive-create artifacts under only the
-   injected execution root. It creates intent before any request, then a
-   per-sequence started marker before its one possible request, and never
-   overwrites or replays existing state.
-3. The coordinator supplies the current journal-backed ledger to M31O once per
-   scheduled record, persists only validated results, and stops before another
-   request on structural, journal, or transport failure. Review-required M31O
-   results are persisted and permit the next independently authorized record.
+`run_controlled_eodhd_search_batch_v1` accepts exactly these fields:
+`version`, `execution_request_id`, `mode`, `m31i_manifest`,
+`expected_m31i_canonical_manifest_sha256`, `m31n_capability_manifest`,
+`expected_m31n_canonical_capability_manifest_sha256`, `m31p_readiness_result`,
+`m31p_approval_manifest`, `external_approved_approval_manifest_sha256`,
+`external_approved_acquisition_plan_sha256`, `approved_budget_policy`,
+`m31o_adapter_contract_version`, `allow_provider_calls`, `journal`,
+`result_store`, `provenance`; approved execution additionally requires
+`provider_client` and `credential`. Unknown or missing fields are rejected.
 
-## Execution Modes and Safety
+The executor deep-copies the request before validation and never mutates input.
+It generates no IDs and uses no clock. It recomputes canonical JSON SHA-256 for
+M31I, M31N, the M31P approval manifest, every complete-plan record, and the
+complete plan. It requires that M31P itself binds the recomputed M31I/M31N
+hashes, exact M31O version, its canonical approval hash, and its plan hash.
+The approved manifest must contain exactly the authorized subset of the exact
+complete plan, with immutable membership, no extras, no omissions, no duplicate
+sequence, and no duplicate destination. The schedule is ascending integer
+sequence `1..15`; each record must be executable, have `call_count=1`, an exact
+`/api/search/{isin}` path, and exact `{exchange,type,limit=10,fmt=json}`
+parameters. The executor checks all fixed authorization values before any
+private write or credential access.
 
-`DRY_RUN` is the default and performs zero provider calls, credential accesses,
-and private writes. `APPROVED_EXECUTION` requires all fixed authorization
-hashes, the fixed adapter version and zero non-metadata budgets, explicitly
-injected client and credentials, `allow_provider_calls=True`, a complete
-unchanged M31P approval manifest, and no existing run directory or intent.
+## Modes and deterministic paths
 
-The deterministic run directory suffix derives from the approval hash. All
-artifacts are canonical JSON written atomically and contain redacted request
-data only. Credentials are passed solely to the injected transport/M31O call;
-they are never serialized, hashed, logged, or included in exceptions.
+Only `DRY_RUN` and `APPROVED_EXECUTION` exist. `DRY_RUN` performs all pure
+validation, creates an immutable schedule and deterministic audit output, and
+performs zero provider calls, credential accesses, journal writes, result-store
+writes, or filesystem writes. It cannot receive `allow_provider_calls=true`.
 
-## Failure Semantics
+The only execution root is
+`/opt/trading/private/research_market_data_snapshots/pending_exact_symbol_resolution_v3/run-3d4e7105b1637c37/`.
+Its suffix derives solely from the fixed approval hash; it is never clock based.
+Every result destination must be a normalized descendant of this root, with no
+traversal, symlink escape, canonical-snapshot collision, SPY collision, or
+duplicate. No code deletes, cleans up, overwrites, or recreates any artifact.
 
-An existing intent, started marker, completed marker, result destination,
-unsafe path, ledger discrepancy, request mismatch, M31O validation failure, or
-transport failure blocks the next request. A started marker without its
-completed marker returns
-`MANUAL_REVIEW_REQUIRED_POSSIBLE_CALL_ALREADY_CONSUMED`; it is never resumed.
-The in-memory counter is derived from durable markers and cannot be lowered by a
-caller-provided ledger.
+## Journal and result-store protocols
 
-## Tests
+The injected journal is authoritative and supplies: inspect run existence;
+exclusive create of execution intent; inspect a sequence; exclusive create of a
+`CALL_STARTED` marker; exclusive create of a `CALL_COMPLETED` marker; exclusive
+create of an execution summary; list sequence states; and read persisted
+artifacts for reconciliation. A caller ledger is never authoritative; every
+M31O call receives a ledger derived from durable completed/started markers and
+cannot lower or reset accounting. The real journal uses exclusive create plus
+temporary-file, fsync where supported, and atomic rename for complete JSON
+publication. Existing artifacts always block; there is no silent overwrite or
+delete-and-recreate behavior.
 
-Tests use only fake clients and temporary injected stores. They cover pure
-validation and deterministic dry runs first, then journal ordering/replay
-protection, one-call M31O delegation and artifact redaction, review continuation,
-and first-failure stopping. The suite also proves absence of all forbidden call
-classes and writes outside the injected root.
+The injected result store exclusively publishes exactly one canonical, redacted
+result artifact per approved destination. It rejects overwrite, duplicate path,
+unsafe path, outside-root writes, symlink escape, canonical snapshot collision,
+and SPY collision. Result publication uses a temporary file and atomic rename;
+the raw credential object and its string representation are never serialized,
+hashed, logged, or included in raised errors.
 
-## Non-goals
+## Approved execution order and accounting
 
-M31Q does not authorize or make historical, corporate-action, dividend, split,
-calendar, fundamental, price, broker, SPY, retry, fallback, pagination, or
-health-check calls. It does not promote results or enable production runtime.
+After all pure validation succeeds, `APPROVED_EXECUTION` must: (1) inspect and
+reconcile journal state; (2) refuse any existing run, intent, completed marker,
+or inconsistent state; (3) exclusively create a redacted execution intent;
+(4) for each scheduled sequence, re-read journal state and destination absence,
+exclusively create `CALL_STARTED`, invoke M31O exactly once, increment attempted
+metadata-call accounting exactly once after that attempted call, validate the
+adapter result, exclusively publish the result, exclusively create
+`CALL_COMPLETED`, and reconcile; then (5) exclusively create the deterministic
+execution summary. Intent precedes every request and `CALL_STARTED` precedes its
+one HTTP request. `CALL_COMPLETED` is written only after one response passes
+adapter validation and the result has been persistently published.
+
+The M31O request uses the fixed approval manifest, exact record and sequence,
+fixed external hashes, `allow_provider_calls=true`, the injected client and
+credential, and journal-derived consumed count. It has zero retry, fallback,
+pagination, alternate query/exchange, or health check paths. A returned
+`FAILED_VALIDATION`, malformed response, response above limit, or transport
+exception fails closed. Persisted `REVIEW_REQUIRED_NO_EXACT_MATCH`,
+`REVIEW_REQUIRED_AMBIGUOUS_EXACT_MATCH`,
+`REVIEW_REQUIRED_PROVIDER_TYPE_TAXONOMY`, and
+`REVIEW_REQUIRED_PROVIDER_NAMESPACE` are valid completed outcomes and permit
+the next independently approved record, but are never labelled resolved.
+
+## Crash windows and failure states
+
+Before intent creation, no call could have occurred and the run may be started.
+After intent but before `CALL_STARTED`, the existing intent blocks execution and
+requires manual inspection; no automatic resume is permitted. After a started
+marker but before the request, during the request, after the response but before
+completion, after result publication but before completion, or after completion
+but before summary, reconciliation fails closed. Any `CALL_STARTED` without the
+matching `CALL_COMPLETED` always returns
+`MANUAL_REVIEW_REQUIRED_POSSIBLE_CALL_ALREADY_CONSUMED` and never retries or
+resumes that sequence. A missing summary after all complete markers is also
+manual-review-only, rather than automatically republishing summary evidence.
+
+Structural validation errors, transport errors, malformed provider responses,
+exact resolution, review-required no match, review-required ambiguity,
+review-required taxonomy, review-required namespace, and uncertain possible
+call consumption have distinct stable statuses. The executor stops before any
+later provider call for structural, journal, path, budget, credential-leakage,
+transport, adapter-validation, result-store, or completed-marker failure.
+
+## Audit output and tests
+
+Audit output contains only redacted deterministic data: fixed input hashes,
+schedule, journal-derived attempted/completed counts, completed sequences,
+review outcomes, uncalled sequences, raw-response hashes, adapter-result hashes,
+and a canonical execution-summary hash. It includes zero retries, fallback,
+pagination, health, historical, corporate-action, calendar, broker, Fio, IBKR,
+SPY refetch, canonical-snapshot mutation, and production-runtime support.
+
+Tests use fake clients plus in-memory and temporary-filesystem journals/stores.
+They first prove strict validation and zero-side-effect `DRY_RUN`; then prove
+intent/start/completion ordering, all crash windows and replay refusal, path and
+credential redaction, first-failure stopping, review-required continuation, and
+the complete exact 15-call batch. No test makes a network request or handles a
+real credential.
