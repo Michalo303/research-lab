@@ -208,6 +208,9 @@ from research_lab.execution.eodhd_exact_symbol_resolution_readiness_v3 import bu
 from research_lab.execution.controlled_eodhd_search_batch_executor_v1 import (
     run_controlled_eodhd_search_batch_v1,
 )
+from research_lab.execution.eodhd_search_resolution_result_audit_v1 import (
+    audit_eodhd_search_resolution_results_v1,
+)
 
 __all__ = [
     "build_circuit_breaker_transition",
@@ -288,4 +291,5 @@ __all__ = [
     "build_eodhd_exact_symbol_resolution_readiness",
     "build_eodhd_exact_symbol_resolution_readiness_v3",
     "run_controlled_eodhd_search_batch_v1",
+    "audit_eodhd_search_resolution_results_v1",
 ]
