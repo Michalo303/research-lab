@@ -205,6 +205,9 @@ from research_lab.execution.eodhd_exact_identity_capability_v2 import (
 )
 from research_lab.execution.eodhd_exact_symbol_resolution_readiness_v2 import build_eodhd_exact_symbol_resolution_readiness
 from research_lab.execution.eodhd_exact_symbol_resolution_readiness_v3 import build_eodhd_exact_symbol_resolution_readiness_v3
+from research_lab.execution.controlled_eodhd_search_batch_executor_v1 import (
+    run_controlled_eodhd_search_batch_v1,
+)
 
 __all__ = [
     "build_circuit_breaker_transition",
@@ -284,4 +287,5 @@ __all__ = [
     "build_eodhd_exact_identity_capability_v2",
     "build_eodhd_exact_symbol_resolution_readiness",
     "build_eodhd_exact_symbol_resolution_readiness_v3",
+    "run_controlled_eodhd_search_batch_v1",
 ]
