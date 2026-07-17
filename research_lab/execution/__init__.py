@@ -204,6 +204,7 @@ from research_lab.execution.eodhd_exact_identity_capability_v2 import (
     build_eodhd_exact_identity_capability_v2,
 )
 from research_lab.execution.eodhd_exact_symbol_resolution_readiness_v2 import build_eodhd_exact_symbol_resolution_readiness
+from research_lab.execution.eodhd_exact_symbol_resolution_readiness_v3 import build_eodhd_exact_symbol_resolution_readiness_v3
 
 __all__ = [
     "build_circuit_breaker_transition",
@@ -282,4 +283,5 @@ __all__ = [
     "build_eodhd_exact_identity_capability",
     "build_eodhd_exact_identity_capability_v2",
     "build_eodhd_exact_symbol_resolution_readiness",
+    "build_eodhd_exact_symbol_resolution_readiness_v3",
 ]
