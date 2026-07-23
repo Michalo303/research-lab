@@ -3,10 +3,16 @@ from __future__ import annotations
 import csv
 import json
 from datetime import date
+from itertools import islice
 from pathlib import Path
 
 from research_lab.config import REAL_EOD_DATA_SOURCES
 from research_lab.edge import run_edge_audit, summarize_edge_audit
+
+
+MAX_SELF_IMPROVEMENT_INPUT_ROWS = 1000
+MAX_SELF_IMPROVEMENT_INPUT_LINES = 2000
+MAX_SELF_IMPROVEMENT_LINE_BYTES = 8192
 
 
 def run_self_improvement(root: Path) -> Path:
@@ -62,14 +68,36 @@ def run_self_improvement(root: Path) -> Path:
 def _read_csv(path: Path) -> list[dict]:
     if not path.exists():
         return []
-    with path.open(newline="", encoding="utf-8") as handle:
-        return list(csv.DictReader(handle))
+    return list(
+        islice(
+            csv.DictReader(_bounded_text_lines(path)),
+            MAX_SELF_IMPROVEMENT_INPUT_ROWS,
+        )
+    )
 
 
 def _read_jsonl(path: Path) -> list[dict]:
     if not path.exists():
         return []
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    rows = []
+    for line in _bounded_text_lines(path):
+        if not line.strip():
+            continue
+        rows.append(json.loads(line))
+        if len(rows) >= MAX_SELF_IMPROVEMENT_INPUT_ROWS:
+            break
+    return rows
+
+
+def _bounded_text_lines(path: Path):
+    with path.open("rb") as handle:
+        for _ in range(MAX_SELF_IMPROVEMENT_INPUT_LINES):
+            line = handle.readline(MAX_SELF_IMPROVEMENT_LINE_BYTES + 1)
+            if not line:
+                return
+            if len(line) > MAX_SELF_IMPROVEMENT_LINE_BYTES:
+                raise ValueError("self-improvement input line exceeds bounded input size")
+            yield line.decode("utf-8")
 
 
 def _weak_points(leaderboard: list[dict], hypotheses: list[dict], hypothesis_results: list[dict]) -> list[str]:

@@ -18,6 +18,9 @@ EDGE_COLUMNS = [
     "failure_mode",
     "validation_requirement",
 ]
+MAX_EDGE_AUDIT_INPUT_ROWS = 1000
+MAX_EDGE_AUDIT_INPUT_LINES = 2000
+MAX_EDGE_AUDIT_LINE_BYTES = 8192
 
 
 EDGE_RULES = [
@@ -146,15 +149,24 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
     items = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        try:
-            item = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(item, dict):
-            items.append(item)
+    with path.open("rb") as handle:
+        for _ in range(MAX_EDGE_AUDIT_INPUT_LINES):
+            line = handle.readline(MAX_EDGE_AUDIT_LINE_BYTES + 1)
+            if not line:
+                break
+            if len(line) > MAX_EDGE_AUDIT_LINE_BYTES:
+                raise ValueError("edge-audit JSONL line exceeds bounded input size")
+            line = line.decode("utf-8")
+            if not line.strip():
+                continue
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(item, dict):
+                items.append(item)
+            if len(items) >= MAX_EDGE_AUDIT_INPUT_ROWS:
+                break
     return items
 
 

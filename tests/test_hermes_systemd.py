@@ -7,6 +7,19 @@ TIMER = Path("ops/systemd/hermes-hypothesis.timer")
 DAILY_TIMER = Path("deploy/systemd/trading-research-daily.timer")
 
 
+def test_research_job_units_are_locked_hardened_and_bounded():
+    for job in ("daily", "weekly", "self-improvement"):
+        text = Path(f"deploy/systemd/trading-research-{job}.service").read_text(encoding="utf-8")
+
+        assert "EnvironmentFile=-/opt/trading/research-lab/.env" in text
+        assert "/usr/bin/flock -n /opt/trading/research-lab/tmp/research.lock" in text
+        assert "NoNewPrivileges=true" in text
+        assert "ProtectSystem=full" in text
+        assert "ProtectHome=true" in text
+        assert "ReadWritePaths=/opt/trading/research-lab" in text
+        assert "TimeoutStartSec=" in text
+
+
 def test_service_uses_safe_user_directory_lock_and_module_entrypoint():
     text = SERVICE.read_text(encoding="utf-8")
 
