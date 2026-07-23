@@ -17,6 +17,42 @@ from research_lab.reports import collect_git_info, generate_run_id
 from research_lab.risk_management import apply_risk_guidance
 
 
+CANONICAL_RUNTIME_ROOT = Path("/opt/trading/research-lab")
+DEFAULT_BOOK_INDEX_PATH = Path(
+    "/opt/trading/private/hermes_books/index/book_index.json"
+)
+DEFAULT_BOOK_NOTES_DIR = Path(
+    "/opt/trading/private/hermes_books/extracted_notes"
+)
+
+
+def _book_context_paths(
+    root: Path, env: Mapping[str, str]
+) -> tuple[Path, Path]:
+    root = Path(root)
+    use_canonical_defaults = (
+        root.resolve() == CANONICAL_RUNTIME_ROOT.resolve()
+    )
+    unavailable_root = root / ".hermes_book_context_unavailable"
+    default_index = (
+        DEFAULT_BOOK_INDEX_PATH
+        if use_canonical_defaults
+        else unavailable_root / "index" / "book_index.json"
+    )
+    default_notes = (
+        DEFAULT_BOOK_NOTES_DIR
+        if use_canonical_defaults
+        else unavailable_root / "extracted_notes"
+    )
+    index_path = Path(
+        env.get("HERMES_BOOK_INDEX_PATH", str(default_index))
+    )
+    notes_dir = Path(
+        env.get("HERMES_BOOK_NOTES_DIR", str(default_notes))
+    )
+    return index_path, notes_dir
+
+
 def run_hypothesis_generation(
     root: Path,
     *,
@@ -38,18 +74,7 @@ def run_hypothesis_generation(
     provider = str(current_env.get("HERMES_PROVIDER", "")).strip().lower() or "not_configured"
     diagnostic = read_diagnostic_input(root)
     input_report_path = _relative(root, diagnostic.path) if diagnostic.path else ""
-    book_index_path = Path(
-        current_env.get(
-            "HERMES_BOOK_INDEX_PATH",
-            "/opt/trading/private/hermes_books/index/book_index.json",
-        )
-    )
-    book_notes_dir = Path(
-        current_env.get(
-            "HERMES_BOOK_NOTES_DIR",
-            "/opt/trading/private/hermes_books/extracted_notes",
-        )
-    )
+    book_index_path, book_notes_dir = _book_context_paths(root, current_env)
     book_context = load_book_knowledge_context(
         book_index_path,
         book_notes_dir,
