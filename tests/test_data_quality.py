@@ -80,3 +80,42 @@ def test_run_data_quality_audit_uses_manifest_stored_csv_for_eodhd(tmp_path):
 
     assert result["rows"]
     assert any(row["dataset"] == "daily_universe" for row in result["rows"])
+
+
+def test_run_data_quality_audit_reads_production_multiindex_csv_round_trip(tmp_path):
+    processed = tmp_path / "data" / "processed"
+    manifests = tmp_path / "data" / "manifests"
+    processed.mkdir(parents=True)
+    manifests.mkdir(parents=True)
+    stored_csv = processed / "eodhd_daily_universe.csv"
+    columns = pd.MultiIndex.from_product(
+        [["SPY"], ["open", "high", "low", "close", "volume"]]
+    )
+    panel = pd.DataFrame(
+        [
+            [100.0, 101.0, 99.0, 100.0, 1000.0],
+            [101.0, 102.0, 100.0, 101.0, 1100.0],
+        ],
+        index=pd.to_datetime(["2026-01-02", "2026-01-05"]),
+        columns=columns,
+    )
+    panel.index.name = "date"
+    panel.to_csv(stored_csv)
+    (manifests / "daily_universe.json").write_text(
+        json.dumps(
+            {
+                "name": "daily_universe",
+                "source": "eodhd",
+                "adjusted": True,
+                "symbols": ["SPY"],
+                "stored_csv": str(stored_csv),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_data_quality_audit(tmp_path, "2026-W30")
+
+    assert result["rows"]
+    assert {row["symbol"] for row in result["rows"]} >= {"*", "SPY"}
+    assert any(row["check"] == "missing_ohlcv_columns" and row["status"] == "pass" for row in result["rows"])
