@@ -10,6 +10,30 @@ from research_lab.hermes.run_hypothesis_generation import main, run_hypothesis_g
 NOW = datetime(2026, 6, 12, 2, 0, tzinfo=timezone.utc)
 
 
+def test_implicit_book_context_paths_are_bound_to_canonical_runtime_root(
+    tmp_path, monkeypatch
+):
+    import research_lab.hermes.run_hypothesis_generation as runner
+
+    canonical_root = tmp_path / "canonical-runtime"
+    canonical_index = tmp_path / "private" / "index" / "book_index.json"
+    canonical_notes = tmp_path / "private" / "extracted_notes"
+    monkeypatch.setattr(runner, "CANONICAL_RUNTIME_ROOT", canonical_root)
+    monkeypatch.setattr(runner, "DEFAULT_BOOK_INDEX_PATH", canonical_index)
+    monkeypatch.setattr(runner, "DEFAULT_BOOK_NOTES_DIR", canonical_notes)
+
+    assert runner._book_context_paths(canonical_root, {}) == (
+        canonical_index,
+        canonical_notes,
+    )
+    fixture_root = tmp_path / "fixture-runtime"
+    fixture_index, fixture_notes = runner._book_context_paths(fixture_root, {})
+    assert canonical_index not in (fixture_index, fixture_notes)
+    assert canonical_notes not in (fixture_index, fixture_notes)
+    assert fixture_index.is_relative_to(fixture_root)
+    assert fixture_notes.is_relative_to(fixture_root)
+
+
 def _valid(title="Conservative trend cap"):
     return {
         "title": title,
