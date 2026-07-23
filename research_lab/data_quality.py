@@ -74,16 +74,33 @@ def _manifest_csv_path(root: Path, manifest: dict[str, Any]) -> Path | None:
 
 
 def _read_processed_panel(path: Path) -> pd.DataFrame:
-    frame = pd.read_csv(path, index_col=0, parse_dates=True)
-    tuples = []
-    for column in frame.columns:
-        if "." in column:
-            symbol, field = column.split(".", 1)
-            tuples.append((symbol, field))
-        else:
-            tuples.append(("", column))
-    frame.columns = pd.MultiIndex.from_tuples(tuples)
+    multiindex_frame = pd.read_csv(path, header=[0, 1], index_col=0)
+    if _is_ohlcv_multiindex(multiindex_frame.columns):
+        frame = multiindex_frame
+    else:
+        frame = pd.read_csv(path, index_col=0)
+        tuples = []
+        for column in frame.columns:
+            if "." in column:
+                symbol, field = column.split(".", 1)
+                tuples.append((symbol, field))
+            else:
+                tuples.append(("", column))
+        frame.columns = pd.MultiIndex.from_tuples(tuples)
+    frame.index = pd.to_datetime(frame.index, errors="raise")
     return frame
+
+
+def _is_ohlcv_multiindex(columns: pd.Index) -> bool:
+    if not isinstance(columns, pd.MultiIndex) or columns.nlevels != 2:
+        return False
+    symbols = {str(symbol).strip() for symbol in columns.get_level_values(0)}
+    fields = {str(field).strip().lower() for field in columns.get_level_values(1)}
+    return (
+        fields == set(OHLCV_COLUMNS)
+        and bool(symbols)
+        and all(symbol and not symbol.startswith("Unnamed:") for symbol in symbols)
+    )
 
 
 def _symbols(panel: pd.DataFrame) -> list[str]:
