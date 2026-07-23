@@ -1133,8 +1133,17 @@ def load_book_knowledge_context(
             limit=limit,
             note_priority_overlays=_priority_overlays(notes_path),
         )
+        selected = [
+            entry for entry in selected if _is_promoted_evidence_eligible(entry)
+        ]
         if not selected:
-            return BookKnowledgeContext(skipped_note_count=skipped_note_count)
+            return BookKnowledgeContext(
+                skipped_note_count=skipped_note_count,
+                canonical_blocker_id=canonical_blocker,
+                blocker_diagnostic=_blocker_diagnostic(
+                    dominant_blocker, canonical_blocker
+                ),
+            )
         prompt = build_hermes_knowledge_prompt(
             selected,
             dominant_blocker=canonical_blocker,
@@ -1151,7 +1160,7 @@ def load_book_knowledge_context(
                 dict.fromkeys(
                     str(entry["note_id"])
                     for entry in selected
-                    if entry.get("note_id") and _is_promoted_evidence_eligible(entry)
+                    if entry.get("note_id")
                 )
             ),
             canonical_blocker_id=canonical_blocker,

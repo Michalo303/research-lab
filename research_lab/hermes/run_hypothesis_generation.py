@@ -79,7 +79,7 @@ def run_hypothesis_generation(
         },
     }
     canonical_inputs_available = book_index_path.is_file() and book_notes_dir.is_dir()
-    if canonical_inputs_available and book_context.note_count == 0:
+    if canonical_inputs_available and not book_context.selected_note_ids:
         return _finish(
             root,
             {

@@ -9,6 +9,8 @@ from pathlib import Path
 import re
 from time import perf_counter
 
+import pandas as pd
+
 from research_lab.backtest import close_frame, cost_stress, weighted_backtest
 from research_lab.config import LabConfig, ensure_project_structure
 from research_lab.data import DataBundle, load_cached_eodhd_daily_universe, load_daily_universe, load_eodhd_daily_universe, load_intraday_symbol, load_massive_daily_universe
@@ -42,15 +44,18 @@ _DATA_SNAPSHOT_HASH_FIELDS = (
 def _data_snapshot_identity(manifest: object) -> str:
     if not isinstance(manifest, Mapping):
         raise ValueError("data manifest must be an object")
-    source = str(manifest.get("source") or "").strip().casefold()
-    start = str(manifest.get("start") or "").strip()
-    end = str(manifest.get("end") or "").strip()
+    for field in ("source", "start", "end"):
+        if not isinstance(manifest.get(field), str) or not manifest[field].strip():
+            raise ValueError(f"data manifest {field} must be a non-empty string")
+    for field in ("provider", "name", "interval", "timeframe", "load_mode"):
+        if field in manifest and not isinstance(manifest[field], str):
+            raise ValueError(f"data manifest {field} must be a string when present")
+    source = manifest["source"].strip().casefold()
+    start = manifest["start"].strip()
+    end = manifest["end"].strip()
     raw_symbols = manifest.get("symbols")
     if (
-        not source
-        or not start
-        or not end
-        or not isinstance(raw_symbols, list)
+        not isinstance(raw_symbols, list)
         or not raw_symbols
         or any(not isinstance(symbol, str) or not symbol.strip() for symbol in raw_symbols)
     ):
@@ -81,7 +86,9 @@ def _data_snapshot_identity(manifest: object) -> str:
     for field in _DATA_SNAPSHOT_HASH_FIELDS:
         if field not in manifest:
             continue
-        value = str(manifest[field] or "").strip().casefold()
+        if not isinstance(manifest[field], str):
+            raise ValueError(f"data manifest {field} must be a SHA-256")
+        value = manifest[field].strip().casefold()
         if not re.fullmatch(r"[0-9a-f]{64}", value):
             raise ValueError(f"data manifest {field} must be a SHA-256")
         hashes[field] = value
@@ -90,6 +97,45 @@ def _data_snapshot_identity(manifest: object) -> str:
         identity, sort_keys=True, separators=(",", ":"), ensure_ascii=True
     )
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _resolved_data_snapshot_identity(bundle: DataBundle) -> str:
+    manifest = {
+        **bundle.manifest,
+        "content_sha256": _data_frame_sha256(bundle.data),
+    }
+    return _data_snapshot_identity(manifest)
+
+
+def _data_frame_sha256(data: pd.DataFrame) -> str:
+    if not isinstance(data, pd.DataFrame):
+        raise ValueError("resolved market data must be a pandas DataFrame")
+    metadata = {
+        "shape": list(data.shape),
+        "columns": [_label_identity(value) for value in data.columns],
+        "column_names": [_label_identity(value) for value in data.columns.names],
+        "index_names": [_label_identity(value) for value in data.index.names],
+        "dtypes": [str(value) for value in data.dtypes],
+    }
+    digest = hashlib.sha256(
+        json.dumps(
+            metadata, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        ).encode("utf-8")
+    )
+    digest.update(
+        pd.util.hash_pandas_object(data, index=True, categorize=True)
+        .to_numpy(dtype="uint64", copy=False)
+        .tobytes()
+    )
+    return digest.hexdigest()
+
+
+def _label_identity(value: object) -> object:
+    if isinstance(value, tuple):
+        return [_label_identity(item) for item in value]
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
 
 
 def run_daily_research(
@@ -156,7 +202,7 @@ def run_daily_research(
             data_bundle = intraday_bundle
         else:
             data_bundle = daily_bundle
-        data_snapshot_identity = _data_snapshot_identity(data_bundle.manifest)
+        data_snapshot_identity = _resolved_data_snapshot_identity(data_bundle)
         execution_key = (
             strategy_execution_fingerprint(spec),
             data_snapshot_identity,

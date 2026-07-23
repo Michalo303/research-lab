@@ -259,8 +259,9 @@ def test_runtime_excludes_incomplete_provenance_note_ids_from_promoted_evidence(
         limit=5,
     )
 
-    assert context.note_count == 2
+    assert context.note_count == 1
     assert context.selected_note_ids == ("note-1111111111111111",)
+    assert "Incomplete provenance note" not in context.prompt
 
 
 def _write_three_attribution_notes(root):
@@ -699,7 +700,8 @@ def test_runtime_excludes_unknown_only_blocker_note_from_selected_note_ids(tmp_p
         limit=5,
     )
 
-    assert context.note_count == 1
+    assert context.note_count == 0
+    assert context.prompt == ""
     assert context.selected_note_ids == ()
 
 
@@ -884,6 +886,46 @@ def test_orchestrator_fails_closed_before_provider_for_unrecognized_book_blocker
         outcome["book_knowledge"]["blocker_diagnostic"]
         == "unrecognized_blocker"
     )
+
+
+def test_orchestrator_fails_closed_when_retrieved_note_is_not_citable(tmp_path):
+    index_path = _write_index(tmp_path / "private")
+    notes_dir = tmp_path / "private" / "extracted_notes"
+    notes_dir.mkdir(parents=True)
+    incomplete_note = _note(concept="Incomplete provenance note")
+    incomplete_note.pop("source_location")
+    (notes_dir / "notes.jsonl").write_text(
+        json.dumps(incomplete_note) + "\n",
+        encoding="utf-8",
+    )
+    report = tmp_path / "reports" / "daily" / "2026-06-12.md"
+    report.parent.mkdir(parents=True)
+    report.write_text(
+        "- biggest risk discovered: drawdown\n",
+        encoding="utf-8",
+    )
+    provider_called = False
+
+    def provider(*_args):
+        nonlocal provider_called
+        provider_called = True
+        raise AssertionError("provider must not run without citable book evidence")
+
+    outcome = run_hypothesis_generation(
+        tmp_path,
+        env={
+            "HERMES_PROVIDER": "command",
+            "HERMES_BOOK_INDEX_PATH": str(index_path),
+            "HERMES_BOOK_NOTES_DIR": str(notes_dir),
+        },
+        provider_invoker=provider,
+    )
+
+    assert provider_called is False
+    assert outcome["status"] == "book_context_unavailable"
+    assert outcome["book_knowledge"]["note_count"] == 0
+    assert outcome["book_knowledge"]["selected_note_ids"] == []
+    assert outcome["queue_impact"]["state"] == "unchanged"
 
 
 def test_schema_rejects_long_text_and_unknown_fields():

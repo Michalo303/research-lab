@@ -107,8 +107,8 @@ content, private paths, prompts, or provider responses are persisted.
 
 ### Same-snapshot execution dedupe
 
-A deterministic `data_snapshot_identity` will be derived from a strict,
-normalized subset of each data manifest:
+A deterministic `data_snapshot_identity` will combine a strict, normalized
+subset of each data manifest with a hash derived from the resolved OHLCV frame:
 
 - source/provider identity;
 - timeframe/interval when present;
@@ -116,7 +116,9 @@ normalized subset of each data manifest:
 - start and end timestamps;
 - fallback status when explicitly present or safely derivable, otherwise the
   literal state `unknown`;
-- available content hash fields when present.
+- available approved source hash fields when present;
+- a mandatory content hash covering the resolved frame's shape, ordered
+  columns, dtypes, index, and cell values.
 
 Every completed result stores this identity. Before an LLM-generated queued
 hypothesis is backtested, the runner checks a bounded recent experiment tail for
@@ -129,8 +131,10 @@ bounded `same_snapshot_skipped` diagnostic, performs no registry append for the
 skip, and continues. Baseline and manually supplied strategies are not changed
 by this rule. A new data snapshot remains eligible for a new test.
 
-Legacy results without an explicit snapshot identity are compared using a
-deterministic identity derived from their stored data manifest.
+Legacy results without an explicit content-bound snapshot identity cannot
+suppress a new content-bound run. Their stored manifest can be normalized for
+audit compatibility, but it is not treated as proof that current OHLCV bytes
+are unchanged.
 
 ## Safety Boundaries
 

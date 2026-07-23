@@ -51,10 +51,47 @@ def test_data_snapshot_identity_is_canonical_and_materially_sensitive():
     assert runner._data_snapshot_identity(without_fallback) != identity
 
 
+def test_resolved_data_snapshot_identity_changes_with_ohlcv_content():
+    import research_lab.runner as runner
+
+    bundle = _bundle(_panel(), source="eodhd", provider="eodhd")
+    identity = runner._resolved_data_snapshot_identity(bundle)
+    unchanged = runner.DataBundle(
+        bundle.name,
+        bundle.timeframe,
+        bundle.data.copy(),
+        dict(bundle.manifest),
+    )
+    changed_data = bundle.data.copy()
+    changed_data.iloc[-1, changed_data.columns.get_loc(("SPY", "close"))] += 0.01
+    corrected = runner.DataBundle(
+        bundle.name,
+        bundle.timeframe,
+        changed_data,
+        dict(bundle.manifest),
+    )
+
+    assert runner._resolved_data_snapshot_identity(unchanged) == identity
+    assert runner._resolved_data_snapshot_identity(corrected) != identity
+
+
 @pytest.mark.parametrize(
     "manifest",
     [
         {},
+        {
+            "source": {"unexpected": "mapping"},
+            "symbols": ["SPY"],
+            "start": "x",
+            "end": "y",
+        },
+        {
+            "source": "eodhd",
+            "provider": ["not", "scalar"],
+            "symbols": ["SPY"],
+            "start": 123,
+            "end": True,
+        },
         {
             "source": "eodhd",
             "symbols": ["SPY"],
@@ -93,7 +130,7 @@ def test_daily_runner_skips_llm_queue_on_same_data_snapshot(tmp_path, monkeypatc
     panel = _panel()
     bundle = _bundle(panel, source="eodhd", provider="eodhd")
     spec = _spec("H1")
-    snapshot_identity = runner._data_snapshot_identity(bundle.manifest)
+    snapshot_identity = runner._resolved_data_snapshot_identity(bundle)
     experiments = tmp_path / "registry" / "experiments.jsonl"
     experiments.parent.mkdir(parents=True)
     experiments.write_text(
@@ -176,8 +213,13 @@ def test_daily_runner_retests_llm_queue_when_data_snapshot_changes(
                 "builder": spec.builder,
                 "parameters": spec.parameters,
                 "data_manifest": prior_manifest,
-                "data_snapshot_identity": runner._data_snapshot_identity(
-                    prior_manifest
+                "data_snapshot_identity": runner._resolved_data_snapshot_identity(
+                    runner.DataBundle(
+                        bundle.name,
+                        bundle.timeframe,
+                        bundle.data,
+                        prior_manifest,
+                    )
                 ),
             }
         )
@@ -215,11 +257,18 @@ def test_daily_runner_retests_llm_queue_when_data_snapshot_changes(
     results = run_daily_research(tmp_path)
 
     assert len(results) == 1
-    assert results[0]["data_snapshot_identity"] == runner._data_snapshot_identity(
-        bundle.manifest
+    assert results[0]["data_snapshot_identity"] == (
+        runner._resolved_data_snapshot_identity(bundle)
     )
-    assert results[0]["data_snapshot_identity"] != runner._data_snapshot_identity(
-        prior_manifest
+    assert results[0]["data_snapshot_identity"] != (
+        runner._resolved_data_snapshot_identity(
+            runner.DataBundle(
+                bundle.name,
+                bundle.timeframe,
+                bundle.data,
+                prior_manifest,
+            )
+        )
     )
 
 

@@ -247,6 +247,11 @@ return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 Do not hash mutable report paths, row counts, API URLs, credentials, or runtime
 timestamps.
 
+Strict-review repair: derive a mandatory `content_sha256` from the resolved
+OHLCV frame's shape, ordered columns, dtypes, index, and values. Add it to the
+canonical manifest subset before hashing. Reject non-string required fields,
+container-valued optional scalar fields, and non-string hash fields.
+
 - [ ] **Step 4: Verify GREEN**
 
 Run the identity tests and the complete `tests/test_daily_runner_dedupe.py`.
@@ -313,7 +318,7 @@ Import `strategy_execution_fingerprint`. After resolving each spec's actual
 daily or intraday `DataBundle` and before building weights:
 
 ```python
-snapshot_identity = _data_snapshot_identity(data_bundle.manifest)
+snapshot_identity = _resolved_data_snapshot_identity(data_bundle)
 execution_key = (strategy_execution_fingerprint(spec), snapshot_identity)
 if spec.parameters.get("source_hypothesis_id") and execution_key in recent_keys:
     selection["diagnostics"]["same_snapshot_skipped"] += 1

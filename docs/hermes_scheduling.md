@@ -18,7 +18,7 @@ Hermes derives the active research blocker from the structured rejection counts 
 
 For valid hypotheses, Hermes first writes an immutable `artifact_written` record containing the planned queue impact. It then writes the complete updated JSONL queue to a temporary file under the registry lock and commits it with `os.replace`. A terminal immutable artifact records `queue_committed` or `queue_commit_failed`; a failed commit preserves the complete prior queue.
 
-The daily runner records a deterministic identity for the resolved data snapshot. A queued Hermes strategy already evaluated with the same execution fingerprint and snapshot identity is skipped before backtesting. It becomes eligible again only when a material snapshot field changes, such as source, provider, symbol order, time bounds, fallback status, or an approved content hash.
+The daily runner records a deterministic identity for the resolved data snapshot, including a content hash derived from the actual ordered OHLCV frame. A queued Hermes strategy already evaluated with the same execution fingerprint and snapshot identity is skipped before backtesting. It becomes eligible again when either a material manifest field or any resolved OHLCV value changes.
 
 ## Command Provider
 
