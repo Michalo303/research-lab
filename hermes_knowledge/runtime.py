@@ -1127,15 +1127,15 @@ def load_book_knowledge_context(
         )
         if not entries:
             return BookKnowledgeContext(skipped_note_count=skipped_note_count)
+        eligible_entries = [
+            entry for entry in entries if _is_promoted_evidence_eligible(entry)
+        ]
         selected = retrieve_for_blocker(
-            entries,
+            eligible_entries,
             canonical_blocker,
             limit=limit,
             note_priority_overlays=_priority_overlays(notes_path),
         )
-        selected = [
-            entry for entry in selected if _is_promoted_evidence_eligible(entry)
-        ]
         if not selected:
             return BookKnowledgeContext(
                 skipped_note_count=skipped_note_count,

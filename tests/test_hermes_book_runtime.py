@@ -264,6 +264,46 @@ def test_runtime_excludes_incomplete_provenance_note_ids_from_promoted_evidence(
     assert "Incomplete provenance note" not in context.prompt
 
 
+def test_runtime_filters_ineligible_notes_before_applying_retrieval_limit(tmp_path):
+    index_path = _write_index(tmp_path / "private")
+    notes_dir = tmp_path / "private" / "extracted_notes"
+    notes_dir.mkdir(parents=True)
+    notes = []
+    for index, marker in enumerate("23456"):
+        note = _note(
+            note_id=f"note-{marker * 16}",
+            source_passage_id=f"passage-{marker * 16}",
+            concept=f"Ineligible high priority {marker}",
+            priority_score=99 - index,
+        )
+        note.pop("source_location")
+        notes.append(note)
+    notes.append(
+        _note(
+            note_id="note-7777777777777777",
+            source_passage_id="passage-7777777777777777",
+            concept="Eligible lower priority note",
+            priority_score=80,
+        )
+    )
+    (notes_dir / "notes.jsonl").write_text(
+        "".join(json.dumps(note) + "\n" for note in notes),
+        encoding="utf-8",
+    )
+
+    context = load_book_knowledge_context(
+        index_path,
+        notes_dir,
+        dominant_blocker="drawdown",
+        limit=5,
+    )
+
+    assert context.note_count == 1
+    assert context.selected_note_ids == ("note-7777777777777777",)
+    assert "Eligible lower priority note" in context.prompt
+    assert "Ineligible high priority" not in context.prompt
+
+
 def _write_three_attribution_notes(root):
     notes_dir = root / "extracted_notes"
     notes_dir.mkdir(parents=True)
