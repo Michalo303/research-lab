@@ -179,6 +179,11 @@ def load_eodhd_daily_universe(
         raise ValueError("EODHD_API_KEY is required for the eodhd data provider")
     from research_lab.data_eodhd import fetch_eodhd_eod
 
+    requested_symbols = list(symbols)
+    excluded_intraday_symbols = [symbol for symbol in requested_symbols if symbol == "BTCUSDT"]
+    symbols = [symbol for symbol in symbols if symbol not in excluded_intraday_symbols]
+    if not symbols:
+        raise ValueError("EODHD daily universe has no non-intraday symbols to load")
     frames = {}
     provider_symbols = {}
     for symbol in symbols:
@@ -195,8 +200,10 @@ def load_eodhd_daily_universe(
     manifest.update(
         {
             "provider": "eodhd",
-            "requested_symbols": symbols,
+            "requested_symbols": requested_symbols,
+            "loaded_symbols": symbols,
             "provider_symbols": provider_symbols,
+            "excluded_intraday_symbols": excluded_intraday_symbols,
             "api_key_present": True,
             "stored_csv": str(raw_path),
             "symbol_diagnostics": _symbol_diagnostics(

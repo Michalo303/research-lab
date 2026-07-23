@@ -1,6 +1,18 @@
 from scripts.run_weekly_deep_research import _weekly_robustness_findings
 
 
+def test_weekly_runtime_failure_returns_nonzero_and_writes_failure_artifact(tmp_path, monkeypatch):
+    import scripts.run_weekly_deep_research as weekly
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(weekly, "_run_weekly", lambda: (_ for _ in ()).throw(RuntimeError("token=top-secret")))
+
+    assert weekly.main() == 1
+    payload = (tmp_path / "reports" / "operational" / "weekly-latest-failure.json").read_text(encoding="utf-8")
+    assert "top-secret" not in payload
+    assert "failure details redacted" in payload
+
+
 def test_weekly_robustness_findings_include_true_walk_forward_summary_text():
     lines = _weekly_robustness_findings(
         [

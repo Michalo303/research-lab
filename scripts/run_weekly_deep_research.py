@@ -1,5 +1,5 @@
 from pathlib import Path
-from datetime import date
+from datetime import date, datetime, timezone
 import csv
 import os
 import sys
@@ -107,7 +107,7 @@ def print_weekly_data_provider_diagnostics(diagnostics: dict | None) -> None:
     )
 
 
-def main() -> None:
+def _run_weekly() -> None:
     from research_lab.alerting import build_weekly_alerts, summarize_alerts, write_and_send_alerts
     from research_lab.apify_dataroma import DEFAULT_SUPERINVESTORS, run_dataroma_actor
     from research_lab.cost_monitor import run_research_cost_monitor, summarize_research_costs
@@ -301,5 +301,24 @@ def run_congress_pilot_if_available(root: Path, report_stem: str) -> dict:
     return {"status": "skipped", "events_path": "", "quality_path": ""}
 
 
+def main() -> int:
+    started_at = datetime.now(timezone.utc).isoformat()
+    try:
+        _run_weekly()
+    except Exception as exc:
+        from research_lab.operational_runtime import write_failure_artifact
+
+        artifact = write_failure_artifact(
+            Path.cwd(),
+            job="weekly",
+            exc=exc,
+            started_at=started_at,
+            finished_at=datetime.now(timezone.utc).isoformat(),
+        )
+        print(f"weekly research failed: reason_code={type(exc).__name__} failure_artifact={artifact}")
+        return 1
+    return 0
+
+
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 from pathlib import Path
 import sys
 
@@ -200,11 +201,25 @@ def main(argv: list[str] | None = None) -> int:
 
     from research_lab.runner import run_daily_research
 
-    results = run_daily_research(
-        args.root,
-        recovery_mode=args.recovery_mode,
-        recovery_day=args.recovery_day,
-    )
+    started_at = datetime.now(timezone.utc).isoformat()
+    try:
+        results = run_daily_research(
+            args.root,
+            recovery_mode=args.recovery_mode,
+            recovery_day=args.recovery_day,
+        )
+    except Exception as exc:
+        from research_lab.operational_runtime import write_failure_artifact
+
+        artifact = write_failure_artifact(
+            args.root.resolve(),
+            job="daily",
+            exc=exc,
+            started_at=started_at,
+            finished_at=datetime.now(timezone.utc).isoformat(),
+        )
+        print(f"daily research failed: reason_code={type(exc).__name__} failure_artifact={artifact}")
+        return 1
     print(f"daily research completed: {len(results)} experiments")
     return 0
 

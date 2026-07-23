@@ -437,6 +437,24 @@ def test_normal_execution_calls_runner_once(tmp_path, monkeypatch, capsys):
     assert "daily research completed: 2 experiments" in output
 
 
+def test_runtime_failure_returns_nonzero_and_writes_sanitized_failure_artifact(tmp_path, monkeypatch, capsys):
+    module = _load_script_module()
+
+    def failing_runner(*args, **kwargs):
+        raise RuntimeError("provider failure API_KEY=top-secret")
+
+    monkeypatch.setattr("research_lab.runner.run_daily_research", failing_runner)
+
+    assert module.main(["--root", str(tmp_path)]) == 1
+
+    artifact = tmp_path / "reports" / "operational" / "daily-latest-failure.json"
+    payload = json.loads(artifact.read_text(encoding="utf-8"))
+    assert payload["reason_code"] == "RuntimeError"
+    assert "top-secret" not in payload["failure_summary"]
+    assert payload["failure_summary"] == "RuntimeError: failure details redacted"
+    assert "failure_artifact=" in capsys.readouterr().out
+
+
 def test_explicit_recovery_execution_passes_mode_and_day_to_runner(tmp_path, monkeypatch):
     call_log = _install_fake_runner(monkeypatch)
     module = _load_script_module()
