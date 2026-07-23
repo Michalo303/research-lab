@@ -114,7 +114,8 @@ normalized subset of each data manifest:
 - timeframe/interval when present;
 - ordered symbols;
 - start and end timestamps;
-- fallback status;
+- fallback status when explicitly present or safely derivable, otherwise the
+  literal state `unknown`;
 - available content hash fields when present.
 
 Every completed result stores this identity. Before an LLM-generated queued
