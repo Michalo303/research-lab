@@ -14,7 +14,11 @@ Every invocation writes an immutable JSON artifact under `reports/hermes/runs/YY
 
 Remote OpenAI-compatible endpoints must use HTTPS. Plaintext HTTP is accepted only for exact loopback hosts (`localhost`, `127.0.0.1`, or `::1`), so an API key is never sent to a remote HTTP endpoint. Invalid or disallowed endpoint URLs produce an audited `provider_error` without changing the queue.
 
+Hermes derives the active research blocker from the structured rejection counts in the latest daily report before considering free-form risk prose. It maps only the supported walk-forward, drawdown, and cost-stress reasons. When canonical Knihomol inputs exist but yield no usable notes for that blocker, Hermes writes a `book_context_unavailable` terminal artifact and does not call the provider or change the queue. A generated hypothesis must cite at least one selected `note_id`; uncited output is rejected.
+
 For valid hypotheses, Hermes first writes an immutable `artifact_written` record containing the planned queue impact. It then writes the complete updated JSONL queue to a temporary file under the registry lock and commits it with `os.replace`. A terminal immutable artifact records `queue_committed` or `queue_commit_failed`; a failed commit preserves the complete prior queue.
+
+The daily runner records a deterministic identity for the resolved data snapshot, including a content hash derived from the actual ordered OHLCV frame. A queued Hermes strategy already evaluated with the same execution fingerprint and snapshot identity is skipped before backtesting. It becomes eligible again when either a material manifest field or any resolved OHLCV value changes.
 
 ## Command Provider
 

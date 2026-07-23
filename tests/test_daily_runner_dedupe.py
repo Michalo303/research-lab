@@ -10,9 +10,266 @@ from research_lab.strategies.baselines import (
     _proven_eodhd_result_rejection_reason,
     recovery_manifest_specs,
     select_daily_experiment_candidates,
+    strategy_execution_fingerprint,
 )
 
 pytestmark = pytest.mark.usefixtures("hermetic_provider_guard")
+
+
+def test_data_snapshot_identity_is_canonical_and_materially_sensitive():
+    import research_lab.runner as runner
+
+    manifest = {
+        "name": "daily_universe",
+        "source": "eodhd",
+        "provider": "eodhd",
+        "symbols": ["SPY", "QQQ"],
+        "start": "2020-01-02",
+        "end": "2026-07-22",
+        "fallback_used": False,
+        "rows": 1000,
+        "created_at": "2026-07-23T00:00:00+00:00",
+    }
+
+    identity = runner._data_snapshot_identity(manifest)
+    reordered = {key: manifest[key] for key in reversed(manifest)}
+    assert runner._data_snapshot_identity(reordered) == identity
+
+    for key, changed_value in (
+        ("source", "synthetic"),
+        ("provider", "other"),
+        ("symbols", ["QQQ", "SPY"]),
+        ("start", "2020-01-03"),
+        ("end", "2026-07-23"),
+        ("fallback_used", True),
+    ):
+        changed = {**manifest, key: changed_value}
+        assert runner._data_snapshot_identity(changed) != identity
+
+    without_fallback = dict(manifest)
+    without_fallback.pop("fallback_used")
+    assert runner._data_snapshot_identity(without_fallback) != identity
+
+
+def test_resolved_data_snapshot_identity_changes_with_ohlcv_content():
+    import research_lab.runner as runner
+
+    bundle = _bundle(_panel(), source="eodhd", provider="eodhd")
+    identity = runner._resolved_data_snapshot_identity(bundle)
+    unchanged = runner.DataBundle(
+        bundle.name,
+        bundle.timeframe,
+        bundle.data.copy(),
+        dict(bundle.manifest),
+    )
+    changed_data = bundle.data.copy()
+    changed_data.iloc[-1, changed_data.columns.get_loc(("SPY", "close"))] += 0.01
+    corrected = runner.DataBundle(
+        bundle.name,
+        bundle.timeframe,
+        changed_data,
+        dict(bundle.manifest),
+    )
+
+    assert runner._resolved_data_snapshot_identity(unchanged) == identity
+    assert runner._resolved_data_snapshot_identity(corrected) != identity
+
+
+@pytest.mark.parametrize(
+    "manifest",
+    [
+        {},
+        {
+            "source": {"unexpected": "mapping"},
+            "symbols": ["SPY"],
+            "start": "x",
+            "end": "y",
+        },
+        {
+            "source": "eodhd",
+            "provider": ["not", "scalar"],
+            "symbols": ["SPY"],
+            "start": 123,
+            "end": True,
+        },
+        {
+            "source": "eodhd",
+            "symbols": ["SPY"],
+            "start": "x",
+            "end": "y",
+            "fallback_used": "false",
+        },
+        {
+            "source": "eodhd",
+            "symbols": ["SPY"],
+            "start": "x",
+            "end": "y",
+            "fallback_used": "unknown",
+        },
+        {
+            "source": "eodhd",
+            "symbols": [],
+            "start": "x",
+            "end": "y",
+            "fallback_used": False,
+        },
+    ],
+)
+def test_data_snapshot_identity_rejects_ambiguous_manifests(manifest):
+    import research_lab.runner as runner
+
+    with pytest.raises(ValueError):
+        runner._data_snapshot_identity(manifest)
+
+
+def test_daily_runner_skips_llm_queue_on_same_data_snapshot(tmp_path, monkeypatch):
+    import research_lab.runner as runner
+
+    monkeypatch.setenv("RESEARCH_LAB_DATA_PROVIDER", "eodhd")
+    monkeypatch.setenv("RESEARCH_LAB_MODE", "research_only")
+    panel = _panel()
+    bundle = _bundle(panel, source="eodhd", provider="eodhd")
+    spec = _spec("H1")
+    snapshot_identity = runner._resolved_data_snapshot_identity(bundle)
+    experiments = tmp_path / "registry" / "experiments.jsonl"
+    experiments.parent.mkdir(parents=True)
+    experiments.write_text(
+        json.dumps(
+            {
+                "strategy_id": "PRIOR_H1",
+                "family": spec.family,
+                "asset_class": spec.asset_class,
+                "timeframe": spec.timeframe,
+                "short_name": spec.short_name,
+                "builder": spec.builder,
+                "parameters": spec.parameters,
+                "data_manifest": bundle.manifest,
+                "data_snapshot_identity": snapshot_identity,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    captured_metadata = {}
+
+    monkeypatch.setattr(
+        runner,
+        "select_daily_candidates",
+        lambda *_args, **_kwargs: {
+            "specs": [spec],
+            "diagnostics": {
+                "selection_mode": "normal_daily",
+                "proposed": 1,
+                "selected": 1,
+            },
+        },
+    )
+    monkeypatch.setattr(
+        runner, "_load_daily_data_bundle", lambda _config, symbols=None: bundle
+    )
+    monkeypatch.setattr(
+        runner,
+        "build_weights",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("same-snapshot hypothesis must skip before evaluation")
+        ),
+    )
+    monkeypatch.setattr(runner, "write_leaderboard", lambda *_args: None)
+    monkeypatch.setattr(runner, "write_allocation_model", lambda *_args: None)
+
+    def capture_report(_root, _results, *, extra_metadata):
+        captured_metadata.update(extra_metadata["daily_experiment_selection"])
+        return {"latest_report_path": tmp_path / "daily.md"}
+
+    monkeypatch.setattr(runner, "write_daily_report_artifacts", capture_report)
+
+    assert run_daily_research(tmp_path) == []
+    assert captured_metadata["same_snapshot_skipped"] == 1
+    assert captured_metadata["attempted"] == 0
+    assert strategy_execution_fingerprint(spec)
+
+
+def test_daily_runner_retests_llm_queue_when_data_snapshot_changes(
+    tmp_path, monkeypatch
+):
+    import research_lab.runner as runner
+
+    monkeypatch.setenv("RESEARCH_LAB_DATA_PROVIDER", "eodhd")
+    monkeypatch.setenv("RESEARCH_LAB_MODE", "research_only")
+    panel = _panel()
+    bundle = _bundle(panel, source="eodhd", provider="eodhd")
+    spec = _spec("H1")
+    prior_manifest = {**bundle.manifest, "end": "2025-12-31"}
+    experiments = tmp_path / "registry" / "experiments.jsonl"
+    experiments.parent.mkdir(parents=True)
+    experiments.write_text(
+        json.dumps(
+            {
+                "strategy_id": "PRIOR_H1",
+                "family": spec.family,
+                "asset_class": spec.asset_class,
+                "timeframe": spec.timeframe,
+                "short_name": spec.short_name,
+                "builder": spec.builder,
+                "parameters": spec.parameters,
+                "data_manifest": prior_manifest,
+                "data_snapshot_identity": runner._resolved_data_snapshot_identity(
+                    runner.DataBundle(
+                        bundle.name,
+                        bundle.timeframe,
+                        bundle.data,
+                        prior_manifest,
+                    )
+                ),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        runner,
+        "select_daily_candidates",
+        lambda *_args, **_kwargs: {
+            "specs": [spec],
+            "diagnostics": {
+                "selection_mode": "normal_daily",
+                "proposed": 1,
+                "selected": 1,
+            },
+        },
+    )
+    monkeypatch.setattr(
+        runner, "_load_daily_data_bundle", lambda _config, symbols=None: bundle
+    )
+    close = panel.xs("close", level=1, axis=1)
+    monkeypatch.setattr(
+        runner,
+        "build_weights",
+        lambda *_args: pd.DataFrame({"SPY": 1.0}, index=close.index),
+    )
+    _stub_completed_backtest(monkeypatch, runner, close)
+    monkeypatch.setattr(
+        runner,
+        "write_daily_report_artifacts",
+        lambda *_args, **_kwargs: {"latest_report_path": tmp_path / "daily.md"},
+    )
+
+    results = run_daily_research(tmp_path)
+
+    assert len(results) == 1
+    assert results[0]["data_snapshot_identity"] == (
+        runner._resolved_data_snapshot_identity(bundle)
+    )
+    assert results[0]["data_snapshot_identity"] != (
+        runner._resolved_data_snapshot_identity(
+            runner.DataBundle(
+                bundle.name,
+                bundle.timeframe,
+                bundle.data,
+                prior_manifest,
+            )
+        )
+    )
 
 
 def test_daily_runner_skips_duplicate_executable_specs_before_evaluation(tmp_path, monkeypatch):

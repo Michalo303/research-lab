@@ -9,11 +9,31 @@ from research_lab.hermes.artifacts import (
     read_diagnostic_input,
     write_run_artifact,
 )
-from research_lab.hermes.artifacts import dominant_blocker
 
 
 def test_daily_report_walk_forward_text_is_canonicalized():
     report = "- biggest risk discovered: insufficient rolling walk-forward robustness\n"
+
+    assert dominant_blocker(report) == "walk_forward_fail"
+
+
+def test_structured_rejection_counts_outrank_descriptive_risk():
+    report = "\n".join(
+        [
+            "- biggest risk discovered: EODHD real EOD data is enabled",
+            "- rejection_reasons: failed cost stress=2; "
+            "insufficient walk-forward robustness=14; max drawdown too deep=9",
+        ]
+    )
+
+    assert dominant_blocker(report) == "walk_forward_fail"
+
+
+def test_structured_rejection_count_tie_has_fixed_priority():
+    report = (
+        "- rejection_reasons: max drawdown too deep=3; "
+        "failed cost stress=3; insufficient walk-forward robustness=3"
+    )
 
     assert dominant_blocker(report) == "walk_forward_fail"
 

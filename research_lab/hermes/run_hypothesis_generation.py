@@ -38,26 +38,23 @@ def run_hypothesis_generation(
     provider = str(current_env.get("HERMES_PROVIDER", "")).strip().lower() or "not_configured"
     diagnostic = read_diagnostic_input(root)
     input_report_path = _relative(root, diagnostic.path) if diagnostic.path else ""
-    book_context = load_book_knowledge_context(
+    book_index_path = Path(
         current_env.get(
             "HERMES_BOOK_INDEX_PATH",
             "/opt/trading/private/hermes_books/index/book_index.json",
-        ),
+        )
+    )
+    book_notes_dir = Path(
         current_env.get(
             "HERMES_BOOK_NOTES_DIR",
             "/opt/trading/private/hermes_books/extracted_notes",
-        ),
+        )
+    )
+    book_context = load_book_knowledge_context(
+        book_index_path,
+        book_notes_dir,
         dominant_blocker=diagnostic.blocker,
     )
-    prompt = build_hermes_prompt(
-        root,
-        diagnostics_text=diagnostic.text,
-        input_report_path=input_report_path,
-        schema_text=schema_prompt_text(),
-        dominant_blocker=diagnostic.blocker,
-        book_context=book_context,
-    )
-    provider_result = provider_invoker(provider, prompt, current_env)
     base = {
         "run_id": run_id,
         "timestamp_utc": timestamp_utc.isoformat(),
@@ -81,6 +78,29 @@ def run_hypothesis_generation(
             "blocker_diagnostic": book_context.blocker_diagnostic,
         },
     }
+    canonical_inputs_available = book_index_path.is_file() and book_notes_dir.is_dir()
+    if canonical_inputs_available and not book_context.selected_note_ids:
+        return _finish(
+            root,
+            {
+                **base,
+                "status": "book_context_unavailable",
+                "artifact_phase": "no_queue_change",
+                "rejection_reasons": [
+                    book_context.blocker_diagnostic or "no_usable_book_notes"
+                ],
+            },
+            timestamp_utc,
+        )
+    prompt = build_hermes_prompt(
+        root,
+        diagnostics_text=diagnostic.text,
+        input_report_path=input_report_path,
+        schema_text=schema_prompt_text(),
+        dominant_blocker=diagnostic.blocker,
+        book_context=book_context,
+    )
+    provider_result = provider_invoker(provider, prompt, current_env)
     if provider_result.status != "ok":
         return _finish(
             root,
@@ -109,6 +129,9 @@ def run_hypothesis_generation(
         )
         if not validation.accepted or validation.hypothesis is None:
             rejection_reasons.extend(f"hypothesis_{index}:{reason}" for reason in validation.reasons)
+            continue
+        if book_context.note_count > 0 and not validation.hypothesis["used_note_ids"]:
+            rejection_reasons.append(f"hypothesis_{index}:book_evidence_not_used")
             continue
         fingerprint = execution_fingerprint(validation.hypothesis)
         if fingerprint in seen:
