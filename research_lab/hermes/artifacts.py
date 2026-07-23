@@ -11,6 +11,11 @@ from hermes_knowledge.blocker_taxonomy import canonicalize_blocker_id
 
 
 MAX_DIAGNOSTIC_CHARS = 20_000
+STRUCTURED_BLOCKER_REASONS = (
+    ("insufficient walk-forward robustness", "walk_forward_fail"),
+    ("max drawdown too deep", "drawdown_fail"),
+    ("failed cost stress", "cost_stress"),
+)
 
 
 @dataclass(frozen=True)
@@ -29,6 +34,9 @@ def read_diagnostic_input(root: Path) -> DiagnosticInput:
 
 
 def dominant_blocker(report_text: str) -> str:
+    structured = _structured_blocker(report_text)
+    if structured is not None:
+        return structured
     for line in report_text.splitlines():
         match = re.match(r"\s*-\s*biggest risk discovered:\s*(.+)", line, flags=re.IGNORECASE)
         if match:
@@ -41,6 +49,25 @@ def dominant_blocker(report_text: str) -> str:
             raw = clean.split(":", 1)[-1].strip()
             return canonicalize_blocker_id(raw) or raw
     return "no explicit blocker found"
+
+
+def _structured_blocker(report_text: str) -> str | None:
+    counts: dict[str, int] = {}
+    for line in report_text.splitlines():
+        if not re.match(r"\s*-\s*rejection_reasons\s*:", line, flags=re.IGNORECASE):
+            continue
+        summary = line.split(":", 1)[1]
+        for item in summary.split(";"):
+            reason, separator, raw_count = item.strip().rpartition("=")
+            if not separator or not raw_count.strip().isdigit():
+                continue
+            counts[reason.strip().casefold()] = int(raw_count)
+    ranked = [
+        (counts.get(reason, 0), -priority, blocker)
+        for priority, (reason, blocker) in enumerate(STRUCTURED_BLOCKER_REASONS)
+        if counts.get(reason, 0) > 0
+    ]
+    return max(ranked)[2] if ranked else None
 
 
 def write_run_artifact(
