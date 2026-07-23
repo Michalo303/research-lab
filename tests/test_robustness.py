@@ -1,4 +1,6 @@
-from research_lab.robustness import build_robustness_rows, build_stability_rows
+import json
+
+from research_lab.robustness import build_robustness_rows, build_stability_rows, load_backtest_results
 
 
 def _result(strategy_id: str, cagr: float, cost: bool = True, tier: str = "C", short_name: str = "DUAL_MOMENTUM") -> dict:
@@ -64,6 +66,30 @@ def test_build_robustness_rows_fails_when_cost_stress_fails():
     rows = build_robustness_rows([_result("A", 0.12, cost=False)])
 
     assert rows[0]["robustness_verdict"] == "fail"
+
+
+def test_load_backtest_results_discards_high_volume_series_unless_requested(tmp_path):
+    run_dir = tmp_path / "backtests" / "runs" / "S1"
+    run_dir.mkdir(parents=True)
+    (run_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "strategy_id": "S1",
+                "family": "LONGTERM",
+                "return_series": [{"date": "2026-01-01", "value": 0.01}],
+                "target_weight_series": [{"date": "2026-01-01", "SPY": 1.0}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    summary_results = load_backtest_results(tmp_path)
+    selected_results = load_backtest_results(tmp_path, return_series_strategy_ids={"S1"})
+
+    assert "return_series" not in summary_results[0]
+    assert "target_weight_series" not in summary_results[0]
+    assert selected_results[0]["return_series"] == [{"date": "2026-01-01", "value": 0.01}]
+    assert "target_weight_series" not in selected_results[0]
 
 
 def test_build_stability_rows_scores_repeated_positive_group():

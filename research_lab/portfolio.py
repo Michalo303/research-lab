@@ -78,10 +78,15 @@ def run_portfolio_combination_backtest(
     candidate_rows: list[dict[str, Any]] | None = None,
     rebalance_frequency: str = "ME",
 ) -> dict[str, Any]:
-    results = load_backtest_results(root)
     candidate_rows = candidate_rows if candidate_rows is not None else run_portfolio_scoring(root, report_stem)["rows"]
     selected = [row for row in candidate_rows if float(row.get("suggested_weight_pct", 0.0) or 0.0) > 0]
-    returns_by_strategy = {item["strategy_id"]: _return_series(item) for item in results if item.get("strategy_id")}
+    selected_strategy_ids = {str(row.get("strategy_id", "")) for row in selected}
+    results = load_backtest_results(root, return_series_strategy_ids=selected_strategy_ids)
+    returns_by_strategy = {
+        item["strategy_id"]: _return_series(item)
+        for item in results
+        if str(item.get("strategy_id", "")) in selected_strategy_ids
+    }
     selected = [row for row in selected if not returns_by_strategy.get(str(row.get("strategy_id", ""))).empty]
 
     report_dir = root / "reports" / "weekly"

@@ -47,7 +47,15 @@ STABILITY_COLUMNS = [
 ]
 
 
-def load_backtest_results(root: Path) -> list[dict[str, Any]]:
+def load_backtest_results(
+    root: Path,
+    *,
+    return_series_strategy_ids: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    retained_return_series = {
+        str(strategy_id)
+        for strategy_id in (return_series_strategy_ids or set())
+    }
     results = []
     for path in sorted((root / "backtests" / "runs").glob("*/result.json")):
         try:
@@ -55,6 +63,9 @@ def load_backtest_results(root: Path) -> list[dict[str, Any]]:
         except (OSError, json.JSONDecodeError):
             continue
         if isinstance(item, dict) and item.get("strategy_id"):
+            if str(item["strategy_id"]) not in retained_return_series:
+                item.pop("return_series", None)
+            item.pop("target_weight_series", None)
             results.append(item)
     return results
 

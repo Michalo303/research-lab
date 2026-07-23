@@ -1,3 +1,4 @@
+from research_lab import portfolio
 from research_lab.portfolio import (
     _portfolio_score,
     run_portfolio_combination_backtest,
@@ -113,6 +114,43 @@ def test_portfolio_combination_backtest_writes_equity_curve(tmp_path):
     assert result["summary"]["rebalance_count"] >= 1
     assert "gross_exposure_pct" in result["summary"]
     assert "net_exposure_pct" in result["summary"]
+
+
+def test_portfolio_combination_loads_series_only_for_selected_candidates(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_load_backtest_results(root, *, return_series_strategy_ids=None):
+        calls.append(return_series_strategy_ids)
+        return [
+            {
+                "strategy_id": "SELECTED",
+                "data_manifest": {"source": "eodhd"},
+                "return_series": [
+                    {"date": "2026-01-01", "value": 0.00},
+                    {"date": "2026-01-02", "value": 0.01},
+                ],
+            },
+            {
+                "strategy_id": "UNSELECTED",
+                "data_manifest": {"source": "eodhd"},
+            },
+        ]
+
+    monkeypatch.setattr(portfolio, "load_backtest_results", fake_load_backtest_results)
+
+    result = run_portfolio_combination_backtest(
+        tmp_path,
+        "2026-W21",
+        [
+            {
+                "strategy_id": "SELECTED",
+                "suggested_weight_pct": 25.0,
+            }
+        ],
+    )
+
+    assert calls == [{"SELECTED"}]
+    assert result["summary"]["strategy_count"] == 1
 
 
 def test_portfolio_combination_backtest_blocks_synthetic_only_results(tmp_path):
