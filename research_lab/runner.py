@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
+from collections.abc import Mapping
 from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
@@ -11,7 +13,7 @@ from research_lab.backtest import close_frame, cost_stress, weighted_backtest
 from research_lab.config import LabConfig, ensure_project_structure
 from research_lab.data import DataBundle, load_cached_eodhd_daily_universe, load_daily_universe, load_eodhd_daily_universe, load_intraday_symbol, load_massive_daily_universe
 from research_lab.drawdown_diagnostics import compute_drawdown_diagnostics
-from research_lab.jsonl import iter_jsonl
+from research_lab.jsonl import iter_jsonl, tail_jsonl
 from research_lab.registry import append_jsonl, write_allocation_model, write_leaderboard
 from research_lab.reports import write_daily_report_artifacts, write_strategy_card
 from research_lab.strategies.baselines import (
@@ -19,11 +21,75 @@ from research_lab.strategies.baselines import (
     build_weights,
     dedupe_strategy_specs,
     next_run_guided_strategies,
+    result_execution_fingerprint,
     select_daily_experiment_candidates,
     select_queued_hypothesis_candidates,
+    strategy_execution_fingerprint,
 )
 from research_lab.tiering import classify_strategy
 from research_lab.walk_forward import run_true_walk_forward
+
+
+_DATA_SNAPSHOT_HASH_FIELDS = (
+    "source_sha256",
+    "content_sha256",
+    "raw_response_sha256",
+    "stored_csv_sha256",
+    "manifest_sha256",
+)
+
+
+def _data_snapshot_identity(manifest: object) -> str:
+    if not isinstance(manifest, Mapping):
+        raise ValueError("data manifest must be an object")
+    source = str(manifest.get("source") or "").strip().casefold()
+    start = str(manifest.get("start") or "").strip()
+    end = str(manifest.get("end") or "").strip()
+    raw_symbols = manifest.get("symbols")
+    if (
+        not source
+        or not start
+        or not end
+        or not isinstance(raw_symbols, list)
+        or not raw_symbols
+        or any(not isinstance(symbol, str) or not symbol.strip() for symbol in raw_symbols)
+    ):
+        raise ValueError("data manifest identity fields are incomplete")
+    symbols = [symbol.strip().upper() for symbol in raw_symbols]
+    if len(symbols) != len(set(symbols)):
+        raise ValueError("data manifest symbols must be unique")
+    if "fallback_used" in manifest:
+        fallback = manifest["fallback_used"]
+        if not isinstance(fallback, bool):
+            raise ValueError("data manifest fallback_used must be a boolean when present")
+    else:
+        fallback = "unknown"
+    identity: dict[str, object] = {
+        "source": source,
+        "provider": str(manifest.get("provider") or source).strip().casefold(),
+        "name": str(manifest.get("name") or "").strip(),
+        "interval": str(
+            manifest.get("interval") or manifest.get("timeframe") or ""
+        ).strip(),
+        "load_mode": str(manifest.get("load_mode") or "").strip(),
+        "symbols": symbols,
+        "start": start,
+        "end": end,
+        "fallback_used": fallback,
+    }
+    hashes: dict[str, str] = {}
+    for field in _DATA_SNAPSHOT_HASH_FIELDS:
+        if field not in manifest:
+            continue
+        value = str(manifest[field] or "").strip().casefold()
+        if not re.fullmatch(r"[0-9a-f]{64}", value):
+            raise ValueError(f"data manifest {field} must be a SHA-256")
+        hashes[field] = value
+    identity["content_hashes"] = hashes
+    encoded = json.dumps(
+        identity, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    )
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def run_daily_research(
@@ -52,7 +118,12 @@ def run_daily_research(
     selection["diagnostics"]["selected"] = len(specs)
     selection["diagnostics"]["budget_selected"] = len(specs)
     selection["diagnostics"].update(
-        {"attempted": 0, "completed": 0, "missing_data_skipped": 0}
+        {
+            "attempted": 0,
+            "completed": 0,
+            "missing_data_skipped": 0,
+            "same_snapshot_skipped": 0,
+        }
     )
     used_note_ids = _load_used_note_ids(
         config.root,
@@ -71,6 +142,7 @@ def run_daily_research(
     results = []
     start_sequence = _next_sequence(config.root)
     intraday_bundle = None
+    recent_hypothesis_snapshot_keys = _recent_hypothesis_snapshot_keys(config.root)
     for offset, spec in enumerate(specs):
         assert daily_bundle is not None
         experiment_start = perf_counter()
@@ -84,6 +156,21 @@ def run_daily_research(
             data_bundle = intraday_bundle
         else:
             data_bundle = daily_bundle
+        data_snapshot_identity = _data_snapshot_identity(data_bundle.manifest)
+        execution_key = (
+            strategy_execution_fingerprint(spec),
+            data_snapshot_identity,
+        )
+        if (
+            spec.parameters.get("source_hypothesis_id")
+            and execution_key in recent_hypothesis_snapshot_keys
+        ):
+            selection["diagnostics"]["same_snapshot_skipped"] += 1
+            _log_daily_progress(
+                f"experiment skipped strategy={strategy_id} "
+                "reason=same_hypothesis_data_snapshot"
+            )
+            continue
         panel = data_bundle.data
         missing_symbols = _missing_symbols(spec, panel)
         if missing_symbols:
@@ -149,6 +236,7 @@ def run_daily_research(
             "parameter_count": len(spec.parameters),
             "variants_tried": 1,
             "data_manifest": data_bundle.manifest,
+            "data_snapshot_identity": data_snapshot_identity,
             "data_source": data_source,
             "data_start": data_bundle.manifest["start"],
             "data_end": data_bundle.manifest["end"],
@@ -345,6 +433,9 @@ def _persist_hypothesis_result(root: Path, result: dict) -> None:
             "hermes_run_id": result["parameters"].get("source_hermes_run_id", ""),
             "hermes_provider": result["parameters"].get("source_hermes_provider", ""),
             "used_note_ids": list(result.get("used_note_ids", [])),
+            "data_snapshot_identity": str(
+                result.get("data_snapshot_identity", "")
+            ),
             "strategy_id": result["strategy_id"],
             "tier": result["tier"],
             "tier_reason": result["tier_reason"],
@@ -375,6 +466,32 @@ def _load_used_note_ids(root: Path, hypothesis_ids: set[str]) -> dict[str, list[
             and re.fullmatch(r"note-[0-9a-fA-F]{16}", note_id)
         ]
     return found
+
+
+def _recent_hypothesis_snapshot_keys(
+    root: Path, max_rows: int = 1000
+) -> set[tuple[str, str]]:
+    keys: set[tuple[str, str]] = set()
+    path = Path(root) / "registry" / "experiments.jsonl"
+    for result in tail_jsonl(path, max_rows):
+        parameters = result.get("parameters")
+        if not isinstance(parameters, dict) or not parameters.get(
+            "source_hypothesis_id"
+        ):
+            continue
+        fingerprint = result_execution_fingerprint(result)
+        if not fingerprint:
+            continue
+        snapshot = result.get("data_snapshot_identity")
+        if not isinstance(snapshot, str) or not re.fullmatch(
+            r"[0-9a-f]{64}", snapshot
+        ):
+            try:
+                snapshot = _data_snapshot_identity(result.get("data_manifest"))
+            except ValueError:
+                continue
+        keys.add((fingerprint, snapshot))
+    return keys
 
 
 def _used_note_ids(root: Path, hypothesis_id: object) -> list[str]:

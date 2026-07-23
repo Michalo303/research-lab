@@ -119,6 +119,7 @@ def test_hypothesis_result_preserves_hermes_provenance(tmp_path):
             "source_hermes_provider": "command",
         },
         "used_note_ids": ["note-1111111111111111"],
+        "data_snapshot_identity": "a" * 64,
         "split_metrics": {"unseen": {"cagr": 0.01, "max_drawdown": -0.20}},
     }
 
@@ -128,6 +129,7 @@ def test_hypothesis_result_preserves_hermes_provenance(tmp_path):
     assert row["hermes_run_id"] == "run-1"
     assert row["hermes_provider"] == "command"
     assert row["used_note_ids"] == ["note-1111111111111111"]
+    assert row["data_snapshot_identity"] == "a" * 64
 
 
 def test_daily_symbol_discovery_skips_intraday_hermes_symbols_and_honors_limit(tmp_path):
