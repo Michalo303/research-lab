@@ -366,7 +366,7 @@ def test_provider_attribution_is_limited_to_explicit_used_note_subset(tmp_path):
     assert priorities["notes"] == {"note-2222222222222222": 5.0}
 
 
-def test_missing_provider_attribution_defaults_to_empty_list(tmp_path):
+def test_book_informed_hypothesis_without_note_attribution_is_rejected(tmp_path):
     index_path = _write_index(tmp_path / "private")
     notes_dir = _write_three_attribution_notes(tmp_path / "private")
     report = tmp_path / "reports" / "daily" / "2026-06-12.md"
@@ -374,7 +374,7 @@ def test_missing_provider_attribution_defaults_to_empty_list(tmp_path):
     report.write_text("- biggest risk discovered: excessive drawdown\n", encoding="utf-8")
     queued = []
 
-    run_hypothesis_generation(
+    outcome = run_hypothesis_generation(
         tmp_path,
         env={
             "HERMES_PROVIDER": "command",
@@ -388,7 +388,11 @@ def test_missing_provider_attribution_defaults_to_empty_list(tmp_path):
         queue_committer=lambda _path, rows: queued.extend(rows),
     )
 
-    assert queued[0]["used_note_ids"] == []
+    assert queued == []
+    assert (
+        "hypothesis_1:book_evidence_not_used"
+        in outcome["rejection_reasons"]
+    )
 
 
 def test_unknown_provider_note_attribution_rejects_hypothesis(tmp_path):
@@ -838,7 +842,9 @@ def test_reextraction_planning_does_not_change_selected_note_ids(tmp_path):
     assert context.selected_note_ids == ("note-2222222222222222",)
 
 
-def test_orchestrator_artifact_diagnoses_unrecognized_book_blocker(tmp_path):
+def test_orchestrator_fails_closed_before_provider_for_unrecognized_book_blocker(
+    tmp_path,
+):
     index_path = _write_index(tmp_path / "private")
     notes_dir = _write_note(tmp_path / "private")
     report = tmp_path / "reports" / "daily" / "2026-06-12.md"
@@ -847,6 +853,13 @@ def test_orchestrator_artifact_diagnoses_unrecognized_book_blocker(tmp_path):
         "- biggest risk discovered: provider coverage gap\n", encoding="utf-8"
     )
 
+    provider_called = False
+
+    def provider(*_args):
+        nonlocal provider_called
+        provider_called = True
+        raise AssertionError("provider must not run without canonical book context")
+
     outcome = run_hypothesis_generation(
         tmp_path,
         env={
@@ -854,11 +867,18 @@ def test_orchestrator_artifact_diagnoses_unrecognized_book_blocker(tmp_path):
             "HERMES_BOOK_INDEX_PATH": str(index_path),
             "HERMES_BOOK_NOTES_DIR": str(notes_dir),
         },
-        provider_invoker=lambda *_: ProviderResult(
-            "ok", output=json.dumps({"hypotheses": []})
-        ),
+        provider_invoker=provider,
     )
 
+    assert provider_called is False
+    assert outcome["status"] == "book_context_unavailable"
+    assert outcome["artifact_phase"] == "no_queue_change"
+    assert outcome["queue_impact"] == {
+        "state": "unchanged",
+        "planned_append_count": 0,
+        "committed_append_count": 0,
+    }
+    assert outcome["rejection_reasons"] == ["unrecognized_blocker"]
     assert outcome["book_knowledge"]["canonical_blocker_id"] == ""
     assert (
         outcome["book_knowledge"]["blocker_diagnostic"]
