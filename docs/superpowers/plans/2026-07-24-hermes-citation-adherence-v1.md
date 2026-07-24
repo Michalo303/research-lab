@@ -496,6 +496,23 @@ if required_contract and required_contract not in prompt:
 Import the helper from `research_lab.hermes.schema`. Do not log the prompt or
 selected note content.
 
+- [ ] **Step 5a: Require selected evidence as well as its citation contract**
+
+Add a regression in `tests/test_hermes_book_runtime.py` that substitutes a
+prompt containing the exact citation contract and an allowed note ID, but none
+of `book_context.prompt`. Assert that the provider is not called and that the
+terminal no-queue-change artifact contains:
+
+```text
+status: citation_context_unavailable
+reason: selected_book_context_missing_from_prompt
+```
+
+After prompt construction and before `provider_invoker(...)`, require the exact
+non-empty `book_context.prompt` to survive whenever `selected_note_ids` is
+non-empty. This prevents a sanitized citation-only fallback from turning an ID
+into unsupported evidence. Do not persist or log the selected context.
+
 - [ ] **Step 6: Remove contradictory secondary semantics**
 
 Keep a defensive runner guard for an unexpectedly accepted empty citation, but

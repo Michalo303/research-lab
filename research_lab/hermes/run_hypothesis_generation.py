@@ -148,6 +148,21 @@ def run_hypothesis_generation(
             },
             timestamp_utc,
         )
+    if book_context.selected_note_ids and (
+        not book_context.prompt or book_context.prompt not in prompt
+    ):
+        return _finish(
+            root,
+            {
+                **base,
+                "status": "citation_context_unavailable",
+                "artifact_phase": "no_queue_change",
+                "rejection_reasons": [
+                    "selected_book_context_missing_from_prompt"
+                ],
+            },
+            timestamp_utc,
+        )
     provider_result = provider_invoker(provider, prompt, current_env)
     if provider_result.status != "ok":
         return _finish(

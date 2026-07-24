@@ -100,11 +100,14 @@ auto-fill, infer, repair, or substitute citations after provider output.
 The current prompt builder has a sanitized fallback when unrelated diagnostics
 contain a forbidden private-path reference. The exact citation allowlist and
 mandatory citation instructions must appear in both the normal prompt and that
-sanitized fallback.
+sanitized fallback. The citation contract and IDs alone are not evidence:
+whenever notes were selected, the final prompt must also contain the exact safe
+selected book context.
 
-If a non-empty selected-note allowlist cannot be represented in the final
-prompt, the provider must not be called. The run must finish with an immutable
-no-queue-change artifact and a bounded reason code.
+If either a non-empty selected-note allowlist or its selected book context
+cannot be represented in the final prompt, the provider must not be called.
+The run must finish with an immutable no-queue-change artifact and a bounded
+reason code.
 
 ## Data Flow
 
