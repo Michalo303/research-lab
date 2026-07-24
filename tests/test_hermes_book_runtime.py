@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -8,6 +9,7 @@ from hermes_knowledge.schema import KnowledgeValidationError, validate_entry
 from hermes_knowledge.prompt import build_hermes_knowledge_prompt
 from research_lab.hermes.providers import ProviderResult
 from research_lab.hermes.run_hypothesis_generation import run_hypothesis_generation
+from research_lab.hermes.schema import schema_prompt_text
 from research_lab.llm.hypothesis_adapter import build_hermes_prompt
 
 
@@ -91,17 +93,52 @@ def test_prompt_includes_valid_book_context_and_safe_metadata(tmp_path):
     prompt = build_hermes_prompt(
         tmp_path,
         dominant_blocker="drawdown",
-        book_index_path=index_path,
-        book_notes_dir=notes_dir,
+        schema_text=schema_prompt_text(
+            required_note_ids=context.selected_note_ids
+        ),
+        book_context=context,
     )
 
     assert "BOOK-DERIVED RESEARCH CONTEXT" in prompt
     assert "Volatility targeting" in prompt
+    assert "MANDATORY CITATION CONTRACT" in prompt
+    assert '"used_note_ids":["note-1111111111111111"]' in prompt
+    assert "omit it or use []" not in prompt
     assert context.note_count == 1
     assert context.selected_book_ids == ("book-aaaaaaaaaaaa",)
     assert context.selected_note_ids == ("note-1111111111111111",)
     assert "/opt/trading/private/hermes_books/raw/secret-book.pdf" not in prompt
     assert "short phrase" not in prompt
+
+
+def test_sanitized_prompt_preserves_mandatory_citation_contract(tmp_path):
+    index_path = _write_index(tmp_path)
+    notes_dir = _write_note(tmp_path)
+    context = load_book_knowledge_context(
+        index_path,
+        notes_dir,
+        dominant_blocker="drawdown",
+    )
+    forbidden_private_path = (
+        "/opt/trading/private/hermes_books/raw/secret-book.pdf"
+    )
+    unsafe_context = replace(
+        context,
+        prompt=f"{context.prompt}\n{forbidden_private_path}",
+    )
+
+    prompt = build_hermes_prompt(
+        tmp_path,
+        schema_text=schema_prompt_text(
+            required_note_ids=context.selected_note_ids
+        ),
+        book_context=unsafe_context,
+    )
+
+    assert forbidden_private_path not in prompt
+    assert "MANDATORY CITATION CONTRACT" in prompt
+    assert '"used_note_ids":["note-1111111111111111"]' in prompt
+    assert "note-1111111111111111" in prompt
 
 
 def test_prompt_builds_when_notes_are_absent(tmp_path):

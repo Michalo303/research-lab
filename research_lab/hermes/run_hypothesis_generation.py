@@ -121,7 +121,9 @@ def run_hypothesis_generation(
         root,
         diagnostics_text=diagnostic.text,
         input_report_path=input_report_path,
-        schema_text=schema_prompt_text(),
+        schema_text=schema_prompt_text(
+            required_note_ids=book_context.selected_note_ids
+        ),
         dominant_blocker=diagnostic.blocker,
         book_context=book_context,
     )
