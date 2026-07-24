@@ -217,22 +217,36 @@ def validate_hypothesis(
     if not isinstance(tags, list) or any(not isinstance(tag, str) for tag in tags):
         reasons.append("invalid_tags")
         tags = []
-    used_note_ids = item.get("used_note_ids", [])
-    if (
-        not isinstance(used_note_ids, list)
-        or len(used_note_ids) > 5
+    missing_used_note_ids = object()
+    raw_used_note_ids = item.get(
+        "used_note_ids", missing_used_note_ids
+    )
+    requires_citation = bool(allowed_note_ids)
+    if raw_used_note_ids is missing_used_note_ids:
+        used_note_ids = []
+        if requires_citation:
+            reasons.append("missing_used_note_ids")
+    elif (
+        not isinstance(raw_used_note_ids, list)
+        or len(raw_used_note_ids) > 5
         or any(
             not isinstance(note_id, str)
             or not re.fullmatch(r"note-[0-9a-fA-F]{16}", note_id)
-            for note_id in used_note_ids
+            for note_id in raw_used_note_ids
         )
     ):
         reasons.append("invalid_used_note_ids")
         used_note_ids = []
+    elif requires_citation and not raw_used_note_ids:
+        used_note_ids = []
+        reasons.append("missing_used_note_ids")
     elif allowed_note_ids is not None and any(
-        note_id not in allowed_note_ids for note_id in used_note_ids
+        note_id not in allowed_note_ids for note_id in raw_used_note_ids
     ):
+        used_note_ids = raw_used_note_ids
         reasons.append("unknown_used_note_id")
+    else:
+        used_note_ids = raw_used_note_ids
     if reasons:
         return ValidationResult(False, None, reasons)
     normalized = {
@@ -336,15 +350,46 @@ def _cross_validate(builder: str, parameters: dict[str, Any]) -> list[str]:
     return reasons
 
 
-def schema_prompt_text() -> str:
+def citation_contract_text(required_note_ids: tuple[str, ...]) -> str:
+    if not required_note_ids:
+        return ""
+    allowed_json = json.dumps(
+        list(required_note_ids),
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
+    return "\n".join(
+        [
+            "MANDATORY CITATION CONTRACT",
+            f"Allowed note IDs (exact JSON array): {allowed_json}",
+            (
+                "Every hypothesis must contain used_note_ids with 1-5 "
+                "values taken only from the exact allowed array."
+            ),
+            (
+                "Empty, missing, malformed, invented, or non-allowlisted "
+                "note IDs cause rejection."
+            ),
+        ]
+    )
+
+
+def schema_prompt_text(
+    *, required_note_ids: tuple[str, ...] = ()
+) -> str:
     lines = ["Allowed strategy builders and exact parameter schemas:"]
     for builder, schema in BUILDER_SCHEMAS.items():
         parameter_text = ", ".join(f"{name}:{rule.kind}" for name, rule in schema.parameters.items())
         lines.append(f"- {builder} ({schema.family}): {parameter_text}")
     lines.append("Unknown builders, unknown parameters, executable code, and values outside the schema are rejected.")
-    lines.append(
-        "Each hypothesis may include used_note_ids containing only note IDs actually used from the provided book context; omit it or use [] when no note was used."
-    )
+    if required_note_ids:
+        lines.append(citation_contract_text(required_note_ids))
+    else:
+        lines.append(
+            "Each hypothesis may include used_note_ids containing only note "
+            "IDs actually used from the provided book context; omit it or "
+            "use [] when no note was used."
+        )
     return "\n".join(lines)
 
 

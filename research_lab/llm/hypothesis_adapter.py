@@ -89,6 +89,32 @@ def build_hermes_prompt(
         book_notes_dir,
         dominant_blocker=dominant_blocker,
     )
+    hypothesis_example = json.dumps(
+        {
+            "title": "...",
+            "family": "LONGTERM|ROTATION|SWING|INTRADAY",
+            "builder": "allowed builder",
+            "rationale": "...",
+            "parameters": {},
+            "tags": ["..."],
+            "source_url": "...",
+            "used_note_ids": list(
+                selected_book_context.selected_note_ids[:1]
+            ),
+            "risk_controls": {
+                "volatility_targeting": "...",
+                "drawdown_circuit_breakers": "...",
+                "cash_defensive_regimes": "...",
+                "exposure_caps": "...",
+                "correlation_aware_portfolio_risk": "...",
+                "crisis_period_diagnostics": "...",
+                "cost_slippage_stress": "...",
+                "parameter_neighborhood_stability": "...",
+            },
+        },
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
     sections = [
             HERMES_SYSTEM_CONTRACT,
             "",
@@ -110,14 +136,7 @@ def build_hermes_prompt(
             "",
             "Return one JSON object with a hypotheses array containing 5-15 structured hypotheses.",
             "Each hypothesis must contain:",
-            (
-                '{"title": "...", "family": "LONGTERM|ROTATION|SWING|INTRADAY", "builder": "allowed builder", '
-                '"rationale": "...", "parameters": {}, "tags": ["..."], "source_url": "...", '
-                '"risk_controls": {"volatility_targeting": "...", "drawdown_circuit_breakers": "...", '
-                '"cash_defensive_regimes": "...", "exposure_caps": "...", '
-                '"correlation_aware_portfolio_risk": "...", "crisis_period_diagnostics": "...", '
-                '"cost_slippage_stress": "...", "parameter_neighborhood_stability": "..."}}'
-            ),
+            hypothesis_example,
             "Do not return markdown fences, Python, shell commands, or executable code.",
         ]
     if selected_book_context.prompt:
@@ -140,6 +159,8 @@ def build_hermes_prompt(
             safe_schema_text,
             "",
             "Return one JSON object with a hypotheses array containing 5-15 structured hypotheses.",
+            "Each hypothesis must contain:",
+            hypothesis_example,
             "Do not return markdown fences, Python, shell commands, or executable code.",
         ]
         return "\n".join(safe_sections)

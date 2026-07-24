@@ -107,6 +107,12 @@ def test_openai_compatible_extracts_message_content():
     assert requests[0][0].full_url == "https://openrouter.ai/api/v1/chat/completions"
     assert requests[0][0].get_header("Authorization") == "Bearer secret-value"
     assert b"safe prompt" in requests[0][0].data
+    request_payload = json.loads(requests[0][0].data.decode("utf-8"))
+    assert request_payload["response_format"] == {"type": "json_object"}
+    assert request_payload["stream"] is False
+    assert request_payload["messages"] == [
+        {"role": "user", "content": "safe prompt"}
+    ]
 
 
 def test_openai_compatible_requires_key_for_remote_endpoint():

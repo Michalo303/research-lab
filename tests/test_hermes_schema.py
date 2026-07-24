@@ -2,6 +2,7 @@ import math
 
 import pytest
 
+import research_lab.hermes.schema as hermes_schema
 from research_lab.hermes.schema import BUILDER_SCHEMAS, schema_prompt_text, validate_hypothesis
 
 
@@ -136,6 +137,107 @@ def test_schema_prompt_lists_only_existing_builders():
     assert "intraday_vwap_rsi_reclaim" in prompt
     assert "provider_supplied_python" not in prompt
     assert len(BUILDER_SCHEMAS) == 11
+
+
+def test_schema_prompt_requires_exact_selected_note_ids():
+    text = schema_prompt_text(
+        required_note_ids=(
+            "note-1111111111111111",
+            "note-2222222222222222",
+        )
+    )
+
+    assert "MANDATORY CITATION CONTRACT" in text
+    assert (
+        '["note-1111111111111111","note-2222222222222222"]'
+        in text
+    )
+    assert "Every hypothesis must contain used_note_ids" in text
+    assert "omit it or use []" not in text
+
+
+def test_generic_schema_prompt_retains_optional_note_semantics():
+    text = schema_prompt_text()
+
+    assert "MANDATORY CITATION CONTRACT" not in text
+    assert "used_note_ids" in text
+
+
+def test_citation_contract_text_is_deterministic():
+    ids = (
+        "note-1111111111111111",
+        "note-2222222222222222",
+    )
+    first = hermes_schema.citation_contract_text(ids)
+    second = hermes_schema.citation_contract_text(ids)
+
+    assert first == second
+    assert (
+        '["note-1111111111111111","note-2222222222222222"]'
+        in first
+    )
+
+
+def test_book_informed_hypothesis_requires_nonempty_allowed_note_ids():
+    allowed = frozenset({"note-1111111111111111"})
+    missing = _valid()
+    empty = _valid(used_note_ids=[])
+
+    assert validate_hypothesis(
+        missing, allowed_note_ids=allowed
+    ).reasons == ["missing_used_note_ids"]
+    assert validate_hypothesis(
+        empty, allowed_note_ids=allowed
+    ).reasons == ["missing_used_note_ids"]
+
+
+@pytest.mark.parametrize(
+    ("used_note_ids", "expected_reason"),
+    [
+        (None, "invalid_used_note_ids"),
+        ("note-1111111111111111", "invalid_used_note_ids"),
+        (["not-a-note-id"], "invalid_used_note_ids"),
+        (
+            [f"note-{index:016x}" for index in range(6)],
+            "invalid_used_note_ids",
+        ),
+        (["note-2222222222222222"], "unknown_used_note_id"),
+    ],
+)
+def test_book_informed_hypothesis_classifies_invalid_citations_exactly(
+    used_note_ids, expected_reason
+):
+    result = validate_hypothesis(
+        _valid(used_note_ids=used_note_ids),
+        allowed_note_ids=frozenset({"note-1111111111111111"}),
+    )
+
+    assert result.reasons == [expected_reason]
+
+
+def test_book_informed_hypothesis_preserves_allowed_note_order():
+    item = _valid(
+        used_note_ids=[
+            "note-2222222222222222",
+            "note-1111111111111111",
+            "note-2222222222222222",
+        ]
+    )
+    result = validate_hypothesis(
+        item,
+        allowed_note_ids=frozenset(
+            {
+                "note-1111111111111111",
+                "note-2222222222222222",
+            }
+        ),
+    )
+
+    assert result.accepted is True
+    assert result.hypothesis["used_note_ids"] == [
+        "note-2222222222222222",
+        "note-1111111111111111",
+    ]
 
 
 def test_all_whitelisted_builders_accept_compatible_parameter_shapes():

@@ -10,7 +10,12 @@ from typing import Any, Callable, Mapping
 from hermes_knowledge.runtime import load_book_knowledge_context
 from research_lab.hermes.artifacts import read_diagnostic_input, run_artifact_path, write_run_artifact
 from research_lab.hermes.providers import ProviderResult, invoke_provider
-from research_lab.hermes.schema import execution_fingerprint, schema_prompt_text, validate_hypothesis
+from research_lab.hermes.schema import (
+    citation_contract_text,
+    execution_fingerprint,
+    schema_prompt_text,
+    validate_hypothesis,
+)
 from research_lab.llm.hypothesis_adapter import build_hermes_prompt
 from research_lab.registry import append_jsonl_batch_atomic
 from research_lab.reports import collect_git_info, generate_run_id
@@ -121,10 +126,43 @@ def run_hypothesis_generation(
         root,
         diagnostics_text=diagnostic.text,
         input_report_path=input_report_path,
-        schema_text=schema_prompt_text(),
+        schema_text=schema_prompt_text(
+            required_note_ids=book_context.selected_note_ids
+        ),
         dominant_blocker=diagnostic.blocker,
         book_context=book_context,
     )
+    required_contract = citation_contract_text(
+        book_context.selected_note_ids
+    )
+    if required_contract and required_contract not in prompt:
+        return _finish(
+            root,
+            {
+                **base,
+                "status": "citation_contract_unavailable",
+                "artifact_phase": "no_queue_change",
+                "rejection_reasons": [
+                    "citation_contract_missing_from_prompt"
+                ],
+            },
+            timestamp_utc,
+        )
+    if book_context.selected_note_ids and (
+        not book_context.prompt or book_context.prompt not in prompt
+    ):
+        return _finish(
+            root,
+            {
+                **base,
+                "status": "citation_context_unavailable",
+                "artifact_phase": "no_queue_change",
+                "rejection_reasons": [
+                    "selected_book_context_missing_from_prompt"
+                ],
+            },
+            timestamp_utc,
+        )
     provider_result = provider_invoker(provider, prompt, current_env)
     if provider_result.status != "ok":
         return _finish(
