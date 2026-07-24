@@ -217,9 +217,12 @@ def validate_hypothesis(
     if not isinstance(tags, list) or any(not isinstance(tag, str) for tag in tags):
         reasons.append("invalid_tags")
         tags = []
-    raw_used_note_ids = item.get("used_note_ids")
+    missing_used_note_ids = object()
+    raw_used_note_ids = item.get(
+        "used_note_ids", missing_used_note_ids
+    )
     requires_citation = bool(allowed_note_ids)
-    if raw_used_note_ids is None:
+    if raw_used_note_ids is missing_used_note_ids:
         used_note_ids = []
         if requires_citation:
             reasons.append("missing_used_note_ids")

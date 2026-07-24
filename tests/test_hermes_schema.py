@@ -191,6 +191,30 @@ def test_book_informed_hypothesis_requires_nonempty_allowed_note_ids():
     ).reasons == ["missing_used_note_ids"]
 
 
+@pytest.mark.parametrize(
+    ("used_note_ids", "expected_reason"),
+    [
+        (None, "invalid_used_note_ids"),
+        ("note-1111111111111111", "invalid_used_note_ids"),
+        (["not-a-note-id"], "invalid_used_note_ids"),
+        (
+            [f"note-{index:016x}" for index in range(6)],
+            "invalid_used_note_ids",
+        ),
+        (["note-2222222222222222"], "unknown_used_note_id"),
+    ],
+)
+def test_book_informed_hypothesis_classifies_invalid_citations_exactly(
+    used_note_ids, expected_reason
+):
+    result = validate_hypothesis(
+        _valid(used_note_ids=used_note_ids),
+        allowed_note_ids=frozenset({"note-1111111111111111"}),
+    )
+
+    assert result.reasons == [expected_reason]
+
+
 def test_book_informed_hypothesis_preserves_allowed_note_order():
     item = _valid(
         used_note_ids=[
