@@ -347,6 +347,30 @@ def _cross_validate(builder: str, parameters: dict[str, Any]) -> list[str]:
     return reasons
 
 
+def citation_contract_text(required_note_ids: tuple[str, ...]) -> str:
+    if not required_note_ids:
+        return ""
+    allowed_json = json.dumps(
+        list(required_note_ids),
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
+    return "\n".join(
+        [
+            "MANDATORY CITATION CONTRACT",
+            f"Allowed note IDs (exact JSON array): {allowed_json}",
+            (
+                "Every hypothesis must contain used_note_ids with 1-5 "
+                "values taken only from the exact allowed array."
+            ),
+            (
+                "Empty, missing, malformed, invented, or non-allowlisted "
+                "note IDs cause rejection."
+            ),
+        ]
+    )
+
+
 def schema_prompt_text(
     *, required_note_ids: tuple[str, ...] = ()
 ) -> str:
@@ -356,25 +380,7 @@ def schema_prompt_text(
         lines.append(f"- {builder} ({schema.family}): {parameter_text}")
     lines.append("Unknown builders, unknown parameters, executable code, and values outside the schema are rejected.")
     if required_note_ids:
-        allowed_json = json.dumps(
-            list(required_note_ids),
-            separators=(",", ":"),
-            ensure_ascii=True,
-        )
-        lines.extend(
-            [
-                "MANDATORY CITATION CONTRACT",
-                f"Allowed note IDs (exact JSON array): {allowed_json}",
-                (
-                    "Every hypothesis must contain used_note_ids with 1-5 "
-                    "values taken only from the exact allowed array."
-                ),
-                (
-                    "Empty, missing, malformed, invented, or non-allowlisted "
-                    "note IDs cause rejection."
-                ),
-            ]
-        )
+        lines.append(citation_contract_text(required_note_ids))
     else:
         lines.append(
             "Each hypothesis may include used_note_ids containing only note "

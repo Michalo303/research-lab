@@ -2,6 +2,7 @@ import math
 
 import pytest
 
+import research_lab.hermes.schema as hermes_schema
 from research_lab.hermes.schema import BUILDER_SCHEMAS, schema_prompt_text, validate_hypothesis
 
 
@@ -160,6 +161,21 @@ def test_generic_schema_prompt_retains_optional_note_semantics():
 
     assert "MANDATORY CITATION CONTRACT" not in text
     assert "used_note_ids" in text
+
+
+def test_citation_contract_text_is_deterministic():
+    ids = (
+        "note-1111111111111111",
+        "note-2222222222222222",
+    )
+    first = hermes_schema.citation_contract_text(ids)
+    second = hermes_schema.citation_contract_text(ids)
+
+    assert first == second
+    assert (
+        '["note-1111111111111111","note-2222222222222222"]'
+        in first
+    )
 
 
 def test_book_informed_hypothesis_requires_nonempty_allowed_note_ids():

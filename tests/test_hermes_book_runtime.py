@@ -1005,6 +1005,52 @@ def test_orchestrator_fails_closed_when_retrieved_note_is_not_citable(tmp_path):
     assert outcome["queue_impact"]["state"] == "unchanged"
 
 
+def test_orchestrator_blocks_provider_when_citation_contract_is_missing(
+    tmp_path, monkeypatch
+):
+    import research_lab.hermes.run_hypothesis_generation as runner
+
+    index_path = _write_index(tmp_path / "private")
+    notes_dir = _write_note(tmp_path / "private")
+    report = tmp_path / "reports" / "daily" / "2026-06-12.md"
+    report.parent.mkdir(parents=True)
+    report.write_text(
+        "- biggest risk discovered: drawdown\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        runner,
+        "build_hermes_prompt",
+        lambda *_args, **_kwargs: '{"hypotheses":[]}',
+    )
+    provider_called = False
+
+    def provider(*_args):
+        nonlocal provider_called
+        provider_called = True
+        raise AssertionError(
+            "provider must not run without citation contract"
+        )
+
+    outcome = runner.run_hypothesis_generation(
+        tmp_path,
+        env={
+            "HERMES_PROVIDER": "command",
+            "HERMES_BOOK_INDEX_PATH": str(index_path),
+            "HERMES_BOOK_NOTES_DIR": str(notes_dir),
+        },
+        provider_invoker=provider,
+    )
+
+    assert provider_called is False
+    assert outcome["status"] == "citation_contract_unavailable"
+    assert outcome["artifact_phase"] == "no_queue_change"
+    assert outcome["queue_impact"]["state"] == "unchanged"
+    assert outcome["rejection_reasons"] == [
+        "citation_contract_missing_from_prompt"
+    ]
+
+
 def test_schema_rejects_long_text_and_unknown_fields():
     with pytest.raises(KnowledgeValidationError, match="summary exceeds"):
         validate_entry(_note(summary="x" * 601))
