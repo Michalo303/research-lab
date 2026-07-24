@@ -138,6 +138,68 @@ def test_schema_prompt_lists_only_existing_builders():
     assert len(BUILDER_SCHEMAS) == 11
 
 
+def test_schema_prompt_requires_exact_selected_note_ids():
+    text = schema_prompt_text(
+        required_note_ids=(
+            "note-1111111111111111",
+            "note-2222222222222222",
+        )
+    )
+
+    assert "MANDATORY CITATION CONTRACT" in text
+    assert (
+        '["note-1111111111111111","note-2222222222222222"]'
+        in text
+    )
+    assert "Every hypothesis must contain used_note_ids" in text
+    assert "omit it or use []" not in text
+
+
+def test_generic_schema_prompt_retains_optional_note_semantics():
+    text = schema_prompt_text()
+
+    assert "MANDATORY CITATION CONTRACT" not in text
+    assert "used_note_ids" in text
+
+
+def test_book_informed_hypothesis_requires_nonempty_allowed_note_ids():
+    allowed = frozenset({"note-1111111111111111"})
+    missing = _valid()
+    empty = _valid(used_note_ids=[])
+
+    assert validate_hypothesis(
+        missing, allowed_note_ids=allowed
+    ).reasons == ["missing_used_note_ids"]
+    assert validate_hypothesis(
+        empty, allowed_note_ids=allowed
+    ).reasons == ["missing_used_note_ids"]
+
+
+def test_book_informed_hypothesis_preserves_allowed_note_order():
+    item = _valid(
+        used_note_ids=[
+            "note-2222222222222222",
+            "note-1111111111111111",
+            "note-2222222222222222",
+        ]
+    )
+    result = validate_hypothesis(
+        item,
+        allowed_note_ids=frozenset(
+            {
+                "note-1111111111111111",
+                "note-2222222222222222",
+            }
+        ),
+    )
+
+    assert result.accepted is True
+    assert result.hypothesis["used_note_ids"] == [
+        "note-2222222222222222",
+        "note-1111111111111111",
+    ]
+
+
 def test_all_whitelisted_builders_accept_compatible_parameter_shapes():
     examples = {
         "long_term_trend_filter": ("LONGTERM", {"symbol": "SPY", "sma": 200}),

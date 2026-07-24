@@ -431,7 +431,7 @@ def test_book_informed_hypothesis_without_note_attribution_is_rejected(tmp_path)
 
     assert queued == []
     assert (
-        "hypothesis_1:book_evidence_not_used"
+        "hypothesis_1:missing_used_note_ids"
         in outcome["rejection_reasons"]
     )
 
