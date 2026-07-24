@@ -1,7 +1,7 @@
 # Hermes Citation Adherence V1 Design
 
-**Date:** 2026-07-24  
-**Status:** Proposed for implementation after user review  
+**Date:** 2026-07-24
+**Status:** Approved for implementation
 **Scope:** Hermes/OpenRouter hypothesis generation only
 
 ## Goal
