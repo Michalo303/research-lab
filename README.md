@@ -238,3 +238,33 @@ Safety remains unchanged:
 - no paper/live changes
 - no broker integrations
 - no deployment-gate changes
+
+## Minervini Price/Volume Core V1
+
+The frozen research-only pipeline implements a price/volume Trend Template,
+VCP breakout signals, next-open portfolio simulation, and a closed evidence
+gate. It never downloads missing market data and performs no broker, registry,
+promotion, or deployment actions.
+
+Plan the bounded four-call EODHD capability check without using the network:
+
+```bash
+python scripts/check_minervini_eodhd_capability_v1.py
+```
+
+Evaluate an immutable local, hash-bound OHLCV manifest without writing output:
+
+```bash
+python scripts/run_minervini_price_volume_core_v1.py --manifest /absolute/path/to/manifest.json
+```
+
+The manifest must bind a frozen out-of-sample interval, split-adjusted price
+status, local corporate-action and universe-lineage artifacts, one local SPY
+market-proxy file, and any delisting terminal values with evidence hashes.
+Missing held-position prices without matching terminal-value evidence stop the
+evaluation fail-closed.
+
+The verdict is `CANDIDATE` only with at least 100 trades, annualized return of
+at least 10%, maximum drawdown no worse than -15%, and no point-in-time or
+survivorship-data blockers. It remains a research candidate, never permission
+to paper trade or trade live.
