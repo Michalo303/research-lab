@@ -49,6 +49,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             panel=panel,
             signals=signals,
             instrument_types=instrument_types,
+            evaluation_start=manifest["evaluation_start"],
+            evaluation_end=manifest["evaluation_end"],
+            terminal_values=manifest["terminal_values"],
         )
         blockers = _data_blockers(manifest)
         gate = evaluate_minervini_result_v1(
@@ -62,6 +65,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 for key in (
                     "cagr",
                     "cumulative_return",
+                    "evaluation_start",
+                    "evaluation_end",
                     "maximum_drawdown",
                     "mar",
                     "trade_count",
@@ -103,6 +108,16 @@ def _load_manifest(path: Path) -> dict[str, Any]:
         "dataset_id",
         "point_in_time_classification",
         "survivorship_status",
+        "evaluation_classification",
+        "evaluation_start",
+        "evaluation_end",
+        "price_adjustment_status",
+        "corporate_action_lineage_sha256",
+        "corporate_action_lineage_path",
+        "universe_lineage_sha256",
+        "universe_lineage_path",
+        "market_proxy_symbol",
+        "terminal_values",
         "instruments",
     }
     _unknown(payload, allowed, "manifest")
@@ -112,8 +127,44 @@ def _load_manifest(path: Path) -> dict[str, Any]:
         "dataset_id",
         "point_in_time_classification",
         "survivorship_status",
+        "evaluation_classification",
+        "evaluation_start",
+        "evaluation_end",
+        "price_adjustment_status",
+        "corporate_action_lineage_sha256",
+        "corporate_action_lineage_path",
+        "universe_lineage_sha256",
+        "universe_lineage_path",
+        "market_proxy_symbol",
     ):
         _text(payload.get(field), field)
+    if payload["evaluation_classification"] != "OUT_OF_SAMPLE_FROZEN":
+        raise ValueError(
+            "evaluation_classification must be OUT_OF_SAMPLE_FROZEN."
+        )
+    if payload["price_adjustment_status"] != "SPLIT_ADJUSTED":
+        raise ValueError("price_adjustment_status must be SPLIT_ADJUSTED.")
+    _sha256(
+        payload["corporate_action_lineage_sha256"],
+        "corporate_action_lineage_sha256",
+    )
+    _sha256(payload["universe_lineage_sha256"], "universe_lineage_sha256")
+    _verify_local_hash(
+        payload["corporate_action_lineage_path"],
+        payload["corporate_action_lineage_sha256"],
+        "corporate_action_lineage_path",
+    )
+    _verify_local_hash(
+        payload["universe_lineage_path"],
+        payload["universe_lineage_sha256"],
+        "universe_lineage_path",
+    )
+    start = _naive_timestamp(payload["evaluation_start"], "evaluation_start")
+    end = _naive_timestamp(payload["evaluation_end"], "evaluation_end")
+    if start > end:
+        raise ValueError("evaluation_start must not follow evaluation_end.")
+    if payload["market_proxy_symbol"] != "SPY":
+        raise ValueError("market_proxy_symbol must be SPY.")
     instruments = payload.get("instruments")
     if not isinstance(instruments, list) or not instruments:
         raise ValueError("manifest instruments must be a non-empty list.")
@@ -121,7 +172,33 @@ def _load_manifest(path: Path) -> dict[str, Any]:
     symbols = [item["symbol"] for item in normalized]
     if len(symbols) != len(set(symbols)):
         raise ValueError("manifest symbols must be unique.")
-    return {**payload, "instruments": sorted(normalized, key=lambda x: x["symbol"])}
+    proxies = [
+        item for item in normalized if item["role"] == "MARKET_PROXY"
+    ]
+    investable = [
+        item for item in normalized if item["role"] == "INVESTABLE"
+    ]
+    if (
+        len(proxies) != 1
+        or proxies[0]["symbol"] != "SPY"
+        or proxies[0]["instrument_type"].casefold() != "etf"
+    ):
+        raise ValueError("manifest requires exactly one SPY ETF market proxy.")
+    if not investable or any(
+        item["instrument_type"].casefold() != "common stock"
+        for item in investable
+    ):
+        raise ValueError(
+            "manifest requires at least one investable common stock."
+        )
+    terminal_values = _terminal_values(
+        payload.get("terminal_values", {}), set(symbols)
+    )
+    return {
+        **payload,
+        "instruments": sorted(normalized, key=lambda x: x["symbol"]),
+        "terminal_values": terminal_values,
+    }
 
 
 def _instrument(raw: object) -> dict[str, str]:
@@ -129,6 +206,7 @@ def _instrument(raw: object) -> dict[str, str]:
         raise ValueError("manifest instrument must be an object.")
     allowed = {
         "symbol",
+        "role",
         "instrument_type",
         "exchange",
         "file_path",
@@ -139,13 +217,11 @@ def _instrument(raw: object) -> dict[str, str]:
     _unknown(raw, allowed, "manifest instrument")
     result = {field: _text(raw.get(field), field) for field in allowed}
     result["symbol"] = result["symbol"].upper()
+    if result["role"] not in {"INVESTABLE", "MARKET_PROXY"}:
+        raise ValueError("instrument role must be INVESTABLE or MARKET_PROXY.")
     if result["format"] not in {"json", "jsonl"}:
         raise ValueError("instrument format must be json or jsonl.")
-    if (
-        len(result["expected_sha256"]) != 64
-        or any(character not in "0123456789abcdef" for character in result["expected_sha256"])
-    ):
-        raise ValueError("expected_sha256 must be a lowercase SHA-256.")
+    _sha256(result["expected_sha256"], "expected_sha256")
     _absolute_regular_file(result["file_path"], "instrument file")
     return result
 
@@ -181,10 +257,12 @@ def _load_panel(
         frame["timestamp"] = pd.to_datetime(
             frame["timestamp"], utc=True
         ).dt.tz_convert(None)
-        frames[item["symbol"]] = frame.set_index("timestamp")[
+        normalized_frame = frame.set_index("timestamp")[
             ["open", "high", "low", "close", "volume"]
         ]
-        instrument_types[item["symbol"]] = item["instrument_type"]
+        if item["role"] == "INVESTABLE":
+            frames[item["symbol"]] = normalized_frame
+            instrument_types[item["symbol"]] = item["instrument_type"]
         identities.append(
             {
                 "symbol": item["symbol"],
@@ -202,6 +280,22 @@ def _load_panel(
                 "point_in_time_classification"
             ],
             "survivorship_status": manifest["survivorship_status"],
+            "evaluation_classification": manifest[
+                "evaluation_classification"
+            ],
+            "evaluation_start": manifest["evaluation_start"],
+            "evaluation_end": manifest["evaluation_end"],
+            "price_adjustment_status": manifest[
+                "price_adjustment_status"
+            ],
+            "corporate_action_lineage_sha256": manifest[
+                "corporate_action_lineage_sha256"
+            ],
+            "universe_lineage_sha256": manifest[
+                "universe_lineage_sha256"
+            ],
+            "market_proxy_symbol": manifest["market_proxy_symbol"],
+            "terminal_values": manifest["terminal_values"],
             "instruments": identities,
         }
     )
@@ -273,6 +367,88 @@ def _text(value: object, name: str) -> str:
     if not isinstance(value, str) or not value.strip() or value != value.strip():
         raise ValueError(f"{name} must be normalized non-empty text.")
     return value
+
+
+def _sha256(value: object, name: str) -> str:
+    text = _text(value, name)
+    if len(text) != 64 or any(
+        character not in "0123456789abcdef" for character in text
+    ):
+        raise ValueError(f"{name} must be a lowercase SHA-256.")
+    return text
+
+
+def _naive_timestamp(value: object, name: str) -> pd.Timestamp:
+    text = _text(value, name)
+    try:
+        timestamp = pd.Timestamp(text)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a valid timestamp.") from exc
+    if timestamp.tzinfo is not None:
+        raise ValueError(f"{name} must be timezone-naive.")
+    return timestamp
+
+
+def _verify_local_hash(
+    raw_path: object,
+    expected_sha256: object,
+    name: str,
+) -> None:
+    path = _absolute_regular_file(raw_path, name)
+    expected = _sha256(expected_sha256, f"{name} expected SHA-256")
+    actual = hashlib.sha256(path.read_bytes()).hexdigest()
+    if actual != expected:
+        raise ValueError(f"{name} does not match its expected SHA-256.")
+
+
+def _terminal_values(
+    raw: object,
+    symbols: set[str],
+) -> dict[str, dict[str, object]]:
+    if not isinstance(raw, dict):
+        raise ValueError("terminal_values must be an object.")
+    unknown = sorted(set(raw) - symbols)
+    if unknown:
+        raise ValueError("terminal_values contains an unknown symbol.")
+    result: dict[str, dict[str, object]] = {}
+    for symbol, value in raw.items():
+        if not isinstance(value, dict) or set(value) != {
+            "timestamp",
+            "price",
+            "evidence_path",
+            "evidence_sha256",
+        }:
+            raise ValueError(
+                "terminal value evidence fields are invalid; evidence_path "
+                "and its SHA-256 are required."
+            )
+        timestamp = _naive_timestamp(
+            value["timestamp"], "terminal value timestamp"
+        )
+        price = value["price"]
+        if (
+            isinstance(price, bool)
+            or not isinstance(price, (int, float))
+            or not float("-inf") < float(price) < float("inf")
+            or float(price) < 0
+        ):
+            raise ValueError(
+                "terminal value price must be finite and non-negative."
+            )
+        evidence = _sha256(
+            value["evidence_sha256"], "terminal value evidence_sha256"
+        )
+        _verify_local_hash(
+            value["evidence_path"],
+            evidence,
+            "terminal value evidence_path",
+        )
+        result[symbol] = {
+            "timestamp": timestamp.isoformat(),
+            "price": float(price),
+            "evidence_sha256": evidence,
+        }
+    return result
 
 
 def _hash(value: object) -> str:

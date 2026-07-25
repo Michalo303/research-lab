@@ -215,3 +215,86 @@ def test_costs_reduce_equity_and_are_reported():
 
     assert costly["transaction_costs"] > 0
     assert costly["ending_equity"] < zero["ending_equity"]
+
+
+def test_missing_held_price_fails_closed_without_terminal_value_evidence():
+    panel = _panel(periods=6)
+    signals = _signals(panel)
+    signal_day = panel.index[0]
+    signals.loc[signal_day, ("AAA", "signal")] = True
+    signals.loc[signal_day, ("AAA", "pivot")] = 100.0
+    signals.loc[signal_day, ("AAA", "structural_stop")] = 94.0
+    signals.loc[signal_day, ("AAA", "atr20")] = 2.0
+    signals.loc[signal_day, ("AAA", "rs_percentile")] = 1.0
+    panel.loc[panel.index[1], ("AAA", "open")] = 100.0
+    panel.loc[
+        panel.index[2], ("AAA", ["open", "high", "low", "close"])
+    ] = np.nan
+
+    with pytest.raises(
+        ValueError, match="terminal-value evidence is required"
+    ):
+        run_minervini_portfolio_v1(
+            panel=panel,
+            signals=signals,
+            instrument_types={"AAA": "Common Stock"},
+        )
+
+
+def test_hash_bound_terminal_value_closes_delisted_position():
+    panel = _panel(periods=6)
+    signals = _signals(panel)
+    signal_day = panel.index[0]
+    terminal_day = panel.index[2]
+    signals.loc[signal_day, ("AAA", "signal")] = True
+    signals.loc[signal_day, ("AAA", "pivot")] = 100.0
+    signals.loc[signal_day, ("AAA", "structural_stop")] = 94.0
+    signals.loc[signal_day, ("AAA", "atr20")] = 2.0
+    signals.loc[signal_day, ("AAA", "rs_percentile")] = 1.0
+    panel.loc[panel.index[1], ("AAA", "open")] = 100.0
+    panel.loc[
+        terminal_day, ("AAA", ["open", "high", "low", "close"])
+    ] = np.nan
+
+    result = run_minervini_portfolio_v1(
+        panel=panel,
+        signals=signals,
+        instrument_types={"AAA": "Common Stock"},
+        terminal_values={
+            "AAA": {
+                "timestamp": terminal_day.isoformat(),
+                "price": 97.0,
+                "evidence_sha256": "d" * 64,
+            }
+        },
+        cost_bps_per_side=0.0,
+    )
+
+    assert result["trade_count"] == 1
+    assert result["trades"][0]["exit_reason"] == "DELISTING_TERMINAL_VALUE"
+    assert result["trades"][0]["exit_price"] == 97.0
+
+
+def test_evaluation_window_excludes_prior_signals_and_binds_result_dates():
+    panel = _panel(periods=8)
+    signals = _signals(panel)
+    pre_oos_signal = panel.index[0]
+    oos_start = panel.index[3]
+    signals.loc[pre_oos_signal, ("AAA", "signal")] = True
+    signals.loc[pre_oos_signal, ("AAA", "pivot")] = 100.0
+    signals.loc[pre_oos_signal, ("AAA", "structural_stop")] = 94.0
+    signals.loc[pre_oos_signal, ("AAA", "atr20")] = 2.0
+    signals.loc[pre_oos_signal, ("AAA", "rs_percentile")] = 1.0
+
+    result = run_minervini_portfolio_v1(
+        panel=panel,
+        signals=signals,
+        instrument_types={"AAA": "Common Stock"},
+        evaluation_start=oos_start,
+        evaluation_end=panel.index[-1],
+    )
+
+    assert result["trade_count"] == 0
+    assert result["evaluation_start"] == oos_start.isoformat()
+    assert result["evaluation_end"] == panel.index[-1].isoformat()
+    assert len(result["equity_curve"]) == 5

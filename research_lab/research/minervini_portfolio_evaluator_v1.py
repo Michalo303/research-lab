@@ -24,6 +24,9 @@ def run_minervini_portfolio_v1(
     instrument_types: Mapping[str, str],
     initial_cash: float = 100_000.0,
     cost_bps_per_side: float = 15.0,
+    evaluation_start: pd.Timestamp | str | None = None,
+    evaluation_end: pd.Timestamp | str | None = None,
+    terminal_values: Mapping[str, Mapping[str, object]] | None = None,
 ) -> dict[str, object]:
     """Run one chronological, long-only Minervini portfolio ledger."""
     symbols = _validate_inputs(panel, signals, instrument_types)
@@ -31,9 +34,26 @@ def run_minervini_portfolio_v1(
         raise ValueError("initial_cash must be positive and finite.")
     if not math.isfinite(cost_bps_per_side) or cost_bps_per_side < 0:
         raise ValueError("cost_bps_per_side must be finite and non-negative.")
+    validated_terminal_values = _validated_terminal_values(
+        terminal_values, symbols
+    )
 
     close = _field(panel, symbols, "close")
     sma50 = close.rolling(50, min_periods=50).mean()
+    start = _evaluation_boundary(
+        evaluation_start, panel.index[0], "evaluation_start"
+    )
+    end = _evaluation_boundary(
+        evaluation_end, panel.index[-1], "evaluation_end"
+    )
+    if start > end:
+        raise ValueError("evaluation_start must not follow evaluation_end.")
+    mask = (panel.index >= start) & (panel.index <= end)
+    if not bool(mask.any()):
+        raise ValueError("evaluation window does not overlap the panel.")
+    panel = panel.loc[mask]
+    signals = signals.loc[mask]
+    sma50 = sma50.loc[mask]
     cash = float(initial_cash)
     positions: dict[str, dict[str, Any]] = {}
     pending_entries: list[dict[str, Any]] = []
@@ -51,6 +71,30 @@ def run_minervini_portfolio_v1(
 
     for position_index, timestamp in enumerate(panel.index):
         is_last = position_index == len(panel.index) - 1
+        for symbol in sorted(list(positions)):
+            if _complete_bar(panel, timestamp, symbol):
+                continue
+            terminal = validated_terminal_values.get(symbol)
+            if terminal is None or terminal["timestamp"] != timestamp:
+                raise ValueError(
+                    f"{symbol} has a missing held-position bar at "
+                    f"{timestamp.isoformat()}; terminal-value evidence is required."
+                )
+            cash, costs, notional = _exit_position(
+                positions=positions,
+                symbol=symbol,
+                timestamp=timestamp,
+                reference_price=float(terminal["price"]),
+                reason="DELISTING_TERMINAL_VALUE",
+                cost_fraction=cost_fraction,
+                cash=cash,
+                trades=trades,
+                terminal_value_evidence_sha256=str(
+                    terminal["evidence_sha256"]
+                ),
+            )
+            total_costs += costs
+            turnover_notional += notional
 
         for symbol in sorted(pending_exits):
             if symbol not in positions:
@@ -81,6 +125,11 @@ def run_minervini_portfolio_v1(
             if len(positions) >= MAXIMUM_POSITIONS:
                 rejected.append(
                     _rejection(timestamp, symbol, "MAXIMUM_POSITIONS")
+                )
+                continue
+            if not _complete_bar(panel, timestamp, symbol):
+                rejected.append(
+                    _rejection(timestamp, symbol, "MISSING_ENTRY_BAR")
                 )
                 continue
             open_price = float(panel.loc[timestamp, (symbol, "open")])
@@ -274,6 +323,8 @@ def run_minervini_portfolio_v1(
     result: dict[str, object] = {
         "version": RESULT_VERSION,
         "initial_cash": initial_cash,
+        "evaluation_start": panel.index[0].isoformat(),
+        "evaluation_end": panel.index[-1].isoformat(),
         "ending_cash": cash,
         "ending_equity": ending_equity,
         "cumulative_return": cumulative_return,
@@ -311,6 +362,80 @@ def run_minervini_portfolio_v1(
     }
     result["output_sha256"] = _hash(result)
     return result
+
+
+def _evaluation_boundary(
+    value: pd.Timestamp | str | None,
+    default: pd.Timestamp,
+    name: str,
+) -> pd.Timestamp:
+    if value is None:
+        return default
+    try:
+        timestamp = pd.Timestamp(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a valid timestamp.") from exc
+    if timestamp.tzinfo is not None:
+        raise ValueError(f"{name} must be timezone-naive.")
+    return timestamp
+
+
+def _validated_terminal_values(
+    values: Mapping[str, Mapping[str, object]] | None,
+    symbols: list[str],
+) -> dict[str, dict[str, object]]:
+    if values is None:
+        return {}
+    if not isinstance(values, Mapping):
+        raise ValueError("terminal_values must be a mapping.")
+    unknown = sorted(set(values) - set(symbols))
+    if unknown:
+        raise ValueError("terminal_values contains an unknown symbol.")
+    result: dict[str, dict[str, object]] = {}
+    for symbol, raw in values.items():
+        if not isinstance(raw, Mapping) or set(raw) != {
+            "timestamp",
+            "price",
+            "evidence_sha256",
+        }:
+            raise ValueError("terminal value evidence fields are invalid.")
+        timestamp = _evaluation_boundary(
+            raw["timestamp"], pd.Timestamp.min, "terminal value timestamp"
+        )
+        price = raw["price"]
+        if (
+            isinstance(price, bool)
+            or not isinstance(price, (int, float))
+            or not math.isfinite(float(price))
+            or float(price) < 0
+        ):
+            raise ValueError("terminal value price must be finite and non-negative.")
+        evidence = raw["evidence_sha256"]
+        if (
+            not isinstance(evidence, str)
+            or len(evidence) != 64
+            or any(character not in "0123456789abcdef" for character in evidence)
+        ):
+            raise ValueError(
+                "terminal value evidence_sha256 must be a lowercase SHA-256."
+            )
+        result[str(symbol)] = {
+            "timestamp": timestamp,
+            "price": float(price),
+            "evidence_sha256": evidence,
+        }
+    return result
+
+
+def _complete_bar(
+    panel: pd.DataFrame,
+    timestamp: pd.Timestamp,
+    symbol: str,
+) -> bool:
+    return all(
+        math.isfinite(float(panel.loc[timestamp, (symbol, field)]))
+        for field in ("open", "high", "low", "close")
+    )
 
 
 def _validate_inputs(
@@ -391,6 +516,7 @@ def _exit_position(
     cost_fraction: float,
     cash: float,
     trades: list[dict[str, object]],
+    terminal_value_evidence_sha256: str | None = None,
 ) -> tuple[float, float, float]:
     position = positions.pop(symbol)
     quantity = int(position["quantity"])
@@ -417,6 +543,10 @@ def _exit_position(
         "return_fraction": fill_price / entry_price - 1.0,
         "transaction_costs": float(position["entry_cost"]) + cost,
     }
+    if terminal_value_evidence_sha256 is not None:
+        trade["terminal_value_evidence_sha256"] = (
+            terminal_value_evidence_sha256
+        )
     trades.append(trade)
     return cash, cost, notional
 

@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping, Sequence
+from datetime import datetime
 
 
 RESULT_VERSION = "minervini_evaluation_gate_result_v1"
@@ -37,6 +38,14 @@ def evaluate_minervini_result_v1(
         or trade_count < 0
     ):
         raise ValueError("trade_count must be a non-negative integer.")
+    evaluation_start = _evaluation_timestamp(
+        portfolio_result.get("evaluation_start"), "evaluation_start"
+    )
+    evaluation_end = _evaluation_timestamp(
+        portfolio_result.get("evaluation_end"), "evaluation_end"
+    )
+    if evaluation_start > evaluation_end:
+        raise ValueError("evaluation_start must not follow evaluation_end.")
     if blockers:
         verdict = "INSUFFICIENT_EVIDENCE"
         reasons = blockers
@@ -61,6 +70,8 @@ def evaluate_minervini_result_v1(
         "cagr": cagr,
         "maximum_drawdown": drawdown,
         "trade_count": trade_count,
+        "evaluation_start": evaluation_start.isoformat(),
+        "evaluation_end": evaluation_end.isoformat(),
         "provider_calls_used": 0,
         "network_used": False,
         "broker_actions_used": 0,
@@ -101,3 +112,15 @@ def _finite_number(value: object, name: str) -> float:
     if not (-float("inf") < number < float("inf")):
         raise ValueError(f"{name} must be finite.")
     return number
+
+
+def _evaluation_timestamp(value: object, name: str) -> datetime:
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise ValueError(f"{name} must be a normalized timestamp.")
+    try:
+        timestamp = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a normalized timestamp.") from exc
+    if timestamp.tzinfo is not None:
+        raise ValueError(f"{name} must be timezone-naive.")
+    return timestamp
