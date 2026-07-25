@@ -287,6 +287,12 @@ python scripts/run_minervini_eodhd_acquisition_pilot_v1.py \
   --expected-provider-requests 24
 ```
 
+If the process is launched with redirected stdout or stderr, both log files
+must be placed outside `--output-dir` (for example, in a sibling `process-logs`
+directory). PowerShell creates redirection targets before Python starts, so
+placing them inside the pilot directory correctly triggers the non-empty
+directory guard before any provider request.
+
 The pilot stores secret-free raw responses with SHA-256 lineage and estimates
 the request, runtime, and storage envelope. It does not authorize or begin the
 wide historical acquisition, evaluate performance, or contact a broker.

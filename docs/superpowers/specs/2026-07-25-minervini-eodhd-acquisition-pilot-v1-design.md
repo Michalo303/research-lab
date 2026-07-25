@@ -93,6 +93,10 @@ endpoint identity.
 
 The output directory must be absolute, local, not a symlink, and dedicated to
 one new pilot run. The pilot refuses to overwrite an existing non-empty
+directory. Process stdout and stderr redirection targets are operational
+evidence, not provider artifacts, and must be created outside the output
+directory. This matters for launchers such as PowerShell `Start-Process`,
+which create redirection targets before the Python process validates the
 directory.
 
 ## Immutable artifacts

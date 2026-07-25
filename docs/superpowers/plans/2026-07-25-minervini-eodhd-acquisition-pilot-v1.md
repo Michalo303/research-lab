@@ -595,6 +595,9 @@ C:\Users\lojka\trading\data\minervini-eodhd-acquisition-pilot-v1\pilot-<UTC time
 ```
 
 Verify the resolved path is inside the named pilot root and is empty.
+If stdout or stderr is redirected by a supervising process, place those files
+in a sibling process-log directory. Do not place either redirection target
+inside the empty provider-artifact directory.
 
 - [ ] **Step 5: Execute exactly one live pilot**
 
