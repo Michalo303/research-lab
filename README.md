@@ -268,3 +268,25 @@ The verdict is `CANDIDATE` only with at least 100 trades, annualized return of
 at least 10%, maximum drawdown no worse than -15%, and no point-in-time or
 survivorship-data blockers. It remains a research candidate, never permission
 to paper trade or trade live.
+
+### Bounded EODHD acquisition pilot
+
+Plan the immutable acquisition pilot without network access or writes:
+
+```bash
+python scripts/run_minervini_eodhd_acquisition_pilot_v1.py
+```
+
+Live mode requires an absolute empty output directory and an exact
+24-request acknowledgement:
+
+```bash
+python scripts/run_minervini_eodhd_acquisition_pilot_v1.py \
+  --execute-live \
+  --output-dir /absolute/empty/pilot-run \
+  --expected-provider-requests 24
+```
+
+The pilot stores secret-free raw responses with SHA-256 lineage and estimates
+the request, runtime, and storage envelope. It does not authorize or begin the
+wide historical acquisition, evaluate performance, or contact a broker.
