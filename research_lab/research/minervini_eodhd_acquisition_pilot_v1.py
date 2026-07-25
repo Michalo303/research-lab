@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import urllib.parse
 from collections.abc import Mapping, Sequence
+from datetime import date
 
 
 PLAN_VERSION = "minervini_eodhd_acquisition_plan_v1"
@@ -96,6 +98,213 @@ def build_minervini_eodhd_acquisition_plan_v1(
     }
     result["output_payload_sha256"] = _hash(result)
     return result
+
+
+def validate_minervini_eod_sample_v1(
+    payload: object,
+) -> dict[str, object]:
+    if not isinstance(payload, list) or not payload:
+        raise ValueError("EOD payload must be a non-empty array.")
+    required = {
+        "date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "adjusted_close",
+        "volume",
+    }
+    previous: date | None = None
+    gap_count = 0
+    for row in payload:
+        if not isinstance(row, Mapping) or not required.issubset(row):
+            raise ValueError("EOD row is missing required fields.")
+        current = _date(row["date"], "EOD date")
+        if previous is not None:
+            if current <= previous:
+                raise ValueError("EOD dates must be strictly ordered and unique.")
+            if (current - previous).days > 1:
+                gap_count += 1
+        values = {
+            name: _finite_number(row[name], name)
+            for name in ("open", "high", "low", "close", "adjusted_close")
+        }
+        volume = _finite_number(row["volume"], "volume")
+        if (
+            min(values.values()) <= 0
+            or volume < 0
+            or values["high"] < max(values["open"], values["close"])
+            or values["low"] > min(values["open"], values["close"])
+            or values["high"] < values["low"]
+        ):
+            raise ValueError("EOD OHLC or volume values are invalid.")
+        previous = current
+    return {
+        "status": "VALID",
+        "first_date": str(payload[0]["date"]),
+        "last_date": str(payload[-1]["date"]),
+        "row_count": len(payload),
+        "gap_count": gap_count,
+    }
+
+
+def analyze_minervini_symbol_changes_v1(
+    payload: object,
+) -> dict[str, object]:
+    if not isinstance(payload, list):
+        raise ValueError("symbol-change payload must be an array.")
+    normalized: list[dict[str, str]] = []
+    targets: dict[str, set[str]] = {}
+    graph: dict[str, set[str]] = {}
+    for row in payload:
+        if not isinstance(row, Mapping):
+            raise ValueError("symbol-change rows must be objects.")
+        old = _provider_code(row.get("old_symbol"), "old_symbol")
+        new = _provider_code(row.get("new_symbol"), "new_symbol")
+        effective = _date(row.get("effective"), "effective")
+        if not date.fromisoformat(RAW_START) <= effective <= date.fromisoformat(
+            RAW_END
+        ):
+            raise ValueError("symbol-change date is outside the frozen interval.")
+        exchange = _text(row.get("exchange"), "exchange").upper()
+        targets.setdefault(old, set()).add(new)
+        graph.setdefault(old, set()).add(new)
+        normalized.append(
+            {
+                "old_symbol": old,
+                "new_symbol": new,
+                "effective": effective.isoformat(),
+                "exchange": exchange,
+            }
+        )
+    blockers: list[str] = []
+    if any(len(values) > 1 for values in targets.values()):
+        blockers.append("AMBIGUOUS_SYMBOL_CHANGE_CHAIN")
+    if _has_cycle(graph):
+        blockers.append("SYMBOL_CHANGE_CYCLE")
+    normalized.sort(
+        key=lambda row: (
+            row["effective"],
+            row["old_symbol"],
+            row["new_symbol"],
+            row["exchange"],
+        )
+    )
+    return {
+        "record_count": len(normalized),
+        "normalized_sha256": _hash(normalized),
+        "blockers": sorted(blockers),
+    }
+
+
+def analyze_minervini_split_coverage_v1(
+    payload: object,
+) -> dict[str, object]:
+    if not isinstance(payload, Mapping):
+        raise ValueError("split payload must be an object.")
+    if isinstance(payload.get("splits"), list):
+        rows = payload["splits"]
+        if payload.get("from") != RAW_START or payload.get("to") != RAW_END:
+            raise ValueError("split response does not cover the frozen interval.")
+        page_count: int | None = None
+        coverage_complete = True
+    elif isinstance(payload.get("data"), list) and isinstance(
+        payload.get("meta"), Mapping
+    ):
+        rows = payload["data"]
+        meta = payload["meta"]
+        total = _non_negative_int(meta.get("total"), "split total")
+        limit = _positive_int(meta.get("limit"), "split limit")
+        offset = _non_negative_int(meta.get("offset"), "split offset")
+        page_count = math.ceil(total / limit) if total else 0
+        coverage_complete = offset == 0 and len(rows) >= total
+    else:
+        raise ValueError("split payload schema is unsupported.")
+    for row in rows:
+        if not isinstance(row, Mapping):
+            raise ValueError("split rows must be objects.")
+        code = row.get("code", row.get("symbol"))
+        split_date = row.get("split_date", row.get("date"))
+        _provider_symbol(code, "split code")
+        _date(split_date, "split date")
+    return {
+        "record_count": len(rows),
+        "coverage_complete": coverage_complete,
+        "page_count": page_count,
+        "normalized_sha256": _hash(rows),
+    }
+
+
+def estimate_minervini_wide_acquisition_v1(
+    *,
+    deduplicated_symbol_count: int,
+    sample_summaries: Sequence[Mapping[str, object]],
+    split_metadata: Mapping[str, object],
+) -> dict[str, object]:
+    symbols = _positive_int(
+        deduplicated_symbol_count, "deduplicated_symbol_count"
+    )
+    if (
+        isinstance(sample_summaries, (str, bytes))
+        or not isinstance(sample_summaries, Sequence)
+        or not sample_summaries
+    ):
+        raise ValueError("sample_summaries must be a non-empty sequence.")
+    bytes_per_row: list[float] = []
+    row_counts: list[int] = []
+    for summary in sample_summaries:
+        if not isinstance(summary, Mapping):
+            raise ValueError("sample summaries must be objects.")
+        rows = _positive_int(summary.get("row_count"), "sample row_count")
+        response_bytes = _positive_int(
+            summary.get("response_bytes"), "sample response_bytes"
+        )
+        row_counts.append(rows)
+        bytes_per_row.append(response_bytes / rows)
+    coverage_complete = split_metadata.get("coverage_complete") is True
+    page_count = split_metadata.get("page_count")
+    if coverage_complete:
+        split_lower = split_upper = max(
+            1, int(page_count) if isinstance(page_count, int) else 1
+        )
+        exact = True
+    elif isinstance(page_count, int) and page_count >= 1:
+        split_lower = split_upper = page_count
+        exact = True
+    else:
+        split_lower = 1
+        split_upper = symbols
+        exact = False
+    fixed_requests = 3
+    total_lower = symbols + split_lower + fixed_requests
+    total_upper = symbols + split_upper + fixed_requests
+    median_rows = sorted(row_counts)[len(row_counts) // 2]
+    estimated_rows = symbols * median_rows
+    storage_lower = math.floor(min(bytes_per_row) * estimated_rows)
+    storage_upper = math.ceil(max(bytes_per_row) * estimated_rows)
+    return {
+        "full_history_eod_requests": symbols,
+        "split_request_lower_bound": split_lower,
+        "split_request_upper_bound": split_upper,
+        "symbol_change_requests": 1,
+        "total_http_requests_lower_bound": total_lower,
+        "total_http_requests_upper_bound": total_upper,
+        "total_call_units_lower_bound": total_lower,
+        "total_call_units_upper_bound": total_upper,
+        "total_call_units_exact": exact,
+        "minimum_acquisition_days_at_100000_units": math.ceil(
+            total_upper / 100_000
+        ),
+        "minimum_runtime_seconds_at_1000_per_minute": math.ceil(
+            total_upper * 60 / 1_000
+        ),
+        "conservative_runtime_seconds_at_5_per_second": math.ceil(
+            total_upper / 5
+        ),
+        "raw_storage_bytes_lower_bound": storage_lower,
+        "raw_storage_bytes_upper_bound": storage_upper,
+        "storage_estimate_status": "ESTIMATED_FROM_SAMPLE",
+    }
 
 
 def _normalize_universe(
@@ -211,6 +420,69 @@ def _text(value: object, name: str) -> str:
     if not isinstance(value, str) or not value.strip() or value != value.strip():
         raise ValueError(f"{name} must be normalized non-empty text.")
     return value
+
+
+def _provider_code(value: object, name: str) -> str:
+    code = _text(value, name).upper()
+    if not _CODE_RE.fullmatch(code):
+        raise ValueError(f"{name} is malformed.")
+    return code
+
+
+def _provider_symbol(value: object, name: str) -> str:
+    symbol = _text(value, name).upper()
+    parts = symbol.rsplit(".", 1)
+    if len(parts) != 2 or not all(_CODE_RE.fullmatch(part) for part in parts):
+        raise ValueError(f"{name} is malformed.")
+    return symbol
+
+
+def _date(value: object, name: str) -> date:
+    text = _text(value, name)
+    try:
+        return date.fromisoformat(text)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an ISO date.") from exc
+
+
+def _finite_number(value: object, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{name} must be finite.")
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError(f"{name} must be finite.")
+    return number
+
+
+def _positive_int(value: object, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{name} must be a positive integer.")
+    return value
+
+
+def _non_negative_int(value: object, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{name} must be a non-negative integer.")
+    return value
+
+
+def _has_cycle(graph: Mapping[str, set[str]]) -> bool:
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(node: str) -> bool:
+        if node in visiting:
+            return True
+        if node in visited:
+            return False
+        visiting.add(node)
+        if any(visit(target) for target in graph.get(node, set())):
+            return True
+        visiting.remove(node)
+        visited.add(node)
+        return False
+
+    return any(visit(node) for node in graph)
 
 
 def _hash(value: object) -> str:
