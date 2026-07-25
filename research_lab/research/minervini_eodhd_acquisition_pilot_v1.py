@@ -3,10 +3,19 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
+import urllib.error
 import urllib.parse
+import urllib.request
 from collections.abc import Mapping, Sequence
-from datetime import date
+from collections.abc import Callable
+from datetime import date, datetime, timezone
+from pathlib import Path
+
+from research_lab.research.minervini_immutable_pilot_artifacts_v1 import (
+    MinerviniPilotArtifactWriterV1,
+)
 
 
 PLAN_VERSION = "minervini_eodhd_acquisition_plan_v1"
@@ -15,6 +24,9 @@ RAW_START = "2010-01-01"
 RAW_END = "2025-12-31"
 EVALUATION_START = "2013-01-02"
 _CODE_RE = re.compile(r"^[A-Z0-9][A-Z0-9._-]{0,31}$")
+RawHttpGet = Callable[
+    [str], tuple[bytes, Mapping[str, object]]
+]
 
 
 def build_minervini_eodhd_acquisition_plan_v1(
@@ -307,6 +319,214 @@ def estimate_minervini_wide_acquisition_v1(
     }
 
 
+def run_minervini_eodhd_acquisition_pilot_v1(
+    *,
+    output_dir: Path,
+    expected_provider_requests: int,
+    api_key: str | None = None,
+    env: Mapping[str, str] | None = None,
+    http_get: RawHttpGet | None = None,
+    now_utc: Callable[[], str] | None = None,
+) -> dict[str, object]:
+    """Execute at most 24 read-only requests and persist immutable evidence."""
+    if expected_provider_requests != PROVIDER_REQUEST_LIMIT:
+        raise ValueError("expected_provider_requests must be exactly 24.")
+    environment = os.environ if env is None else env
+    key = (
+        api_key if api_key is not None else environment.get("EODHD_API_KEY", "")
+    ).strip()
+    if not key:
+        return _safety_result(
+            {
+                "version": "minervini_eodhd_acquisition_pilot_result_v1",
+                "status": "MISSING_API_KEY",
+                "provider_requests_used": 0,
+                "stopping_ordinal": None,
+            }
+        )
+    writer = MinerviniPilotArtifactWriterV1.create(Path(output_dir))
+    getter = http_get or _download_raw
+    clock = now_utc or _now_utc
+    request_count = 0
+
+    def perform(
+        *,
+        endpoint_identity: str,
+        artifact_name: str,
+        validator: Callable[[object], dict[str, object] | None],
+    ) -> tuple[object, dict[str, object]]:
+        nonlocal request_count
+        if request_count >= PROVIDER_REQUEST_LIMIT:
+            raise _PilotFailure("provider request cap reached.")
+        request_count += 1
+        ordinal = request_count
+        try:
+            raw, metadata = getter(_authorized_url(endpoint_identity, key))
+        except Exception as exc:
+            raise _PilotFailure("provider request failed.", ordinal) from exc
+        if not isinstance(raw, bytes):
+            raise _PilotFailure("provider response was not bytes.", ordinal)
+        http_status = metadata.get("http_status")
+        if isinstance(http_status, bool) or not isinstance(http_status, int):
+            http_status = 0
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+            validation = validator(payload)
+            schema_status = "VALID"
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            writer.write_response(
+                ordinal=ordinal,
+                artifact_name=artifact_name,
+                endpoint_identity=endpoint_identity,
+                http_status=http_status,
+                raw_bytes=raw,
+                retrieved_at_utc=clock(),
+                parsed_row_count=0,
+                schema_status="INVALID",
+            )
+            raise _PilotFailure("provider payload validation failed.", ordinal) from exc
+        row_count = _payload_row_count(payload)
+        record = writer.write_response(
+            ordinal=ordinal,
+            artifact_name=artifact_name,
+            endpoint_identity=endpoint_identity,
+            http_status=http_status,
+            raw_bytes=raw,
+            retrieved_at_utc=clock(),
+            parsed_row_count=row_count,
+            schema_status=schema_status,
+        )
+        if http_status != 200:
+            raise _PilotFailure("provider HTTP status was not 200.", ordinal)
+        return payload, {**record, "validation": validation or {}}
+
+    active_endpoint = _endpoint(
+        "/exchange-symbol-list/US",
+        {"type": "common_stock", "fmt": "json"},
+    )
+    delisted_endpoint = _endpoint(
+        "/exchange-symbol-list/US",
+        {"delisted": "1", "type": "common_stock", "fmt": "json"},
+    )
+    try:
+        active, _ = perform(
+            endpoint_identity=active_endpoint,
+            artifact_name="active-common-stocks.json",
+            validator=_validate_non_empty_array,
+        )
+        delisted, _ = perform(
+            endpoint_identity=delisted_endpoint,
+            artifact_name="delisted-common-stocks.json",
+            validator=_validate_non_empty_array,
+        )
+        plan = build_minervini_eodhd_acquisition_plan_v1(
+            active_rows=active,
+            delisted_rows=delisted,
+        )
+        if plan["blockers"]:
+            raise _PilotFailure("universe identity is ambiguous.", request_count)
+        symbol_payload, symbol_record = perform(
+            endpoint_identity=plan["request_specs"][0]["endpoint_identity"],
+            artifact_name=plan["request_specs"][0]["artifact_name"],
+            validator=analyze_minervini_symbol_changes_v1,
+        )
+        symbol_analysis = analyze_minervini_symbol_changes_v1(symbol_payload)
+        split_payload, split_record = perform(
+            endpoint_identity=plan["request_specs"][1]["endpoint_identity"],
+            artifact_name=plan["request_specs"][1]["artifact_name"],
+            validator=analyze_minervini_split_coverage_v1,
+        )
+        split_analysis = analyze_minervini_split_coverage_v1(split_payload)
+        sample_summaries: list[dict[str, object]] = []
+        for symbol, spec in zip(
+            plan["sample_symbols"],
+            plan["request_specs"][2:],
+            strict=True,
+        ):
+            _, record = perform(
+                endpoint_identity=spec["endpoint_identity"],
+                artifact_name=spec["artifact_name"],
+                validator=validate_minervini_eod_sample_v1,
+            )
+            summary = dict(record["validation"])
+            summary.update(
+                {
+                    "symbol": symbol,
+                    "response_bytes": record["response_bytes"],
+                    "response_sha256": record["response_sha256"],
+                }
+            )
+            sample_summaries.append(summary)
+        blockers = [
+            *plan["blockers"],
+            *symbol_analysis["blockers"],
+        ]
+        if split_analysis["record_count"] < 1:
+            blockers.append("SPLIT_EVIDENCE_EMPTY")
+        estimate = estimate_minervini_wide_acquisition_v1(
+            deduplicated_symbol_count=plan["universe"][
+                "deduplicated_code_count"
+            ],
+            sample_summaries=sample_summaries,
+            split_metadata=split_analysis,
+        )
+        if request_count != PROVIDER_REQUEST_LIMIT:
+            raise _PilotFailure("provider request count was not exactly 24.")
+        status = (
+            "READY_FOR_WIDE_ACQUISITION_APPROVAL"
+            if not blockers
+            else "BLOCKED_IDENTITY_AMBIGUITY"
+        )
+        result = _safety_result(
+            {
+                "version": "minervini_eodhd_acquisition_pilot_result_v1",
+                "status": status,
+                "provider_requests_used": request_count,
+                "stopping_ordinal": None,
+                "plan_sha256": plan["output_payload_sha256"],
+                "universe": plan["universe"],
+                "symbol_change_analysis": symbol_analysis,
+                "split_analysis": split_analysis,
+                "sample_summaries": sample_summaries,
+                "estimate": estimate,
+                "blockers": sorted(set(blockers)),
+                "metadata_response_sha256": {
+                    "symbol_changes": symbol_record["response_sha256"],
+                    "splits": split_record["response_sha256"],
+                },
+            }
+        )
+    except (_PilotFailure, ValueError) as exc:
+        stopping = (
+            exc.ordinal
+            if isinstance(exc, _PilotFailure) and exc.ordinal is not None
+            else request_count
+        )
+        result = _safety_result(
+            {
+                "version": "minervini_eodhd_acquisition_pilot_result_v1",
+                "status": "FAILED_VALIDATION",
+                "provider_requests_used": request_count,
+                "stopping_ordinal": stopping,
+                "blockers": ["PILOT_EXECUTION_FAILED"],
+            }
+        )
+    manifest_path = writer.finalize(result)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    return {
+        **result,
+        "result_manifest_sha256": manifest["result_manifest_sha256"],
+        "manifest_path": str(manifest_path),
+        "output_dir": str(writer.root),
+    }
+
+
+class _PilotFailure(RuntimeError):
+    def __init__(self, message: str, ordinal: int | None = None) -> None:
+        super().__init__(message)
+        self.ordinal = ordinal
+
+
 def _normalize_universe(
     rows: Sequence[Mapping[str, object]],
     status: str,
@@ -483,6 +703,100 @@ def _has_cycle(graph: Mapping[str, set[str]]) -> bool:
         return False
 
     return any(visit(node) for node in graph)
+
+
+def _validate_non_empty_array(payload: object) -> dict[str, object]:
+    if not isinstance(payload, list) or not payload:
+        raise ValueError("provider universe payload must be a non-empty array.")
+    return {"row_count": len(payload)}
+
+
+def _payload_row_count(payload: object) -> int:
+    if isinstance(payload, list):
+        return len(payload)
+    if isinstance(payload, Mapping):
+        for key in ("splits", "data"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return len(value)
+    return 0
+
+
+def _authorized_url(endpoint_identity: str, api_key: str) -> str:
+    parsed = urllib.parse.urlparse(endpoint_identity)
+    query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+    if any(name.casefold() == "api_token" for name, _ in query):
+        raise ValueError("endpoint identity unexpectedly contains a token.")
+    query.append(("api_token", api_key))
+    return urllib.parse.urlunparse(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path,
+            "",
+            urllib.parse.urlencode(query),
+            "",
+        )
+    )
+
+
+def _download_raw(url: str) -> tuple[bytes, Mapping[str, object]]:
+    request = urllib.request.Request(
+        url,
+        headers={"User-Agent": "research-lab/0.1 research-only"},
+    )
+    opener = urllib.request.build_opener(_SameHostRedirectHandler())
+    try:
+        with opener.open(request, timeout=30) as response:
+            raw = response.read(100 * 1024 * 1024 + 1)
+            if len(raw) > 100 * 1024 * 1024:
+                raise ValueError("provider response exceeded 100 MiB.")
+            return raw, {
+                "http_status": int(getattr(response, "status", 200)),
+                "content_type": str(response.headers.get("Content-Type", "")),
+            }
+    except urllib.error.HTTPError as exc:
+        raw = exc.read(100 * 1024 * 1024 + 1)
+        if len(raw) > 100 * 1024 * 1024:
+            raw = b""
+        return raw, {"http_status": int(exc.code)}
+
+
+class _SameHostRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if urllib.parse.urlparse(newurl).hostname != "eodhd.com":
+            raise urllib.error.HTTPError(
+                req.full_url,
+                code,
+                "off-domain redirect rejected",
+                headers,
+                fp,
+            )
+        return super().redirect_request(
+            req, fp, code, msg, headers, newurl
+        )
+
+
+def _now_utc() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace(
+        "+00:00", "Z"
+    )
+
+
+def _safety_result(result: dict[str, object]) -> dict[str, object]:
+    result.update(
+        {
+            "network_used": bool(result["provider_requests_used"]),
+            "broker_actions_used": 0,
+            "registry_write_performed": False,
+            "promotion_performed": False,
+            "deployment_performed": False,
+            "production_runtime_supported": False,
+            "wide_acquisition_authorized": False,
+        }
+    )
+    result["output_payload_sha256"] = _hash(result)
+    return result
 
 
 def _hash(value: object) -> str:

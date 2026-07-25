@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+
 import pytest
 
 from research_lab.research.minervini_eodhd_acquisition_pilot_v1 import (
@@ -7,6 +11,7 @@ from research_lab.research.minervini_eodhd_acquisition_pilot_v1 import (
     analyze_minervini_symbol_changes_v1,
     build_minervini_eodhd_acquisition_plan_v1,
     estimate_minervini_wide_acquisition_v1,
+    run_minervini_eodhd_acquisition_pilot_v1,
     validate_minervini_eod_sample_v1,
 )
 
@@ -201,3 +206,122 @@ def test_estimate_is_deterministic_and_never_claims_unknown_split_pages_exact():
     assert estimate["total_call_units_exact"] is False
     assert estimate["minimum_runtime_seconds_at_1000_per_minute"] == 6_001
     assert estimate["conservative_runtime_seconds_at_5_per_second"] == 20_001
+
+
+def _fixture_bytes_for(url: str) -> bytes:
+    parsed = urlparse(url)
+    query = parse_qs(parsed.query)
+    if parsed.path == "/api/exchange-symbol-list/US":
+        rows = (
+            _delisted_rows()
+            if query.get("delisted") == ["1"]
+            else _active_rows()
+        )
+        return json.dumps(rows).encode("utf-8")
+    if parsed.path == "/api/symbol-change-history":
+        return b"[]"
+    if parsed.path == "/api/calendar/splits":
+        return json.dumps(
+            {
+                "type": "Splits",
+                "from": "2010-01-01",
+                "to": "2025-12-31",
+                "splits": [
+                    {
+                        "code": "AAPL.US",
+                        "split_date": "2020-08-31",
+                        "old_shares": 1,
+                        "new_shares": 4,
+                    }
+                ],
+            }
+        ).encode("utf-8")
+    if parsed.path.startswith("/api/eod/"):
+        return json.dumps(_eod_rows()).encode("utf-8")
+    raise AssertionError(f"unexpected endpoint: {parsed.path}")
+
+
+def _successful_getter(seen: list[str]):
+    def getter(url: str):
+        seen.append(url)
+        return _fixture_bytes_for(url), {
+            "http_status": 200,
+            "content_type": "application/json",
+        }
+
+    return getter
+
+
+def test_executor_uses_exactly_24_requests_without_retry_and_redacts_secret(
+    tmp_path,
+):
+    seen: list[str] = []
+    output_dir = tmp_path / "pilot"
+
+    result = run_minervini_eodhd_acquisition_pilot_v1(
+        api_key="secret-value",
+        output_dir=output_dir,
+        expected_provider_requests=24,
+        http_get=_successful_getter(seen),
+        now_utc=lambda: "2026-07-25T20:00:00Z",
+    )
+
+    assert result["provider_requests_used"] == 24
+    assert len(seen) == 24
+    assert result["status"] == "READY_FOR_WIDE_ACQUISITION_APPROVAL"
+    assert "secret-value" not in json.dumps(result)
+    assert "secret-value" not in (
+        output_dir / "request-journal.jsonl"
+    ).read_text(encoding="utf-8")
+    assert (output_dir / "pilot-result-manifest.json").is_file()
+
+
+def test_executor_rejects_bad_ack_or_missing_key_before_calls_and_writes(
+    tmp_path,
+):
+    calls: list[str] = []
+    output_dir = tmp_path / "pilot"
+    with pytest.raises(ValueError, match="24"):
+        run_minervini_eodhd_acquisition_pilot_v1(
+            api_key="secret-value",
+            output_dir=output_dir,
+            expected_provider_requests=23,
+            http_get=lambda url: calls.append(url),
+        )
+    assert calls == []
+    assert not output_dir.exists()
+
+    result = run_minervini_eodhd_acquisition_pilot_v1(
+        env={},
+        output_dir=output_dir,
+        expected_provider_requests=24,
+        http_get=lambda url: calls.append(url),
+    )
+    assert result["status"] == "MISSING_API_KEY"
+    assert calls == []
+    assert not output_dir.exists()
+
+
+def test_executor_stops_once_on_failure_and_finalizes_partial_evidence(tmp_path):
+    calls: list[str] = []
+
+    def getter(url: str):
+        calls.append(url)
+        if len(calls) == 3:
+            raise RuntimeError("secret-value must not escape")
+        return _fixture_bytes_for(url), {"http_status": 200}
+
+    output_dir = tmp_path / "pilot"
+    result = run_minervini_eodhd_acquisition_pilot_v1(
+        api_key="secret-value",
+        output_dir=output_dir,
+        expected_provider_requests=24,
+        http_get=getter,
+        now_utc=lambda: "2026-07-25T20:00:00Z",
+    )
+
+    assert len(calls) == 3
+    assert result["status"] == "FAILED_VALIDATION"
+    assert result["stopping_ordinal"] == 3
+    assert "secret-value" not in json.dumps(result)
+    assert (output_dir / "pilot-result-manifest.json").is_file()
