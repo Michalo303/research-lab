@@ -548,7 +548,7 @@ def _normalize_universe(
         exchange = _text(raw.get("Exchange"), "Exchange").upper()
         currency = _text(raw.get("Currency"), "Currency").upper()
         isin_value = raw.get("Isin")
-        if isin_value is None:
+        if isin_value is None or isin_value == "":
             isin = None
         else:
             isin = _text(isin_value, "Isin").upper()

@@ -113,3 +113,19 @@ def test_finalize_and_replay_verify_manifest_and_raw_hash(tmp_path):
     (root / "active-common-stocks.json").write_bytes(b"tampered")
     failed = replay_minervini_pilot_artifacts_v1(root)
     assert failed["status"] == "FAILED_RAW_HASH_MISMATCH"
+
+
+def test_replay_detects_journal_mutation(tmp_path):
+    root = tmp_path / "run"
+    writer = MinerviniPilotArtifactWriterV1.create(root)
+    _write_one(writer)
+    writer.finalize({"status": "READY", "provider_requests_used": 1})
+    journal = root / "request-journal.jsonl"
+    journal.write_text(
+        journal.read_text(encoding="utf-8") + "\n",
+        encoding="utf-8",
+    )
+
+    replay = replay_minervini_pilot_artifacts_v1(root)
+
+    assert replay["status"] == "FAILED_JOURNAL_HASH_MISMATCH"

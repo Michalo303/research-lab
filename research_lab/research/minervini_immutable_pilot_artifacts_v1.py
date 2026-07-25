@@ -118,10 +118,13 @@ class MinerviniPilotArtifactWriterV1:
             raise ValueError("writer is already finalized.")
         if not isinstance(result, Mapping):
             raise ValueError("result must be a mapping.")
+        journal_bytes = self.journal_path.read_bytes()
         manifest: dict[str, object] = {
             "version": MANIFEST_VERSION,
             "result": dict(result),
             "artifacts": list(self.records),
+            "journal_bytes": len(journal_bytes),
+            "journal_sha256": hashlib.sha256(journal_bytes).hexdigest(),
         }
         manifest["result_manifest_sha256"] = _hash(manifest)
         target = self.root / "pilot-result-manifest.json"
@@ -170,6 +173,16 @@ def replay_minervini_pilot_artifacts_v1(
     without_hash.pop("result_manifest_sha256", None)
     if expected_manifest_hash != _hash(without_hash):
         return {"status": "FAILED_MANIFEST_HASH_MISMATCH"}
+    journal_path = root / "request-journal.jsonl"
+    if not journal_path.is_file():
+        return {"status": "FAILED_JOURNAL_UNAVAILABLE"}
+    journal_bytes = journal_path.read_bytes()
+    if (
+        len(journal_bytes) != payload.get("journal_bytes")
+        or hashlib.sha256(journal_bytes).hexdigest()
+        != payload.get("journal_sha256")
+    ):
+        return {"status": "FAILED_JOURNAL_HASH_MISMATCH"}
     for record in payload["artifacts"]:
         if not isinstance(record, dict):
             return {"status": "FAILED_MANIFEST_SCHEMA"}

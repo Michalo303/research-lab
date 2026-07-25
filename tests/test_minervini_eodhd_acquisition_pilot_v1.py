@@ -85,6 +85,18 @@ def test_plan_reports_duplicates_and_blocks_active_delisted_collision():
     assert "ACTIVE_DELISTED_IDENTITY_COLLISION" in plan["blockers"]
 
 
+def test_plan_normalizes_empty_optional_isin_to_missing():
+    active = _active_rows()
+    active[1]["Isin"] = ""
+
+    plan = build_minervini_eodhd_acquisition_plan_v1(
+        active_rows=active,
+        delisted_rows=_delisted_rows(),
+    )
+
+    assert plan["universe"]["active_count"] == len(active)
+
+
 @pytest.mark.parametrize(
     "mutation",
     [
