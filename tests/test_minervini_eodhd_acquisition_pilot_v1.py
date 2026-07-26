@@ -337,3 +337,29 @@ def test_executor_stops_once_on_failure_and_finalizes_partial_evidence(tmp_path)
     assert result["stopping_ordinal"] == 3
     assert "secret-value" not in json.dumps(result)
     assert (output_dir / "pilot-result-manifest.json").is_file()
+
+
+def test_executor_classifies_forbidden_endpoint_as_provider_capability_blocker(
+    tmp_path,
+):
+    calls: list[str] = []
+
+    def getter(url: str):
+        calls.append(url)
+        if len(calls) == 3:
+            return b"Forbidden.", {"http_status": 403}
+        return _fixture_bytes_for(url), {"http_status": 200}
+
+    output_dir = tmp_path / "pilot"
+    result = run_minervini_eodhd_acquisition_pilot_v1(
+        api_key="secret-value",
+        output_dir=output_dir,
+        expected_provider_requests=24,
+        http_get=getter,
+        now_utc=lambda: "2026-07-26T07:22:31Z",
+    )
+
+    assert len(calls) == 3
+    assert result["status"] == "BLOCKED_PROVIDER_CAPABILITY"
+    assert result["stopping_ordinal"] == 3
+    assert result["blockers"] == ["PROVIDER_HTTP_403"]

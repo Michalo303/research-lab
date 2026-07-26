@@ -384,6 +384,13 @@ def run_minervini_eodhd_acquisition_pilot_v1(
                 parsed_row_count=0,
                 schema_status="INVALID",
             )
+            if http_status == 403:
+                raise _PilotFailure(
+                    "provider capability unavailable.",
+                    ordinal,
+                    status="BLOCKED_PROVIDER_CAPABILITY",
+                    blocker=f"PROVIDER_HTTP_{http_status}",
+                ) from exc
             raise _PilotFailure("provider payload validation failed.", ordinal) from exc
         row_count = _payload_row_count(payload)
         record = writer.write_response(
@@ -397,6 +404,13 @@ def run_minervini_eodhd_acquisition_pilot_v1(
             schema_status=schema_status,
         )
         if http_status != 200:
+            if http_status == 403:
+                raise _PilotFailure(
+                    "provider capability unavailable.",
+                    ordinal,
+                    status="BLOCKED_PROVIDER_CAPABILITY",
+                    blocker=f"PROVIDER_HTTP_{http_status}",
+                )
             raise _PilotFailure("provider HTTP status was not 200.", ordinal)
         return payload, {**record, "validation": validation or {}}
 
@@ -502,13 +516,23 @@ def run_minervini_eodhd_acquisition_pilot_v1(
             if isinstance(exc, _PilotFailure) and exc.ordinal is not None
             else request_count
         )
+        failure_status = (
+            exc.status
+            if isinstance(exc, _PilotFailure)
+            else "FAILED_VALIDATION"
+        )
+        failure_blocker = (
+            exc.blocker
+            if isinstance(exc, _PilotFailure)
+            else "PILOT_EXECUTION_FAILED"
+        )
         result = _safety_result(
             {
                 "version": "minervini_eodhd_acquisition_pilot_result_v1",
-                "status": "FAILED_VALIDATION",
+                "status": failure_status,
                 "provider_requests_used": request_count,
                 "stopping_ordinal": stopping,
-                "blockers": ["PILOT_EXECUTION_FAILED"],
+                "blockers": [failure_blocker],
             }
         )
     manifest_path = writer.finalize(result)
@@ -522,9 +546,18 @@ def run_minervini_eodhd_acquisition_pilot_v1(
 
 
 class _PilotFailure(RuntimeError):
-    def __init__(self, message: str, ordinal: int | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        ordinal: int | None = None,
+        *,
+        status: str = "FAILED_VALIDATION",
+        blocker: str = "PILOT_EXECUTION_FAILED",
+    ) -> None:
         super().__init__(message)
         self.ordinal = ordinal
+        self.status = status
+        self.blocker = blocker
 
 
 def _normalize_universe(
