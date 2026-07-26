@@ -267,6 +267,17 @@ def run_minervini_eodhd_acquisition_pilot_v2(
             raise _PilotFailure("provider request failed.", ordinal) from exc
         if not isinstance(raw, bytes):
             raise _PilotFailure("provider response was not bytes.", ordinal)
+        secret_encodings = {
+            key.encode("utf-8"),
+            urllib.parse.quote(key, safe="").encode("ascii"),
+            urllib.parse.quote_plus(key, safe="").encode("ascii"),
+        }
+        if any(secret and secret in raw for secret in secret_encodings):
+            raise _PilotFailure(
+                "provider response contained credential material.",
+                ordinal,
+                blocker="PROVIDER_RESPONSE_CONTAINED_SECRET",
+            )
         http_status = metadata.get("http_status")
         if isinstance(http_status, bool) or not isinstance(http_status, int):
             http_status = 0
