@@ -268,3 +268,54 @@ The verdict is `CANDIDATE` only with at least 100 trades, annualized return of
 at least 10%, maximum drawdown no worse than -15%, and no point-in-time or
 survivorship-data blockers. It remains a research candidate, never permission
 to paper trade or trade live.
+
+### Bounded EODHD acquisition pilot
+
+Plan the immutable acquisition pilot without network access or writes:
+
+```bash
+python scripts/run_minervini_eodhd_acquisition_pilot_v1.py
+```
+
+Live mode requires an absolute empty output directory and an exact
+24-request acknowledgement:
+
+```bash
+python scripts/run_minervini_eodhd_acquisition_pilot_v1.py \
+  --execute-live \
+  --output-dir /absolute/empty/pilot-run \
+  --expected-provider-requests 24
+```
+
+If the process is launched with redirected stdout or stderr, both log files
+must be placed outside `--output-dir` (for example, in a sibling `process-logs`
+directory). PowerShell creates redirection targets before Python starts, so
+placing them inside the pilot directory correctly triggers the non-empty
+directory guard before any provider request.
+
+The pilot stores secret-free raw responses with SHA-256 lineage and estimates
+the request, runtime, and storage envelope. It does not authorize or begin the
+wide historical acquisition, evaluate performance, or contact a broker.
+
+V2 targets the capabilities included in the EOD Historical Data plan. It uses
+two active/delisted universe requests plus paired EOD and per-symbol split
+requests for eleven deterministic sample tickers:
+
+```bash
+python scripts/run_minervini_eodhd_acquisition_pilot_v2.py
+```
+
+The zero-network dry run reports 24 planned requests. Live mode requires the
+same exact acknowledgement and an absolute empty artifact directory:
+
+```bash
+python scripts/run_minervini_eodhd_acquisition_pilot_v2.py \
+  --execute-live \
+  --output-dir /absolute/empty/pilot-v2-artifacts \
+  --expected-provider-requests 24
+```
+
+Redirected process logs must be outside the artifact directory. V2 treats each
+EODHD ticker as an atomic history and does not infer continuity across ticker
+renames. Even a ready result does not authorize the approximately 101,000-call
+wide acquisition.
