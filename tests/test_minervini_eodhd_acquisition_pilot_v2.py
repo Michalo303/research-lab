@@ -377,3 +377,26 @@ def test_v2_refuses_to_persist_provider_response_that_echoes_secret(tmp_path):
     assert result["status"] == "FAILED_VALIDATION"
     assert result["blockers"] == ["PROVIDER_RESPONSE_CONTAINED_SECRET"]
     assert secret.encode() not in persisted
+
+
+def test_v2_classifies_empty_eod_array_as_sample_coverage_blocker(tmp_path):
+    seen: list[str] = []
+
+    def getter(url: str):
+        seen.append(url)
+        if len(seen) == 3:
+            return b"[]", {"http_status": 200}
+        return _fixture_bytes_for(url), {"http_status": 200}
+
+    result = run_minervini_eodhd_acquisition_pilot_v2(
+        api_key="secret-value",
+        output_dir=tmp_path / "pilot",
+        expected_provider_requests=24,
+        http_get=getter,
+        now_utc=lambda: "2026-07-26T10:00:00Z",
+    )
+
+    assert len(seen) == 3
+    assert result["status"] == "BLOCKED_SAMPLE_COVERAGE"
+    assert result["stopping_ordinal"] == 3
+    assert result["blockers"] == ["EMPTY_EOD_SAMPLE"]

@@ -255,6 +255,7 @@ def run_minervini_eodhd_acquisition_pilot_v2(
         endpoint_identity: str,
         artifact_name: str,
         validator: Callable[[object], dict[str, object] | None],
+        empty_array_failure: tuple[str, str] | None = None,
     ) -> tuple[object, dict[str, object]]:
         nonlocal request_count
         if request_count >= PROVIDER_REQUEST_LIMIT:
@@ -281,6 +282,7 @@ def run_minervini_eodhd_acquisition_pilot_v2(
         http_status = metadata.get("http_status")
         if isinstance(http_status, bool) or not isinstance(http_status, int):
             http_status = 0
+        payload: object | None = None
         try:
             payload = json.loads(raw.decode("utf-8"))
             validation = validator(payload)
@@ -302,6 +304,14 @@ def run_minervini_eodhd_acquisition_pilot_v2(
                     ordinal,
                     status="BLOCKED_PROVIDER_CAPABILITY",
                     blocker="PROVIDER_HTTP_403",
+                ) from exc
+            if payload == [] and empty_array_failure is not None:
+                failure_status, failure_blocker = empty_array_failure
+                raise _PilotFailure(
+                    "provider sample coverage is empty.",
+                    ordinal,
+                    status=failure_status,
+                    blocker=failure_blocker,
                 ) from exc
             raise _PilotFailure("provider payload validation failed.", ordinal) from exc
         record = writer.write_response(
@@ -363,6 +373,10 @@ def run_minervini_eodhd_acquisition_pilot_v2(
                 endpoint_identity=eod_spec["endpoint_identity"],
                 artifact_name=eod_spec["artifact_name"],
                 validator=validate_minervini_eod_sample_v1,
+                empty_array_failure=(
+                    "BLOCKED_SAMPLE_COVERAGE",
+                    "EMPTY_EOD_SAMPLE",
+                ),
             )
             _, split_record = perform(
                 endpoint_identity=split_spec["endpoint_identity"],
