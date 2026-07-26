@@ -1,13 +1,19 @@
 from __future__ import annotations
 
 import copy
+import json
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
 from research_lab.research.minervini_eodhd_acquisition_pilot_v2 import (
     build_minervini_eodhd_acquisition_plan_v2,
     estimate_minervini_atomic_acquisition_v2,
+    run_minervini_eodhd_acquisition_pilot_v2,
     validate_minervini_symbol_splits_v2,
+)
+from research_lab.research.minervini_immutable_pilot_artifacts_v1 import (
+    replay_minervini_pilot_artifacts_v1,
 )
 
 
@@ -199,3 +205,149 @@ def test_v2_estimate_is_exact_for_requests_and_sample_derived_for_storage():
         >= estimate["raw_storage_bytes_lower_bound"]
         > 0
     )
+
+
+def _eod_rows() -> list[dict[str, object]]:
+    return [
+        {
+            "date": f"2025-01-0{day}",
+            "open": 100.0 + day,
+            "high": 102.0 + day,
+            "low": 99.0 + day,
+            "close": 101.0 + day,
+            "adjusted_close": 100.5 + day,
+            "volume": 1_000_000,
+        }
+        for day in range(2, 5)
+    ]
+
+
+def _fixture_bytes_for(url: str) -> bytes:
+    parsed = urlparse(url)
+    query = parse_qs(parsed.query)
+    if parsed.path == "/api/exchange-symbol-list/US":
+        rows = (
+            _delisted_rows()
+            if query.get("delisted") == ["1"]
+            else _active_rows()
+        )
+        return json.dumps(rows).encode("utf-8")
+    if parsed.path.startswith("/api/eod/"):
+        return json.dumps(_eod_rows()).encode("utf-8")
+    if parsed.path.startswith("/api/splits/"):
+        symbol = parsed.path.rsplit("/", 1)[-1]
+        rows = (
+            [{"date": "2020-08-31", "split": "4.000000/1.000000"}]
+            if symbol == "AAPL.US"
+            else []
+        )
+        return json.dumps(rows).encode("utf-8")
+    raise AssertionError(f"unexpected endpoint: {parsed.path}")
+
+
+def test_v2_executor_uses_exactly_24_requests_in_frozen_pair_order(tmp_path):
+    seen: list[str] = []
+
+    def getter(url: str):
+        seen.append(url)
+        return _fixture_bytes_for(url), {"http_status": 200}
+
+    result = run_minervini_eodhd_acquisition_pilot_v2(
+        api_key="secret-value",
+        output_dir=tmp_path / "pilot",
+        expected_provider_requests=24,
+        http_get=getter,
+        now_utc=lambda: "2026-07-26T10:00:00Z",
+    )
+
+    assert len(seen) == 24
+    assert result["provider_requests_used"] == 24
+    assert result["status"] == (
+        "READY_FOR_ATOMIC_TICKER_ACQUISITION_APPROVAL"
+    )
+    assert all(
+        "/eod/" in seen[index] and "/splits/" in seen[index + 1]
+        for index in range(2, 24, 2)
+    )
+    serialized = json.dumps(result)
+    journal = (tmp_path / "pilot" / "request-journal.jsonl").read_text(
+        encoding="utf-8"
+    )
+    assert "secret-value" not in serialized
+    assert "secret-value" not in journal
+    assert result["wide_acquisition_authorized"] is False
+    assert result["broker_actions_used"] == 0
+
+
+def test_v2_stops_on_first_403_and_classifies_capability(tmp_path):
+    seen: list[str] = []
+
+    def getter(url: str):
+        seen.append(url)
+        if len(seen) == 3:
+            return b"Forbidden.", {"http_status": 403}
+        return _fixture_bytes_for(url), {"http_status": 200}
+
+    result = run_minervini_eodhd_acquisition_pilot_v2(
+        api_key="secret-value",
+        output_dir=tmp_path / "pilot",
+        expected_provider_requests=24,
+        http_get=getter,
+        now_utc=lambda: "2026-07-26T10:00:00Z",
+    )
+
+    assert len(seen) == 3
+    assert result["status"] == "BLOCKED_PROVIDER_CAPABILITY"
+    assert result["stopping_ordinal"] == 3
+    assert result["blockers"] == ["PROVIDER_HTTP_403"]
+
+
+def test_v2_missing_key_and_wrong_acknowledgement_make_zero_calls(tmp_path):
+    seen: list[str] = []
+    output_dir = tmp_path / "pilot"
+
+    missing = run_minervini_eodhd_acquisition_pilot_v2(
+        env={},
+        output_dir=output_dir,
+        expected_provider_requests=24,
+        http_get=lambda url: seen.append(url),
+    )
+    assert missing["status"] == "MISSING_API_KEY"
+    assert seen == []
+    assert not output_dir.exists()
+
+    with pytest.raises(ValueError, match="exactly 24"):
+        run_minervini_eodhd_acquisition_pilot_v2(
+            api_key="secret-value",
+            output_dir=output_dir,
+            expected_provider_requests=23,
+            http_get=lambda url: seen.append(url),
+        )
+    assert seen == []
+    assert not output_dir.exists()
+
+
+def test_v2_partial_failure_remains_offline_replayable(tmp_path):
+    seen: list[str] = []
+
+    def getter(url: str):
+        seen.append(url)
+        if len(seen) == 8:
+            raise OSError("bounded injected failure")
+        return _fixture_bytes_for(url), {"http_status": 200}
+
+    output_dir = tmp_path / "pilot"
+    result = run_minervini_eodhd_acquisition_pilot_v2(
+        api_key="secret-value",
+        output_dir=output_dir,
+        expected_provider_requests=24,
+        http_get=getter,
+        now_utc=lambda: "2026-07-26T10:00:00Z",
+    )
+    calls_before_replay = len(seen)
+    replay = replay_minervini_pilot_artifacts_v1(output_dir)
+
+    assert result["status"] == "FAILED_VALIDATION"
+    assert result["stopping_ordinal"] == 8
+    assert replay["status"] == "VERIFIED"
+    assert len(seen) == calls_before_replay

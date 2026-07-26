@@ -3,10 +3,21 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
+import urllib.error
 import urllib.parse
-from collections.abc import Mapping, Sequence
-from datetime import date
+import urllib.request
+from collections.abc import Callable, Mapping, Sequence
+from datetime import date, datetime, timezone
+from pathlib import Path
+
+from research_lab.research.minervini_eodhd_acquisition_pilot_v1 import (
+    validate_minervini_eod_sample_v1,
+)
+from research_lab.research.minervini_immutable_pilot_artifacts_v1 import (
+    MinerviniPilotArtifactWriterV1,
+)
 
 
 PLAN_VERSION = "minervini_eodhd_acquisition_plan_v2"
@@ -18,6 +29,7 @@ SPLIT_LINEAGE_CLASSIFICATION = (
     "PROVIDER_REPORTED_EVENTS_NOT_COMPLETENESS_PROOF"
 )
 _CODE_RE = re.compile(r"^[A-Z0-9][A-Z0-9._-]{0,31}$")
+RawHttpGet = Callable[[str], tuple[bytes, Mapping[str, object]]]
 
 
 def build_minervini_eodhd_acquisition_plan_v2(
@@ -207,6 +219,229 @@ def estimate_minervini_atomic_acquisition_v2(
     }
 
 
+def run_minervini_eodhd_acquisition_pilot_v2(
+    *,
+    output_dir: Path,
+    expected_provider_requests: int,
+    api_key: str | None = None,
+    env: Mapping[str, str] | None = None,
+    http_get: RawHttpGet | None = None,
+    now_utc: Callable[[], str] | None = None,
+) -> dict[str, object]:
+    """Execute exactly 24 EOD-plan-compatible read-only requests."""
+    if expected_provider_requests != PROVIDER_REQUEST_LIMIT:
+        raise ValueError("expected_provider_requests must be exactly 24.")
+    environment = os.environ if env is None else env
+    key = (
+        api_key if api_key is not None else environment.get("EODHD_API_KEY", "")
+    ).strip()
+    if not key:
+        return _safety_result(
+            {
+                "version": "minervini_eodhd_acquisition_pilot_result_v2",
+                "status": "MISSING_API_KEY",
+                "provider_requests_used": 0,
+                "stopping_ordinal": None,
+                "blockers": ["EODHD_API_KEY_UNAVAILABLE"],
+            }
+        )
+    writer = MinerviniPilotArtifactWriterV1.create(Path(output_dir))
+    getter = http_get or _download_raw
+    clock = now_utc or _now_utc
+    request_count = 0
+
+    def perform(
+        *,
+        endpoint_identity: str,
+        artifact_name: str,
+        validator: Callable[[object], dict[str, object] | None],
+    ) -> tuple[object, dict[str, object]]:
+        nonlocal request_count
+        if request_count >= PROVIDER_REQUEST_LIMIT:
+            raise _PilotFailure("provider request cap reached.")
+        request_count += 1
+        ordinal = request_count
+        try:
+            raw, metadata = getter(_authorized_url(endpoint_identity, key))
+        except Exception as exc:
+            raise _PilotFailure("provider request failed.", ordinal) from exc
+        if not isinstance(raw, bytes):
+            raise _PilotFailure("provider response was not bytes.", ordinal)
+        http_status = metadata.get("http_status")
+        if isinstance(http_status, bool) or not isinstance(http_status, int):
+            http_status = 0
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+            validation = validator(payload)
+            schema_status = "VALID"
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            writer.write_response(
+                ordinal=ordinal,
+                artifact_name=artifact_name,
+                endpoint_identity=endpoint_identity,
+                http_status=http_status,
+                raw_bytes=raw,
+                retrieved_at_utc=clock(),
+                parsed_row_count=0,
+                schema_status="INVALID",
+            )
+            if http_status == 403:
+                raise _PilotFailure(
+                    "provider capability unavailable.",
+                    ordinal,
+                    status="BLOCKED_PROVIDER_CAPABILITY",
+                    blocker="PROVIDER_HTTP_403",
+                ) from exc
+            raise _PilotFailure("provider payload validation failed.", ordinal) from exc
+        record = writer.write_response(
+            ordinal=ordinal,
+            artifact_name=artifact_name,
+            endpoint_identity=endpoint_identity,
+            http_status=http_status,
+            raw_bytes=raw,
+            retrieved_at_utc=clock(),
+            parsed_row_count=_payload_row_count(payload),
+            schema_status=schema_status,
+        )
+        if http_status != 200:
+            if http_status == 403:
+                raise _PilotFailure(
+                    "provider capability unavailable.",
+                    ordinal,
+                    status="BLOCKED_PROVIDER_CAPABILITY",
+                    blocker="PROVIDER_HTTP_403",
+                )
+            raise _PilotFailure("provider HTTP status was not 200.", ordinal)
+        return payload, {**record, "validation": validation or {}}
+
+    active_endpoint = _endpoint(
+        "/exchange-symbol-list/US",
+        {"type": "common_stock", "fmt": "json"},
+    )
+    delisted_endpoint = _endpoint(
+        "/exchange-symbol-list/US",
+        {"delisted": "1", "type": "common_stock", "fmt": "json"},
+    )
+    try:
+        active, _ = perform(
+            endpoint_identity=active_endpoint,
+            artifact_name="active-common-stocks.json",
+            validator=_validate_non_empty_array,
+        )
+        delisted, _ = perform(
+            endpoint_identity=delisted_endpoint,
+            artifact_name="delisted-common-stocks.json",
+            validator=_validate_non_empty_array,
+        )
+        plan = build_minervini_eodhd_acquisition_plan_v2(
+            active_rows=active,
+            delisted_rows=delisted,
+        )
+        if plan["blockers"]:
+            raise _PilotFailure(
+                "universe identity is ambiguous.",
+                request_count,
+                status="BLOCKED_UNIVERSE_IDENTITY",
+                blocker="ACTIVE_DELISTED_IDENTITY_COLLISION",
+            )
+        sample_summaries: list[dict[str, object]] = []
+        for index, symbol in enumerate(plan["sample_symbols"]):
+            eod_spec = plan["request_specs"][index * 2]
+            split_spec = plan["request_specs"][index * 2 + 1]
+            _, eod_record = perform(
+                endpoint_identity=eod_spec["endpoint_identity"],
+                artifact_name=eod_spec["artifact_name"],
+                validator=validate_minervini_eod_sample_v1,
+            )
+            _, split_record = perform(
+                endpoint_identity=split_spec["endpoint_identity"],
+                artifact_name=split_spec["artifact_name"],
+                validator=validate_minervini_symbol_splits_v2,
+            )
+            eod_validation = dict(eod_record["validation"])
+            split_validation = dict(split_record["validation"])
+            sample_summaries.append(
+                {
+                    "symbol": symbol,
+                    "eod_first_date": eod_validation["first_date"],
+                    "eod_last_date": eod_validation["last_date"],
+                    "eod_row_count": eod_validation["row_count"],
+                    "eod_gap_count": eod_validation["gap_count"],
+                    "eod_response_bytes": eod_record["response_bytes"],
+                    "eod_response_sha256": eod_record["response_sha256"],
+                    "split_record_count": split_validation["record_count"],
+                    "split_first_date": split_validation["first_date"],
+                    "split_last_date": split_validation["last_date"],
+                    "split_lineage_classification": split_validation[
+                        "lineage_classification"
+                    ],
+                    "split_response_bytes": split_record["response_bytes"],
+                    "split_response_sha256": split_record["response_sha256"],
+                }
+            )
+        if request_count != PROVIDER_REQUEST_LIMIT:
+            raise _PilotFailure("provider request count was not exactly 24.")
+        estimate = estimate_minervini_atomic_acquisition_v2(
+            deduplicated_symbol_count=plan["universe"][
+                "deduplicated_code_count"
+            ],
+            sample_summaries=sample_summaries,
+        )
+        result = _safety_result(
+            {
+                "version": "minervini_eodhd_acquisition_pilot_result_v2",
+                "status": "READY_FOR_ATOMIC_TICKER_ACQUISITION_APPROVAL",
+                "provider_requests_used": request_count,
+                "stopping_ordinal": None,
+                "blockers": [],
+                "plan_sha256": plan["output_payload_sha256"],
+                "identity_continuity_mode": "ATOMIC_PROVIDER_TICKER",
+                "rename_continuity_supported": False,
+                "wide_acquisition_scope": (
+                    "ATOMIC_PROVIDER_TICKER_HISTORIES"
+                ),
+                "universe": plan["universe"],
+                "sample_summaries": sample_summaries,
+                "estimate": estimate,
+            }
+        )
+    except (_PilotFailure, ValueError) as exc:
+        stopping = (
+            exc.ordinal
+            if isinstance(exc, _PilotFailure) and exc.ordinal is not None
+            else request_count
+        )
+        status = (
+            exc.status
+            if isinstance(exc, _PilotFailure)
+            else "FAILED_VALIDATION"
+        )
+        blocker = (
+            exc.blocker
+            if isinstance(exc, _PilotFailure)
+            else "PILOT_EXECUTION_FAILED"
+        )
+        result = _safety_result(
+            {
+                "version": "minervini_eodhd_acquisition_pilot_result_v2",
+                "status": status,
+                "provider_requests_used": request_count,
+                "stopping_ordinal": stopping,
+                "blockers": [blocker],
+                "identity_continuity_mode": "ATOMIC_PROVIDER_TICKER",
+                "rename_continuity_supported": False,
+            }
+        )
+    manifest_path = writer.finalize(result)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    return {
+        **result,
+        "result_manifest_sha256": manifest["result_manifest_sha256"],
+        "manifest_path": str(manifest_path),
+        "output_dir": str(writer.root),
+    }
+
+
 def _normalize_universe(
     rows: Sequence[Mapping[str, object]],
     status: str,
@@ -360,3 +595,105 @@ def _hash(value: object) -> str:
             ensure_ascii=False,
         ).encode("utf-8")
     ).hexdigest()
+
+
+def _validate_non_empty_array(payload: object) -> dict[str, object]:
+    if not isinstance(payload, list) or not payload:
+        raise ValueError("provider universe payload must be a non-empty array.")
+    return {"row_count": len(payload)}
+
+
+def _payload_row_count(payload: object) -> int:
+    return len(payload) if isinstance(payload, list) else 0
+
+
+def _authorized_url(endpoint_identity: str, api_key: str) -> str:
+    parsed = urllib.parse.urlparse(endpoint_identity)
+    query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+    if any(name.casefold() == "api_token" for name, _ in query):
+        raise ValueError("endpoint identity unexpectedly contains a token.")
+    query.append(("api_token", api_key))
+    return urllib.parse.urlunparse(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path,
+            "",
+            urllib.parse.urlencode(query),
+            "",
+        )
+    )
+
+
+def _download_raw(url: str) -> tuple[bytes, Mapping[str, object]]:
+    request = urllib.request.Request(
+        url,
+        headers={"User-Agent": "research-lab/0.1 research-only"},
+    )
+    opener = urllib.request.build_opener(_SameHostRedirectHandler())
+    try:
+        with opener.open(request, timeout=30) as response:
+            raw = response.read(100 * 1024 * 1024 + 1)
+            if len(raw) > 100 * 1024 * 1024:
+                raise ValueError("provider response exceeded 100 MiB.")
+            return raw, {
+                "http_status": int(getattr(response, "status", 200)),
+                "content_type": str(response.headers.get("Content-Type", "")),
+            }
+    except urllib.error.HTTPError as exc:
+        raw = exc.read(100 * 1024 * 1024 + 1)
+        if len(raw) > 100 * 1024 * 1024:
+            raw = b""
+        return raw, {"http_status": int(exc.code)}
+
+
+class _SameHostRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if urllib.parse.urlparse(newurl).hostname != "eodhd.com":
+            raise urllib.error.HTTPError(
+                req.full_url,
+                code,
+                "off-domain redirect rejected",
+                headers,
+                fp,
+            )
+        return super().redirect_request(
+            req, fp, code, msg, headers, newurl
+        )
+
+
+def _now_utc() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace(
+        "+00:00", "Z"
+    )
+
+
+def _safety_result(result: dict[str, object]) -> dict[str, object]:
+    result.update(
+        {
+            "network_used": bool(result["provider_requests_used"]),
+            "broker_actions_used": 0,
+            "registry_write_performed": False,
+            "promotion_performed": False,
+            "deployment_performed": False,
+            "production_runtime_supported": False,
+            "wide_acquisition_authorized": False,
+        }
+    )
+    result["output_payload_sha256"] = _hash(result)
+    return result
+
+
+class _PilotFailure(RuntimeError):
+    def __init__(
+        self,
+        message: str,
+        ordinal: int | None = None,
+        *,
+        status: str = "FAILED_VALIDATION",
+        blocker: str = "PILOT_EXECUTION_FAILED",
+    ) -> None:
+        super().__init__(message)
+        self.ordinal = ordinal
+        self.status = status
+        self.blocker = blocker
