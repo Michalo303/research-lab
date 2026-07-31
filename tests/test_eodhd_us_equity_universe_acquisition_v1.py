@@ -480,6 +480,37 @@ def test_bulk_validator_validates_rows_directly_without_per_row_json_roundtrip(
     assert normalized[-1]["code"] == "S0999"
 
 
+def test_bulk_validator_ignores_ohlc_defects_only_on_excluded_exchanges() -> None:
+    invalid_ohlc = {
+        "date": "2022-12-30",
+        "open": 0.0,
+        "high": 0.0,
+        "low": 0.0,
+        "close": 0.0,
+        "adjusted_close": 0.0,
+        "volume": 0,
+    }
+    payload = [
+        {"code": "OTC1", "exchange_short_name": "PINK", **invalid_ohlc},
+        {"code": "AAA", "exchange_short_name": "NASDAQ", **_eod_row("2022-12-30")},
+    ]
+
+    normalized, count = _validate_bulk_response(
+        json.dumps(payload).encode("utf-8"),
+        expected_date="2022-12-30",
+    )
+
+    assert count == 2
+    assert [row["code"] for row in normalized] == ["AAA"]
+
+    payload[0]["exchange_short_name"] = "NASDAQ"
+    with pytest.raises(ValueError, match="positive"):
+        _validate_bulk_response(
+            json.dumps(payload).encode("utf-8"),
+            expected_date="2022-12-30",
+        )
+
+
 def test_symbol_histories_use_bounded_parallelism(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
