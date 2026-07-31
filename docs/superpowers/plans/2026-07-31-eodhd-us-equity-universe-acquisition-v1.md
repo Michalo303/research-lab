@@ -119,7 +119,7 @@ Use a private downloader monkeypatch; the public function accepts no API key or 
 - a token, encoded token, and token-bearing URL never occur in output, exceptions, checkpoint rows, or captured stdout;
 - HTTP 429/5xx/timeout retries once, HTTP 4xx other than 429 does not retry, and no third attempt occurs;
 - the executor refuses the next request before its call cost would exceed 90,000;
-- response-size, host/path drift, malformed JSON, unordered/duplicate/out-of-range dates, and non-finite or invalid OHLC on admitted major-exchange rows fail closed; excluded-exchange bulk rows validate identity/date only and cannot enter membership;
+- response-size, host/path drift, malformed JSON, unordered/duplicate/out-of-range dates, and non-finite or invalid OHLC in SPY or per-symbol histories fail closed; membership-only bulk rows validate bounded identity/date/endpoint and their unused price fields are ignored;
 - zero-row history becomes `RESOLVED_EMPTY`, while an unresolved response remains a failure;
 - resume verifies the canonical request hash and all existing artifact hashes before skipping a request;
 - altered staged evidence returns `STAGING_HASH_MISMATCH` without overwriting it.
@@ -144,7 +144,7 @@ Partition symbol files by the first two characters of SHA-256(instrument ID) to 
 
 Read the token only from `EODHD_API_KEY`. Use HTTPS, an exact host/path allowlist, no redirects, response byte caps, fixed timeouts, and sanitized fixed failures. Active/delisted/SPY/bulk phases are sequential. Symbol histories use `ThreadPoolExecutor(max_workers=8)` while the main thread owns call reservation, state commits, and deterministic artifact ordinals.
 
-The nominal plan and all possible single retries must fit under 90,000 before symbol history starts. If the live identity count makes that impossible, return `CALL_BUDGET_PREFLIGHT_FAILED` without history calls.
+The nominal three-exchange plan must fit under 90,000 before any bulk request starts. Remaining capacity is a retry reserve. Each transient request may retry once, but the atomic global call-budget reservation always refuses an attempt that would exceed 90,000. If the live identity count makes the nominal plan impossible, return `CALL_BUDGET_PREFLIGHT_FAILED` before bulk or history calls.
 
 - [ ] **Step 5: Run acquisition tests and verify GREEN**
 

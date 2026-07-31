@@ -113,10 +113,10 @@ def _build_selection_fixture(tmp_path: Path) -> tuple[Path, object]:
         for _, group in pd.DataFrame(index=dates).groupby(dates.to_period("M"))
     ]
     for month_end in month_ends:
-        bulk = [
+        nasdaq_bulk = [
             {
                 "code": str(identity["code"]),
-                "exchange_short_name": "NASDAQ",
+                "exchange_short_name": "US",
                 "date": month_end,
                 "open": 20.0,
                 "high": 21.0,
@@ -127,7 +127,11 @@ def _build_selection_fixture(tmp_path: Path) -> tuple[Path, object]:
             }
             for identity in identities
         ]
-        _write_json_gzip(staging / "raw" / "bulk" / f"{month_end}.json.gz", bulk)
+        for exchange in ("AMEX", "NASDAQ", "NYSE"):
+            _write_json_gzip(
+                staging / "raw" / "bulk" / exchange / f"{month_end}.json.gz",
+                nasdaq_bulk if exchange == "NASDAQ" else [],
+            )
 
     for index, identity in enumerate(identities):
         instrument_id = f"EODHD-US-XNAS-{identity['code']}"
@@ -211,6 +215,18 @@ def test_manifest_builder_rejects_more_than_one_percent_unresolved_histories(tmp
     next((staging / "ohlcv-full").rglob("*.csv")).unlink()
 
     with pytest.raises(ValueError, match="unresolved"):
+        build_point_in_time_qlib_manifest_v1(
+            staging_root=staging,
+            state_connection=connection,
+        )
+    connection.close()
+
+
+def test_manifest_builder_rejects_missing_exchange_month_snapshot(tmp_path: Path) -> None:
+    staging, connection = _build_selection_fixture(tmp_path)
+    next((staging / "raw" / "bulk" / "AMEX").glob("*.json.gz")).unlink()
+
+    with pytest.raises(ValueError, match="exchange snapshot"):
         build_point_in_time_qlib_manifest_v1(
             staging_root=staging,
             state_connection=connection,

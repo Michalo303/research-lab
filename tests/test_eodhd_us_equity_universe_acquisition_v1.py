@@ -12,11 +12,13 @@ import pytest
 
 import research_lab.research.eodhd_us_equity_universe_acquisition_v1 as acquisition_module
 from research_lab.research.eodhd_us_equity_universe_acquisition_v1 import (
+    BULK_EXCHANGES,
     RetryableProviderFailure,
     _RateLimiter,
     _download_symbol_histories,
     _last_spy_session_per_month,
     _normalize_identity_universe,
+    _nominal_call_units,
     _response_size_cap,
     _validate_bulk_response,
     _validate_response_metadata,
@@ -55,6 +57,7 @@ def test_plan_freezes_contract_and_contains_no_credential_surface(tmp_path: Path
     assert result["maximum_attempts_per_request"] == 2
     assert result["history_concurrency"] == 8
     assert result["minimum_free_disk_bytes"] == 8_000_000_000
+    assert result["bulk_exchanges"] == ["AMEX", "NASDAQ", "NYSE"]
     assert result["supported_exchange_mics"] == {
         "AMEX": "XASE",
         "NASDAQ": "XNAS",
@@ -197,20 +200,11 @@ def _provider_fixture():
             payload = delisted if query.get("delisted") == ["1"] else active
         elif parsed.path == "/api/eod/SPY.US":
             payload = spy
-        elif parsed.path == "/api/eod-bulk-last-day/US":
+        elif parsed.path.startswith("/api/eod-bulk-last-day/"):
             day = query["date"][0]
-            payload = [
-                {
-                    "code": "AAA",
-                    "exchange_short_name": "NASDAQ",
-                    **_eod_row(day),
-                },
-                {
-                    "code": "DDD",
-                    "exchange_short_name": "NYSE",
-                    **_eod_row(day),
-                },
-            ]
+            exchange = parsed.path.rsplit("/", 1)[-1]
+            code = {"AMEX": "IGNORED", "NASDAQ": "AAA", "NYSE": "DDD"}[exchange]
+            payload = [{"code": code, "exchange_short_name": "US", **_eod_row(day)}]
         elif parsed.path.startswith("/api/eod/"):
             symbol = urllib.parse.unquote(parsed.path.removeprefix("/api/eod/"))
             payload = histories[symbol]
@@ -271,17 +265,17 @@ def test_download_phases_are_resumable_hash_bound_and_secret_free(
     first = run_eodhd_us_equity_universe_acquisition_v1(_request(tmp_path))
 
     assert first["status"] == "DOWNLOAD_COMPLETE_PENDING_SELECTION"
-    assert first["provider_http_requests_used"] == 209
-    assert first["provider_call_units_used"] == 20_405
+    assert first["provider_http_requests_used"] == 617
+    assert first["provider_call_units_used"] == 61_205
     assert first["identity_count"] == 2
     assert first["month_end_count"] == 204
-    assert len(calls) == 209
+    assert len(calls) == 617
     assert not Path(_request(tmp_path)["output_dir"]).exists()
     staging = Path(first["staging_dir"])
     assert staging.is_dir()
     assert (staging / "state.sqlite").is_file()
     assert (staging / "identity_universe.json").is_file()
-    assert len(list((staging / "raw" / "bulk").glob("*.json.gz"))) == 204
+    assert len(list((staging / "raw" / "bulk").rglob("*.json.gz"))) == 612
     assert len(list((staging / "ohlcv-full").rglob("*.csv"))) == 2
     assert not (staging / "ohlcv").exists()
     assert "unit-test-secret" not in repr(first)
@@ -290,8 +284,8 @@ def test_download_phases_are_resumable_hash_bound_and_secret_free(
     calls.clear()
     second = run_eodhd_us_equity_universe_acquisition_v1(_request(tmp_path))
     assert second["status"] == "DOWNLOAD_COMPLETE_PENDING_SELECTION"
-    assert second["provider_http_requests_used"] == 209
-    assert second["provider_call_units_used"] == 20_405
+    assert second["provider_http_requests_used"] == 617
+    assert second["provider_call_units_used"] == 61_205
     assert calls == []
 
 
@@ -315,10 +309,10 @@ def test_retryable_failure_retries_once_and_accounts_both_attempts(
     result = run_eodhd_us_equity_universe_acquisition_v1(_request(tmp_path))
 
     assert result["status"] == "DOWNLOAD_COMPLETE_PENDING_SELECTION"
-    assert result["provider_http_requests_used"] == 210
-    assert result["provider_call_units_used"] == 20_406
+    assert result["provider_http_requests_used"] == 618
+    assert result["provider_call_units_used"] == 61_206
     assert failures == 1
-    assert len(calls) == 209
+    assert len(calls) == 617
 
 
 def test_staged_artifact_tampering_fails_closed_without_redownload(
@@ -329,7 +323,7 @@ def test_staged_artifact_tampering_fails_closed_without_redownload(
     monkeypatch.setenv("EODHD_API_KEY", "unit-test-secret")
     monkeypatch.setattr(acquisition_module, "_download_raw", fake_download)
     first = run_eodhd_us_equity_universe_acquisition_v1(_request(tmp_path))
-    raw_file = next((Path(first["staging_dir"]) / "raw" / "bulk").glob("*.json.gz"))
+    raw_file = next((Path(first["staging_dir"]) / "raw" / "bulk").rglob("*.json.gz"))
     raw_file.write_bytes(raw_file.read_bytes() + b"tampered")
     calls.clear()
 
@@ -398,8 +392,10 @@ def test_response_containing_credential_material_is_rejected_before_raw_write(
 
 
 def test_worst_case_call_budget_includes_one_retry_for_every_request() -> None:
-    assert _worst_case_call_units(identity_count=22_765, month_end_count=204) == 86_336
-    assert _worst_case_call_units(identity_count=25_000, month_end_count=204) == 90_806
+    assert BULK_EXCHANGES == ("AMEX", "NASDAQ", "NYSE")
+    assert _nominal_call_units(identity_count=22_765, month_end_count=204) == 83_968
+    assert _worst_case_call_units(identity_count=22_765, month_end_count=204) == 167_936
+    assert _nominal_call_units(identity_count=29_000, month_end_count=204) == 90_203
 
 
 def test_response_caps_distinguish_large_universe_and_bulk_payloads_from_symbol_history() -> None:
@@ -413,13 +409,13 @@ def test_response_caps_distinguish_large_universe_and_bulk_payloads_from_symbol_
 
 
 def test_response_metadata_rejects_public_query_drift() -> None:
-    endpoint = "https://eodhd.com/api/eod-bulk-last-day/US?date=2022-12-30&fmt=json"
+    endpoint = "https://eodhd.com/api/eod-bulk-last-day/NASDAQ?date=2022-12-30&fmt=json"
     with pytest.raises(ValueError, match="drift"):
         _validate_response_metadata(
             {
                 "http_status": 200,
                 "final_url": (
-                    "https://eodhd.com/api/eod-bulk-last-day/US"
+                    "https://eodhd.com/api/eod-bulk-last-day/NASDAQ"
                     "?api_token=secret&date=2022-11-30&fmt=json"
                 ),
             },
@@ -466,21 +462,26 @@ def test_bulk_validator_validates_rows_directly_without_per_row_json_roundtrip(
     payload = [
         {
             "code": f"S{index:04d}",
-            "exchange_short_name": "NASDAQ",
+            "exchange_short_name": "US",
             **_eod_row("2022-12-30", 20.0 + index / 10_000.0),
         }
         for index in range(1_000)
     ]
     raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
 
-    normalized, count = _validate_bulk_response(raw, expected_date="2022-12-30")
+    normalized, count = _validate_bulk_response(
+        raw,
+        expected_date="2022-12-30",
+        expected_exchange="NASDAQ",
+        allowed_codes={f"S{index:04d}" for index in range(1_000)},
+    )
 
     assert count == 1_000
     assert normalized[0]["code"] == "S0000"
     assert normalized[-1]["code"] == "S0999"
 
 
-def test_bulk_validator_ignores_ohlc_defects_only_on_excluded_exchanges() -> None:
+def test_exchange_bulk_validator_uses_endpoint_exchange_and_ignores_non_authoritative_prices() -> None:
     invalid_ohlc = {
         "date": "2022-12-30",
         "open": 0.0,
@@ -491,23 +492,46 @@ def test_bulk_validator_ignores_ohlc_defects_only_on_excluded_exchanges() -> Non
         "volume": 0,
     }
     payload = [
-        {"code": "OTC1", "exchange_short_name": "PINK", **invalid_ohlc},
-        {"code": "AAA", "exchange_short_name": "NASDAQ", **_eod_row("2022-12-30")},
+        {"code": "OTC1", "exchange_short_name": "US", **invalid_ohlc},
+        {"code": "^TNX", "exchange_short_name": "US", **invalid_ohlc},
+        {"code": "AAA", "exchange_short_name": "US", **invalid_ohlc},
     ]
 
     normalized, count = _validate_bulk_response(
         json.dumps(payload).encode("utf-8"),
         expected_date="2022-12-30",
+        expected_exchange="NASDAQ",
+        allowed_codes={"AAA"},
     )
 
-    assert count == 2
+    assert count == 3
     assert [row["code"] for row in normalized] == ["AAA"]
 
-    payload[0]["exchange_short_name"] = "NASDAQ"
-    with pytest.raises(ValueError, match="positive"):
+    payload[2]["date"] = "2022-12-29"
+    with pytest.raises(ValueError, match="date"):
         _validate_bulk_response(
             json.dumps(payload).encode("utf-8"),
             expected_date="2022-12-30",
+            expected_exchange="NASDAQ",
+            allowed_codes={"AAA"},
+        )
+
+    payload[2] = {"code": "^BAD", "exchange_short_name": "US", **_eod_row("2022-12-30")}
+    with pytest.raises(ValueError, match="identity"):
+        _validate_bulk_response(
+            json.dumps(payload).encode("utf-8"),
+            expected_date="2022-12-30",
+            expected_exchange="NASDAQ",
+            allowed_codes={"AAA", "^BAD"},
+        )
+
+    payload[2] = {"code": "AAA", "exchange_short_name": "NASDAQ", **_eod_row("2022-12-30")}
+    with pytest.raises(ValueError, match="exchange"):
+        _validate_bulk_response(
+            json.dumps(payload).encode("utf-8"),
+            expected_date="2022-12-30",
+            expected_exchange="NASDAQ",
+            allowed_codes={"AAA"},
         )
 
 

@@ -35,6 +35,7 @@ TIMEOUT_SECONDS = 90
 MAXIMUM_SYMBOL_RESPONSE_BYTES = 2_000_000
 MAXIMUM_BULK_RESPONSE_BYTES = 20_000_000
 MINIMUM_FREE_DISK_BYTES = 8_000_000_000
+BULK_EXCHANGES = ("AMEX", "NASDAQ", "NYSE")
 SUPPORTED_EXCHANGE_MICS = {
     "AMEX": "XASE",
     "NASDAQ": "XNAS",
@@ -124,6 +125,7 @@ def build_eodhd_us_equity_acquisition_plan_v1(
         "maximum_symbol_response_bytes": MAXIMUM_SYMBOL_RESPONSE_BYTES,
         "maximum_bulk_response_bytes": MAXIMUM_BULK_RESPONSE_BYTES,
         "minimum_free_disk_bytes": MINIMUM_FREE_DISK_BYTES,
+        "bulk_exchanges": list(BULK_EXCHANGES),
         "supported_exchange_mics": dict(sorted(SUPPORTED_EXCHANGE_MICS.items())),
         "universe": {
             "instrument_type": "COMMON_STOCK",
@@ -263,36 +265,43 @@ def run_eodhd_us_equity_universe_acquisition_v1(
         month_ends = _last_spy_session_per_month(spy_rows, start=START_DATE, end=END_DATE)
         if len(month_ends) != 204:
             raise _AcquisitionFailure("SESSION_PROXY_COVERAGE_INVALID")
-        worst_case_units = _worst_case_call_units(
+        nominal_units = _nominal_call_units(
             identity_count=len(identities),
             month_end_count=len(month_ends),
         )
-        if worst_case_units > MAXIMUM_CALL_UNITS:
+        if nominal_units > MAXIMUM_CALL_UNITS:
             raise _AcquisitionFailure("CALL_BUDGET_PREFLIGHT_FAILED")
         if _available_disk_bytes(staging) < MINIMUM_FREE_DISK_BYTES:
             raise _AcquisitionFailure("INSUFFICIENT_DISK_SPACE")
 
         ordinal = 4
+        allowed_codes = frozenset(str(identity["code"]) for identity in identities)
         for month_end in month_ends:
-            endpoint = _endpoint_identity(
-                "/api/eod-bulk-last-day/US",
-                {"date": month_end, "fmt": "json"},
-            )
-            _obtain_response(
-                connection=connection,
-                staging=staging,
-                api_key=api_key,
-                ordinal=ordinal,
-                kind="MONTH_END_BULK",
-                endpoint_identity=endpoint,
-                call_units=100,
-                relative_raw_path=f"raw/bulk/{month_end}.json.gz",
-                max_response_bytes=_response_size_cap("MONTH_END_BULK"),
-                validator=lambda raw, expected=month_end: _validate_bulk_response(
-                    raw, expected_date=expected
-                ),
-            )
-            ordinal += 1
+            for exchange in BULK_EXCHANGES:
+                endpoint = _endpoint_identity(
+                    f"/api/eod-bulk-last-day/{exchange}",
+                    {"date": month_end, "fmt": "json"},
+                )
+                _obtain_response(
+                    connection=connection,
+                    staging=staging,
+                    api_key=api_key,
+                    ordinal=ordinal,
+                    kind="MONTH_END_BULK",
+                    endpoint_identity=endpoint,
+                    call_units=100,
+                    relative_raw_path=f"raw/bulk/{exchange}/{month_end}.json.gz",
+                    max_response_bytes=_response_size_cap("MONTH_END_BULK"),
+                    validator=lambda raw, expected=month_end, expected_exchange=exchange: (
+                        _validate_bulk_response(
+                            raw,
+                            expected_date=expected,
+                            expected_exchange=expected_exchange,
+                            allowed_codes=allowed_codes,
+                        )
+                    ),
+                )
+                ordinal += 1
 
         history_summary = _download_symbol_histories(
             identities=identities,
@@ -306,6 +315,7 @@ def run_eodhd_us_equity_universe_acquisition_v1(
             **_state_result("DOWNLOAD_COMPLETE_PENDING_SELECTION", staging, connection),
             "identity_count": len(identities),
             "month_end_count": len(month_ends),
+            "bulk_snapshot_count": len(month_ends) * len(BULK_EXCHANGES),
             "resolved_identity_count": history_summary["resolved"],
             "unresolved_identity_count": history_summary["unresolved"],
             "identity_sha256": identity_result["canonical_identity_sha256"],
@@ -654,7 +664,15 @@ def _validate_eod_response(
     return normalized, len(normalized)
 
 
-def _validate_bulk_response(raw: bytes, *, expected_date: str) -> tuple[list[dict[str, object]], int]:
+def _validate_bulk_response(
+    raw: bytes,
+    *,
+    expected_date: str,
+    expected_exchange: str,
+    allowed_codes: set[str] | frozenset[str],
+) -> tuple[list[dict[str, object]], int]:
+    if expected_exchange not in BULK_EXCHANGES:
+        raise ValueError("bulk expected exchange is invalid.")
     payload = _json_list(raw)
     if not payload:
         raise ValueError("bulk response is empty.")
@@ -664,18 +682,25 @@ def _validate_bulk_response(raw: bytes, *, expected_date: str) -> tuple[list[dic
         if not isinstance(item, Mapping):
             raise ValueError("bulk row is invalid.")
         code = str(item.get("code", "")).strip().upper()
-        exchange = str(item.get("exchange_short_name", "")).strip().upper()
-        if not _CODE_RE.fullmatch(code) or not exchange:
-            raise ValueError("bulk identity is invalid.")
-        identity = (code, exchange)
+        provider_exchange = str(item.get("exchange_short_name", "")).strip().upper()
+        if (
+            not code
+            or len(code) > 64
+            or any(not character.isprintable() for character in code)
+            or provider_exchange != "US"
+            or (code in allowed_codes and not _CODE_RE.fullmatch(code))
+        ):
+            raise ValueError("bulk identity or exchange is invalid.")
+        identity = (code, expected_exchange)
         if identity in seen_codes:
             raise ValueError("bulk identities must be unique.")
         seen_codes.add(identity)
-        if exchange not in SUPPORTED_EXCHANGE_MICS:
-            _validate_eod_date(item, expected_date=expected_date)
+        day = _validate_eod_date(item, expected_date=expected_date)
+        if code not in allowed_codes:
             continue
-        validated = _normalize_eod_row(item, expected_date=expected_date)
-        normalized.append({"code": code, "exchange_short_name": exchange, **validated})
+        normalized.append(
+            {"code": code, "exchange_short_name": expected_exchange, "date": day}
+        )
     return normalized, len(payload)
 
 
@@ -848,10 +873,17 @@ def _download_symbol_histories(
     }
 
 
-def _worst_case_call_units(*, identity_count: int, month_end_count: int) -> int:
+def _nominal_call_units(*, identity_count: int, month_end_count: int) -> int:
     if identity_count < 0 or month_end_count < 0:
         raise ValueError("request counts must be non-negative.")
-    return MAXIMUM_ATTEMPTS_PER_REQUEST * (3 + month_end_count * 100 + identity_count)
+    return 3 + month_end_count * len(BULK_EXCHANGES) * 100 + identity_count
+
+
+def _worst_case_call_units(*, identity_count: int, month_end_count: int) -> int:
+    return MAXIMUM_ATTEMPTS_PER_REQUEST * _nominal_call_units(
+        identity_count=identity_count,
+        month_end_count=month_end_count,
+    )
 
 
 def _response_size_cap(kind: str) -> int:
