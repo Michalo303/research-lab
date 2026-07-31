@@ -254,8 +254,10 @@ def test_download_phases_are_resumable_hash_bound_and_secret_free(
     staging = Path(first["staging_dir"])
     assert staging.is_dir()
     assert (staging / "state.sqlite").is_file()
+    assert (staging / "identity_universe.json").is_file()
     assert len(list((staging / "raw" / "bulk").glob("*.json.gz"))) == 204
-    assert len(list((staging / "ohlcv").rglob("*.csv"))) == 2
+    assert len(list((staging / "ohlcv-full").rglob("*.csv"))) == 2
+    assert not (staging / "ohlcv").exists()
     assert "unit-test-secret" not in repr(first)
     assert "api_token" not in repr(first)
 

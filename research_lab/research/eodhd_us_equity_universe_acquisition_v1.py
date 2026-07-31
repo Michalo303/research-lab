@@ -14,7 +14,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -204,6 +204,21 @@ def run_eodhd_us_equity_universe_acquisition_v1(
         delisted = _json_list(delisted_raw)
         identity_result = _normalize_identity_universe(active, delisted)
         identities = list(identity_result["identities"])
+        identity_artifact = {
+            "version": "eodhd_us_equity_identity_universe_v1",
+            **identity_result,
+        }
+        identity_body = (
+            json.dumps(identity_artifact, indent=2, sort_keys=True, allow_nan=False) + "\n"
+        ).encode("utf-8")
+        identity_artifact_sha256 = _write_verified(
+            staging / "identity_universe.json", identity_body
+        )
+        connection.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES('identity_universe_sha256', ?)",
+            (identity_artifact_sha256,),
+        )
+        connection.commit()
         spy_rows = _json_list(spy_raw)
         month_ends = _last_spy_session_per_month(spy_rows, start=START_DATE, end=END_DATE)
         if len(month_ends) != 204:
@@ -342,11 +357,22 @@ def _open_state(path: Path, request_sha256: str) -> sqlite3.Connection:
     connection.execute(
         "INSERT OR IGNORE INTO meta(key, value) VALUES('provider_http_requests_used', '0')"
     )
+    connection.execute(
+        "INSERT OR IGNORE INTO meta(key, value) VALUES('created_utc', ?)",
+        (datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),),
+    )
     connection.commit()
     return connection
 
 
 def _verify_staged_artifacts(staging: Path, connection: sqlite3.Connection) -> bool:
+    identity_hash = connection.execute(
+        "SELECT value FROM meta WHERE key='identity_universe_sha256'"
+    ).fetchone()
+    if identity_hash is not None:
+        identity_path = staging / "identity_universe.json"
+        if not identity_path.is_file() or _file_sha256(identity_path) != identity_hash[0]:
+            return False
     rows = connection.execute(
         """
         SELECT raw_path, raw_sha256, normalized_path, normalized_sha256
@@ -674,7 +700,7 @@ def _download_symbol_histories(
                 relative_raw_path=f"raw/history/{digest[:2]}/{digest}.json.gz",
                 max_response_bytes=MAXIMUM_SYMBOL_RESPONSE_BYTES,
                 validator=lambda raw: _validate_eod_response(raw, expected_date=None),
-                relative_normalized_path=f"ohlcv/{digest[:2]}/{digest}.csv",
+                relative_normalized_path=f"ohlcv-full/{digest[:2]}/{digest}.csv",
                 subject=instrument_id,
             )
         finally:
