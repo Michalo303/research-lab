@@ -8,11 +8,14 @@ import json
 import math
 import os
 import re
+import shutil
 import sqlite3
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -31,6 +34,7 @@ HISTORY_CONCURRENCY = 8
 TIMEOUT_SECONDS = 90
 MAXIMUM_SYMBOL_RESPONSE_BYTES = 2_000_000
 MAXIMUM_BULK_RESPONSE_BYTES = 20_000_000
+MINIMUM_FREE_DISK_BYTES = 8_000_000_000
 SUPPORTED_EXCHANGE_MICS = {
     "AMEX": "XASE",
     "NASDAQ": "XNAS",
@@ -66,6 +70,39 @@ class _AcquisitionFailure(RuntimeError):
         self.status = status
 
 
+class _RateLimiter:
+    def __init__(
+        self,
+        *,
+        rate_per_second: float,
+        burst: int,
+        monotonic: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        if rate_per_second <= 0.0 or burst <= 0:
+            raise ValueError("rate limiter settings must be positive.")
+        self._rate = float(rate_per_second)
+        self._burst = float(burst)
+        self._tokens = float(burst)
+        self._monotonic = monotonic
+        self._sleep = sleep
+        self._last = monotonic()
+        self._lock = threading.Lock()
+
+    def acquire(self) -> None:
+        while True:
+            with self._lock:
+                now = self._monotonic()
+                elapsed = max(0.0, now - self._last)
+                self._tokens = min(self._burst, self._tokens + elapsed * self._rate)
+                self._last = now
+                if self._tokens >= 1.0:
+                    self._tokens -= 1.0
+                    return
+                wait_seconds = (1.0 - self._tokens) / self._rate
+            self._sleep(wait_seconds)
+
+
 def build_eodhd_us_equity_acquisition_plan_v1(
     request: dict[str, object],
 ) -> dict[str, object]:
@@ -86,6 +123,7 @@ def build_eodhd_us_equity_acquisition_plan_v1(
         "timeout_seconds": TIMEOUT_SECONDS,
         "maximum_symbol_response_bytes": MAXIMUM_SYMBOL_RESPONSE_BYTES,
         "maximum_bulk_response_bytes": MAXIMUM_BULK_RESPONSE_BYTES,
+        "minimum_free_disk_bytes": MINIMUM_FREE_DISK_BYTES,
         "supported_exchange_mics": dict(sorted(SUPPORTED_EXCHANGE_MICS.items())),
         "universe": {
             "instrument_type": "COMMON_STOCK",
@@ -158,6 +196,8 @@ def run_eodhd_us_equity_universe_acquisition_v1(
     try:
         staging.mkdir(parents=True, exist_ok=True)
         connection = _open_state(staging / "state.sqlite", str(plan["request_sha256"]))
+    except _AcquisitionFailure as exc:
+        return _failure_result(exc.status, call_units=0, http_requests=0)
     except (OSError, sqlite3.Error):
         return _failure_result("STAGING_IO_FAILED", call_units=0, http_requests=0)
     try:
@@ -173,7 +213,7 @@ def run_eodhd_us_equity_universe_acquisition_v1(
             endpoint_identity=str(initial["ACTIVE_COMMON_STOCKS"]["endpoint_identity"]),
             call_units=1,
             relative_raw_path="raw/universe/active.json.gz",
-            max_response_bytes=MAXIMUM_SYMBOL_RESPONSE_BYTES,
+            max_response_bytes=_response_size_cap("ACTIVE_COMMON_STOCKS"),
             validator=_validate_identity_response,
         )
         delisted_raw = _obtain_response(
@@ -185,7 +225,7 @@ def run_eodhd_us_equity_universe_acquisition_v1(
             endpoint_identity=str(initial["DELISTED_COMMON_STOCKS"]["endpoint_identity"]),
             call_units=1,
             relative_raw_path="raw/universe/delisted.json.gz",
-            max_response_bytes=MAXIMUM_SYMBOL_RESPONSE_BYTES,
+            max_response_bytes=_response_size_cap("DELISTED_COMMON_STOCKS"),
             validator=_validate_identity_response,
         )
         spy_raw = _obtain_response(
@@ -197,7 +237,7 @@ def run_eodhd_us_equity_universe_acquisition_v1(
             endpoint_identity=str(initial["SPY_SESSION_PROXY"]["endpoint_identity"]),
             call_units=1,
             relative_raw_path="raw/session-proxy/spy.json.gz",
-            max_response_bytes=MAXIMUM_SYMBOL_RESPONSE_BYTES,
+            max_response_bytes=_response_size_cap("SPY_SESSION_PROXY"),
             validator=lambda raw: _validate_eod_response(raw, expected_date=None),
         )
         active = _json_list(active_raw)
@@ -229,6 +269,8 @@ def run_eodhd_us_equity_universe_acquisition_v1(
         )
         if worst_case_units > MAXIMUM_CALL_UNITS:
             raise _AcquisitionFailure("CALL_BUDGET_PREFLIGHT_FAILED")
+        if _available_disk_bytes(staging) < MINIMUM_FREE_DISK_BYTES:
+            raise _AcquisitionFailure("INSUFFICIENT_DISK_SPACE")
 
         ordinal = 4
         for month_end in month_ends:
@@ -245,23 +287,27 @@ def run_eodhd_us_equity_universe_acquisition_v1(
                 endpoint_identity=endpoint,
                 call_units=100,
                 relative_raw_path=f"raw/bulk/{month_end}.json.gz",
-                max_response_bytes=MAXIMUM_BULK_RESPONSE_BYTES,
+                max_response_bytes=_response_size_cap("MONTH_END_BULK"),
                 validator=lambda raw, expected=month_end: _validate_bulk_response(
                     raw, expected_date=expected
                 ),
             )
             ordinal += 1
 
-        _download_symbol_histories(
+        history_summary = _download_symbol_histories(
             identities=identities,
             ordinal_start=ordinal,
             staging=staging,
             api_key=api_key,
         )
+        if history_summary["unresolved"] / max(1, history_summary["requested"]) > 0.01:
+            raise _AcquisitionFailure("UNRESOLVED_IDENTITY_FAILURE_LIMIT_EXCEEDED")
         return {
             **_state_result("DOWNLOAD_COMPLETE_PENDING_SELECTION", staging, connection),
             "identity_count": len(identities),
             "month_end_count": len(month_ends),
+            "resolved_identity_count": history_summary["resolved"],
+            "unresolved_identity_count": history_summary["unresolved"],
             "identity_sha256": identity_result["canonical_identity_sha256"],
             "request_sha256": plan["request_sha256"],
             "sealed_oos_opened": False,
@@ -406,6 +452,7 @@ def _obtain_response(
     validator,
     relative_normalized_path: str | None = None,
     subject: str | None = None,
+    before_request: Callable[[], None] | None = None,
 ) -> bytes:
     existing = connection.execute(
         """
@@ -415,6 +462,8 @@ def _obtain_response(
     ).fetchone()
     if existing is not None and existing[0] in {"COMPLETE", "RESOLVED_EMPTY"}:
         return gzip.decompress((staging / str(existing[1])).read_bytes())
+    if existing is not None and str(existing[0]).startswith("FAILED_"):
+        raise _AcquisitionFailure(str(existing[0]).removeprefix("FAILED_"))
     connection.execute(
         """
         INSERT OR IGNORE INTO requests(
@@ -433,6 +482,8 @@ def _obtain_response(
         _reserve_attempt(connection, endpoint_identity, call_units)
         attempts += 1
         try:
+            if before_request is not None:
+                before_request()
             raw, metadata = _download_raw(
                 _authorized_url(endpoint_identity, api_key),
                 timeout_seconds=TIMEOUT_SECONDS,
@@ -449,9 +500,18 @@ def _obtain_response(
             payload, row_count = validator(raw)
         except RetryableProviderFailure:
             if attempts >= MAXIMUM_ATTEMPTS_PER_REQUEST:
+                _mark_request_failed(
+                    connection,
+                    endpoint_identity,
+                    "RETRYABLE_PROVIDER_FAILURE_EXHAUSTED",
+                )
                 raise _AcquisitionFailure("RETRYABLE_PROVIDER_FAILURE_EXHAUSTED")
             continue
+        except _AcquisitionFailure as exc:
+            _mark_request_failed(connection, endpoint_identity, exc.status)
+            raise
         except (ValueError, json.JSONDecodeError, UnicodeDecodeError):
+            _mark_request_failed(connection, endpoint_identity, "PROVIDER_RESPONSE_INVALID")
             raise _AcquisitionFailure("PROVIDER_RESPONSE_INVALID")
 
         raw_relative = Path(relative_raw_path)
@@ -485,7 +545,24 @@ def _obtain_response(
         )
         connection.commit()
         return raw
+    _mark_request_failed(
+        connection,
+        endpoint_identity,
+        "RETRYABLE_PROVIDER_FAILURE_EXHAUSTED",
+    )
     raise _AcquisitionFailure("RETRYABLE_PROVIDER_FAILURE_EXHAUSTED")
+
+
+def _mark_request_failed(
+    connection: sqlite3.Connection,
+    endpoint_identity: str,
+    status: str,
+) -> None:
+    connection.execute(
+        "UPDATE requests SET status=? WHERE endpoint_identity=?",
+        (f"FAILED_{status}", endpoint_identity),
+    )
+    connection.commit()
 
 
 def _reserve_attempt(
@@ -542,6 +619,12 @@ def _validate_response_metadata(
     expected = urllib.parse.urlparse(endpoint_identity)
     if final.scheme != "https" or final.hostname != "eodhd.com" or final.path != expected.path:
         raise ValueError("provider redirect or path drift is invalid.")
+    final_query = urllib.parse.parse_qsl(final.query, keep_blank_values=True)
+    token_values = [value for key, value in final_query if key == "api_token"]
+    public_query = sorted((key, value) for key, value in final_query if key != "api_token")
+    expected_query = sorted(urllib.parse.parse_qsl(expected.query, keep_blank_values=True))
+    if len(token_values) != 1 or not token_values[0] or public_query != expected_query:
+        raise ValueError("provider query drift is invalid.")
 
 
 def _validate_identity_response(raw: bytes) -> tuple[list[dict[str, object]], int]:
@@ -562,29 +645,11 @@ def _validate_eod_response(
     for item in payload:
         if not isinstance(item, Mapping):
             raise ValueError("EOD row is invalid.")
-        day = item.get("date")
-        if not isinstance(day, str):
-            raise ValueError("EOD date is invalid.")
-        parsed = date.fromisoformat(day)
-        if not date.fromisoformat(START_DATE) <= parsed <= date.fromisoformat(END_DATE):
-            raise ValueError("EOD date is outside the approved interval.")
-        if expected_date is not None and day != expected_date:
-            raise ValueError("EOD date does not match the requested date.")
+        row = _normalize_eod_row(item, expected_date=expected_date)
+        day = str(row["date"])
         if previous is not None and day <= previous:
             raise ValueError("EOD rows must be strictly ordered and unique.")
-        values = {field: _finite_number(item.get(field), field) for field in (
-            "open", "high", "low", "close", "adjusted_close", "volume"
-        )}
-        if any(values[field] <= 0.0 for field in ("open", "high", "low", "close", "adjusted_close")):
-            raise ValueError("EOD prices must be positive.")
-        if values["volume"] < 0.0:
-            raise ValueError("EOD volume must be non-negative.")
-        if (
-            values["high"] < max(values["open"], values["low"], values["close"])
-            or values["low"] > min(values["open"], values["high"], values["close"])
-        ):
-            raise ValueError("EOD OHLC relationship is invalid.")
-        normalized.append({"date": day, **values})
+        normalized.append(row)
         previous = day
     return normalized, len(normalized)
 
@@ -606,15 +671,41 @@ def _validate_bulk_response(raw: bytes, *, expected_date: str) -> tuple[list[dic
         if identity in seen_codes:
             raise ValueError("bulk identities must be unique.")
         seen_codes.add(identity)
-        one_row = {key: value for key, value in item.items() if key not in {"code", "exchange_short_name"}}
-        validated, count = _validate_eod_response(
-            json.dumps([one_row], separators=(",", ":")).encode("utf-8"),
-            expected_date=expected_date,
-        )
-        if count != 1:
-            raise ValueError("bulk row is invalid.")
-        normalized.append({"code": code, "exchange_short_name": exchange, **validated[0]})
+        validated = _normalize_eod_row(item, expected_date=expected_date)
+        normalized.append({"code": code, "exchange_short_name": exchange, **validated})
     return normalized, len(normalized)
+
+
+def _normalize_eod_row(
+    item: Mapping[str, object],
+    *,
+    expected_date: str | None,
+) -> dict[str, object]:
+    day = item.get("date")
+    if not isinstance(day, str):
+        raise ValueError("EOD date is invalid.")
+    parsed = date.fromisoformat(day)
+    if not date.fromisoformat(START_DATE) <= parsed <= date.fromisoformat(END_DATE):
+        raise ValueError("EOD date is outside the approved interval.")
+    if expected_date is not None and day != expected_date:
+        raise ValueError("EOD date does not match the requested date.")
+    values = {
+        field: _finite_number(item.get(field), field)
+        for field in ("open", "high", "low", "close", "adjusted_close", "volume")
+    }
+    if any(
+        values[field] <= 0.0
+        for field in ("open", "high", "low", "close", "adjusted_close")
+    ):
+        raise ValueError("EOD prices must be positive.")
+    if values["volume"] < 0.0:
+        raise ValueError("EOD volume must be non-negative.")
+    if (
+        values["high"] < max(values["open"], values["low"], values["close"])
+        or values["low"] > min(values["open"], values["high"], values["close"])
+    ):
+        raise ValueError("EOD OHLC relationship is invalid.")
+    return {"date": day, **values}
 
 
 def _json_list(raw: bytes) -> list[Any]:
@@ -662,6 +753,10 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _available_disk_bytes(path: Path) -> int:
+    return int(shutil.disk_usage(path).free)
+
+
 def _instrument_id(identity: Mapping[str, object]) -> str:
     return f"EODHD-US-{identity['exchange_mic']}-{identity['code']}"
 
@@ -672,8 +767,10 @@ def _download_symbol_histories(
     ordinal_start: int,
     staging: Path,
     api_key: str,
-) -> None:
-    def execute(index_and_identity: tuple[int, Mapping[str, object]]) -> None:
+) -> dict[str, int]:
+    limiter = _RateLimiter(rate_per_second=8.0, burst=8)
+
+    def execute(index_and_identity: tuple[int, Mapping[str, object]]) -> bool:
         index, identity = index_and_identity
         instrument_id = _instrument_id(identity)
         digest = hashlib.sha256(instrument_id.encode("utf-8")).hexdigest()
@@ -689,33 +786,68 @@ def _download_symbol_histories(
         worker_connection = sqlite3.connect(staging / "state.sqlite", timeout=30.0)
         worker_connection.execute("PRAGMA busy_timeout=30000")
         try:
-            _obtain_response(
-                connection=worker_connection,
-                staging=staging,
-                api_key=api_key,
-                ordinal=ordinal_start + index,
-                kind="SYMBOL_HISTORY",
-                endpoint_identity=endpoint,
-                call_units=1,
-                relative_raw_path=f"raw/history/{digest[:2]}/{digest}.json.gz",
-                max_response_bytes=MAXIMUM_SYMBOL_RESPONSE_BYTES,
-                validator=lambda raw: _validate_eod_response(raw, expected_date=None),
-                relative_normalized_path=f"ohlcv-full/{digest[:2]}/{digest}.csv",
-                subject=instrument_id,
-            )
+            try:
+                _obtain_response(
+                    connection=worker_connection,
+                    staging=staging,
+                    api_key=api_key,
+                    ordinal=ordinal_start + index,
+                    kind="SYMBOL_HISTORY",
+                    endpoint_identity=endpoint,
+                    call_units=1,
+                    relative_raw_path=f"raw/history/{digest[:2]}/{digest}.json.gz",
+                    max_response_bytes=_response_size_cap("SYMBOL_HISTORY"),
+                    validator=lambda raw: _validate_eod_response(raw, expected_date=None),
+                    relative_normalized_path=f"ohlcv-full/{digest[:2]}/{digest}.csv",
+                    subject=instrument_id,
+                    before_request=limiter.acquire,
+                )
+                return True
+            except _AcquisitionFailure as exc:
+                if exc.status not in {
+                    "PROVIDER_RESPONSE_INVALID",
+                    "RETRYABLE_PROVIDER_FAILURE_EXHAUSTED",
+                }:
+                    raise
+                worker_connection.execute(
+                    "UPDATE requests SET status=? WHERE endpoint_identity=?",
+                    (f"FAILED_{exc.status}", endpoint),
+                )
+                worker_connection.commit()
+                return False
         finally:
             worker_connection.close()
 
-    with ThreadPoolExecutor(max_workers=HISTORY_CONCURRENCY) as executor:
-        futures = [executor.submit(execute, item) for item in enumerate(identities)]
+    executor = ThreadPoolExecutor(max_workers=HISTORY_CONCURRENCY)
+    futures = [executor.submit(execute, item) for item in enumerate(identities)]
+    try:
+        resolved = sum(1 for future in futures if future.result())
+    except BaseException:
         for future in futures:
-            future.result()
+            future.cancel()
+        executor.shutdown(wait=True, cancel_futures=True)
+        raise
+    else:
+        executor.shutdown(wait=True)
+    return {
+        "requested": len(identities),
+        "resolved": resolved,
+        "unresolved": len(identities) - resolved,
+    }
 
 
 def _worst_case_call_units(*, identity_count: int, month_end_count: int) -> int:
     if identity_count < 0 or month_end_count < 0:
         raise ValueError("request counts must be non-negative.")
     return MAXIMUM_ATTEMPTS_PER_REQUEST * (3 + month_end_count * 100 + identity_count)
+
+
+def _response_size_cap(kind: str) -> int:
+    if kind in {"ACTIVE_COMMON_STOCKS", "DELISTED_COMMON_STOCKS", "MONTH_END_BULK"}:
+        return MAXIMUM_BULK_RESPONSE_BYTES
+    if kind in {"SPY_SESSION_PROXY", "SYMBOL_HISTORY"}:
+        return MAXIMUM_SYMBOL_RESPONSE_BYTES
+    raise ValueError("request kind is invalid.")
 
 
 def _authorized_url(endpoint_identity: str, api_key: str) -> str:

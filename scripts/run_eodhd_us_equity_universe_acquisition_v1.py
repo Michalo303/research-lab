@@ -6,6 +6,7 @@ import json
 import os
 import re
 import sqlite3
+import urllib.parse
 from pathlib import Path
 from typing import Any
 
@@ -92,10 +93,25 @@ def main(argv: list[str] | None = None) -> int:
         state_path = staging / "state.sqlite"
         connection = sqlite3.connect(state_path)
         try:
-            selection = build_point_in_time_qlib_manifest_v1(
-                staging_root=staging,
-                state_connection=connection,
-            )
+            try:
+                selection = build_point_in_time_qlib_manifest_v1(
+                    staging_root=staging,
+                    state_connection=connection,
+                )
+            except ValueError:
+                return _emit(
+                    {
+                        "version": CLI_RESULT_VERSION,
+                        "status": "POINT_IN_TIME_SELECTION_FAILED",
+                        "provider_call_units_used": int(
+                            acquisition.get("provider_call_units_used", 0)
+                        ),
+                        "provider_http_requests_used": int(
+                            acquisition.get("provider_http_requests_used", 0)
+                        ),
+                    },
+                    EXIT_VALIDATION,
+                )
             raw_manifest = _build_raw_manifest(connection)
         finally:
             connection.close()
@@ -125,29 +141,32 @@ def main(argv: list[str] | None = None) -> int:
 def _build_raw_manifest(connection: sqlite3.Connection) -> dict[str, object]:
     rows = connection.execute(
         """
-        SELECT ordinal, kind, call_units, attempts, status, subject,
+        SELECT endpoint_identity, ordinal, kind, call_units, attempts, status, subject,
                raw_path, raw_sha256, normalized_path, normalized_sha256,
                response_bytes, row_count
         FROM requests ORDER BY ordinal
         """
     ).fetchall()
-    records = [
-        {
-            "ordinal": row[0],
-            "kind": row[1],
-            "call_units": row[2],
-            "attempts": row[3],
-            "status": row[4],
-            "subject": row[5],
-            "raw_path": row[6],
-            "raw_sha256": row[7],
-            "normalized_path": row[8],
-            "normalized_sha256": row[9],
-            "response_bytes": row[10],
-            "row_count": row[11],
-        }
-        for row in rows
-    ]
+    records = []
+    for row in rows:
+        endpoint_identity = _validate_public_endpoint_identity(row[0])
+        records.append(
+            {
+                "endpoint_identity": endpoint_identity,
+                "ordinal": row[1],
+                "kind": row[2],
+                "call_units": row[3],
+                "attempts": row[4],
+                "status": row[5],
+                "subject": row[6],
+                "raw_path": row[7],
+                "raw_sha256": row[8],
+                "normalized_path": row[9],
+                "normalized_sha256": row[10],
+                "response_bytes": row[11],
+                "row_count": row[12],
+            }
+        )
     result: dict[str, object] = {
         "version": "eodhd_us_equity_raw_manifest_v1",
         "request_count": len(records),
@@ -155,6 +174,24 @@ def _build_raw_manifest(connection: sqlite3.Connection) -> dict[str, object]:
     }
     result["canonical_manifest_sha256"] = _canonical_sha256(result)
     return result
+
+
+def _validate_public_endpoint_identity(raw: object) -> str:
+    if not isinstance(raw, str):
+        raise ValueError("endpoint identity is invalid")
+    parsed = urllib.parse.urlparse(raw)
+    query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+    credential_names = {"api_token", "api_key", "apikey", "authorization", "token"}
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != "eodhd.com"
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.fragment
+        or any(key.casefold() in credential_names for key, _ in query)
+    ):
+        raise ValueError("endpoint identity contains credential or authority drift")
+    return raw
 
 
 def _publish_complete_bundle(
@@ -223,13 +260,14 @@ def _exit_for_status(status: str) -> int:
         return EXIT_MISSING_KEY
     if status.startswith("CALL_BUDGET"):
         return EXIT_BUDGET
-    if status in {"STAGING_IO_FAILED", "OUTPUT_ALREADY_EXISTS"}:
+    if status in {"STAGING_IO_FAILED", "OUTPUT_ALREADY_EXISTS", "INSUFFICIENT_DISK_SPACE"}:
         return EXIT_IO
     if status in {
         "PROVIDER_RESPONSE_INVALID",
         "PROVIDER_RESPONSE_CONTAINED_SECRET",
         "RETRYABLE_PROVIDER_FAILURE_EXHAUSTED",
         "ACQUISITION_VALIDATION_FAILED",
+        "UNRESOLVED_IDENTITY_FAILURE_LIMIT_EXCEEDED",
     }:
         return EXIT_PROVIDER
     return EXIT_VALIDATION

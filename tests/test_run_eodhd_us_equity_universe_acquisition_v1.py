@@ -70,6 +70,34 @@ def test_top_level_research_package_exports_only_the_acquisition_entry_point() -
     )
 
 
+def test_raw_manifest_preserves_only_sanitized_endpoint_identity(tmp_path: Path) -> None:
+    connection = _open_state(tmp_path / "state.sqlite", "a" * 64)
+    connection.execute(
+        """
+        INSERT INTO requests(
+            endpoint_identity, ordinal, kind, call_units, attempts, status,
+            subject, raw_path, raw_sha256, response_bytes, row_count
+        ) VALUES(?, 1, 'SYMBOL_HISTORY', 1, 1, 'COMPLETE', 'I1',
+                 'raw/a.gz', ?, 100, 10)
+        """,
+        ("https://eodhd.com/api/eod/AAA.US?fmt=json", "b" * 64),
+    )
+    connection.commit()
+
+    manifest = cli_module._build_raw_manifest(connection)
+
+    assert manifest["records"][0]["endpoint_identity"] == "https://eodhd.com/api/eod/AAA.US?fmt=json"
+    assert "api_token" not in repr(manifest)
+    connection.execute(
+        "UPDATE requests SET endpoint_identity=?",
+        ("https://eodhd.com/api/eod/AAA.US?api_token=leak&fmt=json",),
+    )
+    connection.commit()
+    with pytest.raises(ValueError, match="credential"):
+        cli_module._build_raw_manifest(connection)
+    connection.close()
+
+
 def test_cli_rejects_wrong_request_hash_before_execution(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -172,7 +200,9 @@ def test_execute_atomically_publishes_hash_verified_complete_bundle(
         ("EODHD_API_KEY_UNAVAILABLE", 3),
         ("CALL_BUDGET_PREFLIGHT_FAILED", 5),
         ("PROVIDER_RESPONSE_INVALID", 6),
+        ("UNRESOLVED_IDENTITY_FAILURE_LIMIT_EXCEEDED", 6),
         ("STAGING_IO_FAILED", 7),
+        ("INSUFFICIENT_DISK_SPACE", 7),
     ],
 )
 def test_execute_maps_fail_closed_status_without_final_directory(
@@ -206,3 +236,46 @@ def test_execute_maps_fail_closed_status_without_final_directory(
     assert observed == exit_code
     assert json.loads(capsys.readouterr().out)["status"] == status
     assert not Path(_request(tmp_path)["output_dir"]).exists()
+
+
+def test_selection_validation_failure_is_reported_without_publishing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    request_path, request_sha256 = _write_request(tmp_path)
+    final = Path(_request(tmp_path)["output_dir"])
+    staging = final.with_name(".fake.partial")
+
+    def fake_run(request: dict[str, object]) -> dict[str, object]:
+        staging.mkdir()
+        connection = _open_state(staging / "state.sqlite", "a" * 64)
+        connection.close()
+        return {
+            "status": "DOWNLOAD_COMPLETE_PENDING_SELECTION",
+            "staging_dir": str(staging),
+            "provider_call_units_used": 43_168,
+            "provider_http_requests_used": 22_972,
+        }
+
+    monkeypatch.setattr(cli_module, "run_eodhd_us_equity_universe_acquisition_v1", fake_run)
+    monkeypatch.setattr(
+        cli_module,
+        "build_point_in_time_qlib_manifest_v1",
+        lambda **kwargs: (_ for _ in ()).throw(ValueError("invalid membership")),
+    )
+
+    exit_code = main(
+        [
+            "--request",
+            str(request_path),
+            "--expected-request-sha256",
+            request_sha256,
+            "--execute",
+        ]
+    )
+
+    assert exit_code == 4
+    assert json.loads(capsys.readouterr().out)["status"] == "POINT_IN_TIME_SELECTION_FAILED"
+    assert not final.exists()
+    assert staging.exists()

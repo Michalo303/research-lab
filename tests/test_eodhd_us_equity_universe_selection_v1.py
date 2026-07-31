@@ -92,7 +92,22 @@ def _build_selection_fixture(tmp_path: Path) -> tuple[Path, object]:
     ) + "\n").encode("utf-8")
     (staging / "identity_universe.json").write_bytes(identity_bytes)
 
-    dates = pd.bdate_range("2018-01-01", "2022-12-30")
+    dates = pd.bdate_range("2017-01-02", "2022-12-30")
+    _write_json_gzip(
+        staging / "raw" / "session-proxy" / "spy.json.gz",
+        [
+            {
+                "date": stamp.date().isoformat(),
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.0,
+                "adjusted_close": 100.0,
+                "volume": 10_000_000,
+            }
+            for stamp in dates
+        ],
+    )
     month_ends = [
         group.index[-1].date().isoformat()
         for _, group in pd.DataFrame(index=dates).groupby(dates.to_period("M"))
@@ -155,7 +170,7 @@ def test_manifest_builder_streams_point_in_time_union_and_writes_loader_contract
     assert all(len(item["ohlcv_sha256"]) == 64 for item in manifest["instruments"])
     first_csv = staging / manifest["instruments"][0]["ohlcv_path"]
     first_frame = pd.read_csv(first_csv)
-    assert first_frame["timestamp"].min() >= "2018-01-31"
+    assert first_frame["timestamp"].min() >= "2017-01-31"
     assert first_frame["timestamp"].max() <= "2022-12-30"
     assert result["sealed_oos_rows"] == 0
     connection.close()
@@ -168,6 +183,34 @@ def test_manifest_builder_rejects_any_sealed_row(tmp_path: Path) -> None:
         handle.write("2023-01-03,20,21,19,20,20,2000000\n")
 
     with pytest.raises(ValueError, match="sealed"):
+        build_point_in_time_qlib_manifest_v1(
+            staging_root=staging,
+            state_connection=connection,
+        )
+    connection.close()
+
+
+def test_manifest_builder_rejects_missing_expected_development_session(tmp_path: Path) -> None:
+    staging, connection = _build_selection_fixture(tmp_path)
+    missing_day = "2020-06-15"
+    for path in (staging / "ohlcv-full").rglob("*.csv"):
+        frame = pd.read_csv(path)
+        frame = frame.loc[frame["timestamp"] != missing_day]
+        path.write_bytes(frame.to_csv(index=False, lineterminator="\n").encode("utf-8"))
+
+    with pytest.raises(ValueError, match="cross-section"):
+        build_point_in_time_qlib_manifest_v1(
+            staging_root=staging,
+            state_connection=connection,
+        )
+    connection.close()
+
+
+def test_manifest_builder_rejects_more_than_one_percent_unresolved_histories(tmp_path: Path) -> None:
+    staging, connection = _build_selection_fixture(tmp_path)
+    next((staging / "ohlcv-full").rglob("*.csv")).unlink()
+
+    with pytest.raises(ValueError, match="unresolved"):
         build_point_in_time_qlib_manifest_v1(
             staging_root=staging,
             state_connection=connection,

@@ -133,6 +133,25 @@ def build_point_in_time_qlib_manifest_v1(
     identity_by_code = {str(item["code"]): item for item in identities}
     if len(identity_by_code) != len(identities):
         raise ValueError("identity codes are not unique.")
+    spy_path = root / "raw" / "session-proxy" / "spy.json.gz"
+    spy_payload = json.loads(gzip.decompress(spy_path.read_bytes()).decode("utf-8"))
+    if not isinstance(spy_payload, list):
+        raise ValueError("SPY session proxy is invalid.")
+    expected_development_sessions = []
+    previous_spy_date: str | None = None
+    for row in spy_payload:
+        if not isinstance(row, dict) or not isinstance(row.get("date"), str):
+            raise ValueError("SPY session proxy row is invalid.")
+        spy_date = str(row["date"])
+        if previous_spy_date is not None and spy_date <= previous_spy_date:
+            raise ValueError("SPY session proxy must be strictly ordered.")
+        if "2019-01-01" <= spy_date <= END_DATE:
+            expected_development_sessions.append(spy_date)
+        if spy_date > END_DATE:
+            raise ValueError("sealed row is present in SPY session proxy.")
+        previous_spy_date = spy_date
+    if not expected_development_sessions:
+        raise ValueError("development SPY session coverage is empty.")
 
     bulk_by_date: dict[str, dict[str, str]] = {}
     for bulk_path in sorted((root / "raw" / "bulk").glob("*.json.gz")):
@@ -161,6 +180,12 @@ def build_point_in_time_qlib_manifest_v1(
     )
     intervals = membership["intervals"]
     exclusions = dict(membership["exclusions"])
+    history_status_by_subject = {
+        str(subject): str(status)
+        for subject, status in state_connection.execute(
+            "SELECT subject, status FROM requests WHERE kind='SYMBOL_HISTORY' AND subject IS NOT NULL"
+        ).fetchall()
+    }
 
     state_connection.execute("DROP TABLE IF EXISTS candidates")
     state_connection.execute(
@@ -172,13 +197,25 @@ def build_point_in_time_qlib_manifest_v1(
     retained: dict[str, dict[str, object]] = {}
     candidate_row_count = 0
     sealed_rows = 0
+    unresolved_histories = 0
+    resolved_empty_histories = 0
     for code, interval in sorted(intervals.items()):
         identity = identity_by_code[code]
         instrument_id = _instrument_id(identity, str(interval["exchange_mic"]))
         digest = hashlib.sha256(instrument_id.encode("utf-8")).hexdigest()
         full_path = root / "ohlcv-full" / digest[:2] / f"{digest}.csv"
+        history_status = history_status_by_subject.get(instrument_id)
         if not full_path.is_file() or full_path.is_symlink():
-            exclusions[code] = "HISTORY_UNAVAILABLE"
+            if history_status == "RESOLVED_EMPTY":
+                exclusions[code] = "RESOLVED_EMPTY_HISTORY"
+                resolved_empty_histories += 1
+            else:
+                exclusions[code] = "UNRESOLVED_HISTORY_FAILURE"
+                unresolved_histories += 1
+            continue
+        if history_status is not None and history_status.startswith("FAILED_"):
+            exclusions[code] = "UNRESOLVED_HISTORY_FAILURE"
+            unresolved_histories += 1
             continue
         body = full_path.read_bytes()
         frame = _read_instrument_csv(body)
@@ -218,13 +255,14 @@ def build_point_in_time_qlib_manifest_v1(
             "full_path": full_path,
             "digest": digest,
         }
+    if unresolved_histories / max(1, len(identities)) > 0.01:
+        raise ValueError("unresolved history failures exceed one percent.")
     state_connection.commit()
     selection = _select_daily_top_union(state_connection, maximum_instruments=1_500)
     selected_ids = list(selection["selected_instrument_ids"])
     development_counts = [
-        count
-        for timestamp, count in selection["daily_selected_counts"].items()
-        if "2019-01-01" <= timestamp <= END_DATE
+        int(selection["daily_selected_counts"].get(timestamp, 0))
+        for timestamp in expected_development_sessions
     ]
     if not development_counts or min(development_counts) < 30:
         raise ValueError("development cross-section has fewer than 30 instruments.")
@@ -282,6 +320,8 @@ def build_point_in_time_qlib_manifest_v1(
         "verified_identity_count": len(intervals),
         "exclusions": dict(sorted(exclusions.items())),
         "sealed_oos_rows": sealed_rows,
+        "unresolved_history_count": unresolved_histories,
+        "resolved_empty_history_count": resolved_empty_histories,
     }
     membership_report["canonical_report_sha256"] = _canonical_sha256(membership_report)
     _write_json(root / "membership_report.json", membership_report)
@@ -293,9 +333,11 @@ def build_point_in_time_qlib_manifest_v1(
         "selected_instrument_count": len(selected_ids),
         "minimum_development_cross_section": min(development_counts),
         "median_development_cross_section": _median(sorted_counts),
+        "expected_development_session_count": len(expected_development_sessions),
         "daily_selected_counts": selection["daily_selected_counts"],
         "manifest_sha256": manifest_sha256,
         "sealed_oos_rows": sealed_rows,
+        "unresolved_history_count": unresolved_histories,
     }
     selection_report["canonical_report_sha256"] = _canonical_sha256(selection_report)
     _write_json(root / "selection_report.json", selection_report)
