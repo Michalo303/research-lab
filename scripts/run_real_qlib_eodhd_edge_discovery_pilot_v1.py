@@ -8,6 +8,7 @@ import tempfile
 from pathlib import Path
 from typing import Callable, Sequence
 
+from research_lab.research.real_qlib_runtime_v1 import QlibRuntimeUnavailable
 from research_lab.research.real_qlib_eodhd_edge_discovery_pilot_v1 import (
     run_real_qlib_eodhd_edge_discovery_pilot_v1,
 )
@@ -61,18 +62,28 @@ def main(
         if status == "QLIB_RUNTIME_UNAVAILABLE":
             print("reason=QLIB_RUNTIME_UNAVAILABLE")
             return EXIT_QLIB_UNAVAILABLE
+        if status == "LEDGER_BINDING_FAILED" and result.get("accounting_complete") is False:
+            _write_bundle_atomic(request=request, result=result, output_dir=output_dir)
+            print("reason=LEDGER_BINDING_FAILED")
+            return EXIT_VALIDATION_OR_LEDGER_FAILURE
         if status not in {"EDGE_CANDIDATE_FOUND", "NO_PRICE_VOLUME_EDGE"}:
             print("reason=VALIDATION_OR_LEDGER_FAILURE")
             return EXIT_VALIDATION_OR_LEDGER_FAILURE
         _write_bundle_atomic(request=request, result=result, output_dir=output_dir)
         print(f"status={status}")
         return EXIT_EDGE_FOUND if status == "EDGE_CANDIDATE_FOUND" else EXIT_NO_EDGE
+    except QlibRuntimeUnavailable:
+        print("reason=QLIB_RUNTIME_UNAVAILABLE")
+        return EXIT_QLIB_UNAVAILABLE
     except ValueError:
         print("reason=VALIDATION_OR_LEDGER_FAILURE")
         return EXIT_VALIDATION_OR_LEDGER_FAILURE
     except OSError:
         print("reason=IO_FAILURE")
         return EXIT_IO_FAILURE
+    except Exception:
+        print("reason=VALIDATION_OR_LEDGER_FAILURE")
+        return EXIT_VALIDATION_OR_LEDGER_FAILURE
 
 
 def _read_request(path_text: str, expected_sha256: str) -> dict[str, object]:

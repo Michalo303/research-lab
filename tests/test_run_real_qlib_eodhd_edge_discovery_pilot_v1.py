@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 import scripts.run_real_qlib_eodhd_edge_discovery_pilot_v1 as cli_module
+from research_lab.research.real_qlib_runtime_v1 import QlibRuntimeUnavailable
 from scripts.run_real_qlib_eodhd_edge_discovery_pilot_v1 import main
 
 
@@ -201,6 +202,22 @@ def test_runtime_unavailable_returns_exit_3_without_bundle(tmp_path: Path) -> No
     assert not Path(request["output_dir"]).exists()
 
 
+def test_runtime_exception_returns_exit_3_and_redacts_details(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    request_path, request, request_sha = _write_request(tmp_path)
+
+    def fail(value: dict[str, object]) -> dict[str, object]:
+        raise QlibRuntimeUnavailable("secret Qlib path")
+
+    exit_code = main(_args(request_path, request_sha, execute=True), pilot_runner=fail)
+
+    assert exit_code == 3
+    assert capsys.readouterr().out == "reason=QLIB_RUNTIME_UNAVAILABLE\n"
+    assert not Path(request["output_dir"]).exists()
+
+
 def test_validation_failure_is_redacted(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -218,6 +235,50 @@ def test_validation_failure_is_redacted(
     assert "secret-token" not in output
     assert "private" not in output
     assert not Path(request["output_dir"]).exists()
+
+
+def test_unexpected_runtime_failure_is_redacted_and_fail_closed(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    request_path, request, request_sha = _write_request(tmp_path)
+
+    def fail(value: dict[str, object]) -> dict[str, object]:
+        raise RuntimeError("secret-runtime-token at C:/private/runtime/path")
+
+    exit_code = main(_args(request_path, request_sha, execute=True), pilot_runner=fail)
+
+    output = capsys.readouterr().out
+    assert exit_code == 4
+    assert output == "reason=VALIDATION_OR_LEDGER_FAILURE\n"
+    assert "secret-runtime-token" not in output
+    assert "private" not in output
+    assert not Path(request["output_dir"]).exists()
+
+
+def test_accounting_failure_writes_a_complete_review_bundle(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    request_path, request, request_sha = _write_request(tmp_path)
+    result = _success_result()
+    result["status"] = "LEDGER_BINDING_FAILED"
+    result["accounting_complete"] = False
+    result["economic_scorecard"] = {
+        "version": "edge_discovery_scorecard_v1",
+        "status": "LEDGER_BINDING_FAILED",
+    }
+
+    exit_code = main(
+        _args(request_path, request_sha, execute=True),
+        pilot_runner=lambda value: result,
+    )
+
+    assert exit_code == 4
+    assert capsys.readouterr().out == "reason=LEDGER_BINDING_FAILED\n"
+    bundle = Path(request["output_dir"])
+    assert {path.name for path in bundle.iterdir()} == EXPECTED_BUNDLE
+    assert (bundle / "COMPLETE").read_text(encoding="utf-8") == "status=COMPLETE\n"
 
 
 def test_cli_source_has_no_forbidden_action_imports() -> None:

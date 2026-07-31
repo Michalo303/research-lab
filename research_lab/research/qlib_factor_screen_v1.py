@@ -165,6 +165,10 @@ def _evaluate_factor(
     base_net_spread = mean_gross_spread - 2.0 * costs["base_bps_one_way"] / 10_000.0
     stress_net_spread = mean_gross_spread - 2.0 * costs["stress_bps_one_way"] / 10_000.0
     severe_net_spread = mean_gross_spread - 2.0 * costs["severe_bps_one_way"] / 10_000.0
+    mean_gross_top_universe = float(np.mean(gross_top_universe))
+    base_net_top_universe = mean_gross_top_universe - 2.0 * costs["base_bps_one_way"] / 10_000.0
+    stress_net_top_universe = mean_gross_top_universe - 2.0 * costs["stress_bps_one_way"] / 10_000.0
+    severe_net_top_universe = mean_gross_top_universe - 2.0 * costs["severe_bps_one_way"] / 10_000.0
     weekly_base_top_universe = [
         value - 2.0 * costs["base_bps_one_way"] / 10_000.0 for value in gross_top_universe
     ]
@@ -178,15 +182,16 @@ def _evaluate_factor(
 
     failures: list[str] = []
     if positive_share < 0.55:
-        failures.append("RANK_IC_DIRECTION_UNSTABLE")
-    if stress_net_spread <= 0.0:
+        failures.append("UNSTABLE_RANK_IC")
+    if stress_net_top_universe <= 0.0:
         failures.append("EDGE_DESTROYED_BY_STRESS_COSTS")
     if year_share > 0.40:
-        failures.append("SINGLE_YEAR_PROFIT_CONCENTRATION")
+        failures.append("ISOLATED_PERIOD_DOMINANCE")
     if instrument_share > 0.20:
-        failures.append("SINGLE_INSTRUMENT_PROFIT_CONCENTRATION")
+        failures.append("SINGLE_INSTRUMENT_DOMINANCE")
     if median_rank_ic < 0.015 and annualized < 0.02:
-        failures.append("INSUFFICIENT_EDGE_MAGNITUDE")
+        failures.append("WEAK_RANK_IC_AND_ECONOMIC_SPREAD")
+    failures.sort()
 
     result: dict[str, object] = {
         "factor_id": factor_id,
@@ -199,10 +204,13 @@ def _evaluate_factor(
         "icir": float(icir),
         "positive_rank_ic_week_share": float(positive_share),
         "gross_top_bottom_spread": mean_gross_spread,
-        "gross_top_minus_universe_return": float(np.mean(gross_top_universe)),
+        "gross_top_minus_universe_return": mean_gross_top_universe,
         "base_net_spread": base_net_spread,
         "stress_net_spread": stress_net_spread,
         "severe_net_spread": severe_net_spread,
+        "base_net_top_minus_universe_return": base_net_top_universe,
+        "stress_net_top_minus_universe_return": stress_net_top_universe,
+        "severe_net_top_minus_universe_return": severe_net_top_universe,
         "annualized_net_top_minus_universe_return": annualized,
         "per_year_net_return": per_year,
         "single_year_profit_share": year_share,

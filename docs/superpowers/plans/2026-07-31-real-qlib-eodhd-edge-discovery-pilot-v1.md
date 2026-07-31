@@ -46,7 +46,7 @@ Use these constants consistently across all tasks:
 ```python
 REQUEST_VERSION = "real_qlib_eodhd_edge_discovery_request_v1"
 RESULT_VERSION = "real_qlib_eodhd_edge_discovery_result_v1"
-DATASET_MANIFEST_VERSION = "eodhd_qlib_universe_manifest_v1"
+DATASET_MANIFEST_VERSION = "eodhd_qlib_dataset_manifest_v1"
 RUNTIME_VERSION = "real_qlib_runtime_v1"
 FACTOR_CATALOG_VERSION = "price_volume_factor_catalog_v1"
 FACTOR_SCREEN_VERSION = "qlib_factor_screen_v1"
@@ -141,7 +141,7 @@ def test_unavailable_runtime_fails_closed(monkeypatch):
         )
 
 
-def test_injected_real_runtime_must_identify_itself():
+def test_internally_loaded_runtime_must_identify_itself():
     class FakeRuntime:
         is_real_qlib = False
 
@@ -151,9 +151,10 @@ def test_injected_real_runtime_must_identify_itself():
             feature_columns=("MOM_6_1",),
             label_column="forward_return_5d",
             segments={"discovery": ("2020-01-01", "2020-01-06"), "development": ("2020-01-07", "2020-01-10")},
-            runtime=FakeRuntime(),
         )
 ```
+
+The unit test may monkeypatch the private `_load_real_runtime` boundary. No public production function accepts a caller-supplied runtime or a caller-controlled Qlib authenticity claim.
 
 Add pure parity tests that do not require Qlib:
 
@@ -189,7 +190,6 @@ def prepare_real_qlib_segments_v1(
     feature_columns: tuple[str, ...],
     label_column: str,
     segments: dict[str, tuple[str, str]],
-    runtime: object | None = None,
 ) -> dict[str, pd.DataFrame]:
     """Prepare discovery/development through Qlib DataHandlerLP and DatasetH."""
 
@@ -427,7 +427,7 @@ assert result["version"] == "qlib_factor_screen_v1"
 assert result["weekly_observation_count"] >= 60
 assert result["factors"]["PREDICTIVE"]["decision"] == "FACTOR_CONTINUE"
 assert result["factors"]["NOISE"]["decision"] == "FACTOR_STOP"
-assert result["factors"]["PREDICTIVE"]["stress_net_spread"] > 0.0
+assert result["factors"]["PREDICTIVE"]["stress_net_top_minus_universe_return"] > 0.0
 assert result["factors"]["PREDICTIVE"]["single_year_profit_share"] <= 0.40
 ```
 
@@ -473,7 +473,8 @@ For each factor calculate:
 - positive-RankIC week share;
 - top-quintile minus bottom-quintile forward spread;
 - top-quintile minus eligible-universe forward return;
-- base, stress, and severe net spreads after two one-way costs;
+- base, stress, and severe net top-minus-universe returns after two one-way costs;
+- top-minus-bottom net spreads as diagnostics only, never as the continuation gate;
 - compounded annualized net top-minus-universe return;
 - per-year PnL and single-year positive-profit share;
 - per-instrument contribution and single-instrument positive-profit share;
@@ -484,7 +485,7 @@ Use deterministic stable sorting by `(factor_value, instrument)`. A factor retur
 ```python
 weekly_observation_count >= 52
 positive_rank_ic_week_share >= 0.55
-stress_net_spread > 0.0
+stress_net_top_minus_universe_return > 0.0
 single_year_profit_share <= 0.40
 single_instrument_profit_share <= 0.20
 (
@@ -634,8 +635,6 @@ Expose:
 ```python
 def run_real_qlib_eodhd_edge_discovery_pilot_v1(
     request: dict[str, object],
-    *,
-    runtime: object | None = None,
 ) -> dict[str, object]:
     """Run one development-only real-Qlib price/volume pilot without writing files."""
 ```
@@ -666,7 +665,7 @@ Each appended trial must use the existing ledger schema and bind:
 - failure taxonomy from the screen;
 - provenance source `real_qlib_eodhd_edge_discovery_pilot_v1`.
 
-Use deterministic statuses already accepted by the ledger contract: a `FACTOR_CONTINUE` trial is appended as `WALK_FORWARD_COMPLETE`, meaning only that development screening completed and continuation may be designed; a `FACTOR_STOP` trial is appended as `STRATEGY_GATE_FAIL`. Never use `STRATEGY_GATE_PASS`, `PARAMETERS_FROZEN`, or any portfolio/promotion status in this milestone. Each factor gets a distinct semantic fingerprint and a distinct hypothesis registration before its trial append; duplicate or near-duplicate classification remains authoritative if the existing ledger detects it, and the pilot then fails closed instead of reporting an edge candidate.
+Use deterministic statuses already accepted by the ledger contract: a `FACTOR_CONTINUE` trial is appended as `WALK_FORWARD_COMPLETE`, meaning only that development screening completed and continuation may be designed; a `FACTOR_STOP` trial is appended as `STRATEGY_GATE_FAIL`. Never use `STRATEGY_GATE_PASS`, `PARAMETERS_FROZEN`, or any portfolio/promotion status in this milestone. Each factor gets a distinct semantic fingerprint and a distinct hypothesis registration before its trial append. Duplicate or near-duplicate ledger classifications remain authoritative, consume the configured attempt budget, and force the corresponding scorecard factor to stop. If ledger accounting fails after the screen has observed factors, the pilot returns `LEDGER_BINDING_FAILED` with the full screen, the last valid ledger, attempted/accounted factor IDs, and `accounting_complete=false`; the CLI atomically persists that review bundle before returning exit four.
 
 Do not call `evaluate_research_objective_promotion_gate_v1`; this first screen is not a portfolio and cannot pass a promotion scope.
 
@@ -699,6 +698,7 @@ Required tests:
 - `test_no_edge_returns_exit_2_and_edge_found_returns_exit_0`: inject each scorecard status and assert the fixed exit code.
 - `test_runtime_unavailable_returns_exit_3_without_complete_marker`: inject runtime unavailability and assert no final path or marker.
 - `test_validation_or_ledger_failure_returns_exit_4_with_redacted_reason`: inject a secret-bearing exception, assert only `reason=VALIDATION_OR_LEDGER_FAILURE`, and assert the secret and path are absent.
+- `test_accounting_failure_writes_a_complete_review_bundle`: inject `LEDGER_BINDING_FAILED` after observed attempts, assert exit four and an atomic `COMPLETE` bundle containing the last valid ledger and full screen.
 - `test_cli_source_has_no_provider_broker_registry_deployment_or_agent_imports`: parse the AST and reject imports rooted at provider, broker, registry, deployment, Knihomol, RD-Agent, and the historical stub module.
 
 The completed bundle must contain exactly:
@@ -738,7 +738,7 @@ CLI arguments are exactly:
 
 Without `--execute`, validate only the request file hash and print `status=DRY_RUN`, the pilot ID, planned factor count `8`, planned provider calls `0`, and planned sealed-OOS reads `0`. Do not create the output directory.
 
-With `--execute`, require the requested output path to be absolute, nonexistent, not a symlink, and outside the repository root. Write to a new sibling temporary directory, verify every JSON file by rereading and rehashing, write `checksums.json`, write `COMPLETE` last, and atomically rename the temporary directory to the requested output path. On any failure, leave no final output path.
+With `--execute`, require the requested output path to be absolute, nonexistent, not a symlink, and outside the repository root. Write to a new sibling temporary directory, verify every JSON file by rereading and rehashing, write `checksums.json`, write `COMPLETE` last, and atomically rename the temporary directory to the requested output path. Validation, runtime, and I/O exceptions leave no final output path. A structured `LEDGER_BINDING_FAILED` result with `accounting_complete=false` is the sole exception: it is an intentional fail-closed review artifact preserving already observed attempts.
 
 Use these exit codes:
 

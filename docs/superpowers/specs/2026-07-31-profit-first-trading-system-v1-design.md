@@ -129,7 +129,7 @@ Research execution uses the next eligible session, never the same close that gen
 - stress: 30 basis points;
 - severe stress: 50 basis points.
 
-The first Qlib milestone must reproduce a small independent reference backtest within frozen tolerances before Qlib metrics are trusted.
+The first Qlib milestone proves genuine `DatasetH` preparation and exact segment parity against direct source slices. Its weekly long-only active-return diagnostic is then computed independently from both the source frame and the Qlib-prepared frame and must match exactly. This is preparation and diagnostic-stream parity, not a claim that Qlib ran an independent portfolio backtest; a Qlib-native model/backtest remains a later milestone only if a factor candidate survives.
 
 ## 8. Factor discovery sequence
 
@@ -233,7 +233,7 @@ This scorecard is the primary program output. Other artifacts may explain it but
 - an isolated, pinned real-Qlib environment;
 - an immutable, bounded EODHD US price/volume input contract;
 - active/delisted point-in-time universe construction from approved local snapshots;
-- Qlib conversion and independent reference-backtest parity;
+- genuine-Qlib preparation parity plus an independently computed long-only diagnostic-stream parity check;
 - frozen benchmark and transaction-cost assumptions;
 - a bounded first price/volume factor screen;
 - global experiment-ledger binding;

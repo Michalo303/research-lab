@@ -92,6 +92,9 @@ def load_eodhd_qlib_development_frame_v1(
             raise ValueError("ohlcv_sha256 mismatch.")
         file_hashes[instrument["instrument_id"]] = observed_sha256
         frame = _read_instrument_csv(body)
+        listing_start = pd.Timestamp(instrument["listing_start"])
+        if (frame["timestamp"] < listing_start).any():
+            raise ValueError("row precedes listing_start.")
         if (frame["timestamp"] >= sealed_start).any():
             raise ValueError("sealed OOS row exposed")
         if (frame["timestamp"] > development_end).any():
@@ -103,7 +106,7 @@ def load_eodhd_qlib_development_frame_v1(
         frame["instrument_id"] = instrument["instrument_id"]
         frame["instrument_type"] = instrument["instrument_type"]
         frame["exchange_mic"] = instrument["exchange_mic"]
-        frame["listing_start"] = pd.Timestamp(instrument["listing_start"])
+        frame["listing_start"] = listing_start
         frame["listing_end"] = (
             pd.NaT if instrument["listing_end"] is None else pd.Timestamp(instrument["listing_end"])
         )

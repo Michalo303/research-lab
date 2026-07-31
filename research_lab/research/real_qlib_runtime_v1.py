@@ -100,12 +100,11 @@ def prepare_real_qlib_segments_v1(
     feature_columns: tuple[str, ...],
     label_column: str,
     segments: dict[str, tuple[str, str]],
-    runtime: object | None = None,
 ) -> dict[str, pd.DataFrame]:
-    """Prepare discovery/development through genuine Qlib or an injected runtime."""
+    """Prepare discovery/development through the internally loaded Qlib runtime."""
 
     validated_segments = _validate_inputs(frame, feature_columns, label_column, segments)
-    selected_runtime = _load_real_runtime() if runtime is None else runtime
+    selected_runtime = _load_real_runtime()
     if getattr(selected_runtime, "is_real_qlib", None) is not True:
         raise ValueError("runtime must identify itself as real Qlib.")
     prepare = getattr(selected_runtime, "prepare_segments", None)

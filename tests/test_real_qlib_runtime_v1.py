@@ -6,6 +6,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+import research_lab.research.real_qlib_runtime_v1 as runtime_module
 from research_lab.research.real_qlib_runtime_v1 import (
     QlibPreparationParityError,
     QlibRuntimeUnavailable,
@@ -59,9 +60,11 @@ def test_unavailable_runtime_fails_closed(monkeypatch: pytest.MonkeyPatch) -> No
         )
 
 
-def test_injected_runtime_must_identify_itself_as_real_qlib() -> None:
+def test_internally_loaded_runtime_must_be_genuine(monkeypatch: pytest.MonkeyPatch) -> None:
     class FakeRuntime:
         is_real_qlib = False
+
+    monkeypatch.setattr(runtime_module, "_load_real_runtime", lambda: FakeRuntime())
 
     with pytest.raises(ValueError, match="real Qlib"):
         prepare_real_qlib_segments_v1(
@@ -69,11 +72,12 @@ def test_injected_runtime_must_identify_itself_as_real_qlib() -> None:
             feature_columns=("MOM_6_1",),
             label_column="forward_return_5d",
             segments=SEGMENTS,
-            runtime=FakeRuntime(),
         )
 
 
-def test_injected_real_runtime_prepares_closed_segments() -> None:
+def test_internally_loaded_real_runtime_prepares_closed_segments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     class FakeRuntime:
         is_real_qlib = True
 
@@ -90,12 +94,13 @@ def test_injected_real_runtime_prepares_closed_segments() -> None:
             assert segments == SEGMENTS
             return _direct_segments(frame)
 
+    monkeypatch.setattr(runtime_module, "_load_real_runtime", lambda: FakeRuntime())
+
     result = prepare_real_qlib_segments_v1(
         _frame(),
         feature_columns=("MOM_6_1",),
         label_column="forward_return_5d",
         segments=SEGMENTS,
-        runtime=FakeRuntime(),
     )
 
     assert set(result) == set(SEGMENTS)

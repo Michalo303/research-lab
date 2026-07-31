@@ -3,7 +3,6 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-import platform
 from pathlib import Path
 from typing import Any
 
@@ -73,14 +72,12 @@ _SAFETY = {
 
 def run_real_qlib_eodhd_edge_discovery_pilot_v1(
     request: dict[str, object],
-    *,
-    runtime: object | None = None,
 ) -> dict[str, object]:
     """Run one development-only Qlib price/volume pilot without writing files."""
 
     validated = _validate_request(request)
     previous_ledger = _read_and_preflight_ledger(validated)
-    runtime_metadata = _runtime_metadata(runtime)
+    runtime_metadata = build_real_qlib_runtime_metadata_v1()
     if runtime_metadata["is_real_qlib"] is not True:
         return _fail_closed_result(
             status=QLIB_RUNTIME_UNAVAILABLE,
@@ -123,7 +120,6 @@ def run_real_qlib_eodhd_edge_discovery_pilot_v1(
         feature_columns=feature_columns,
         label_column="forward_return_5d",
         segments=segments,
-        runtime=runtime,
     )
     try:
         parity = build_real_qlib_preparation_parity_v1(
@@ -160,7 +156,7 @@ def run_real_qlib_eodhd_edge_discovery_pilot_v1(
     updated_ledger = copy.deepcopy(previous_ledger)
     hypothesis_ids: list[str] = []
     experiment_ids: list[str] = []
-    expected_statuses: dict[str, str] = {}
+    accounted_factor_ids: list[str] = []
     for factor_id in feature_columns:
         hypothesis_id = f"H-{validated['pilot_id']}-{factor_id}"
         experiment_id = f"{validated['pilot_id']}-{factor_id}"
@@ -182,14 +178,30 @@ def run_real_qlib_eodhd_edge_discovery_pilot_v1(
             screen_sha256=factor_screen["canonical_screen_sha256"],
             pilot_id=validated["pilot_id"],
         )
-        updated_ledger = _apply_operation(
-            updated_ledger,
-            operation={
-                "operation_id": f"OP-{validated['pilot_id']}-REGISTER-{factor_id}",
-                "kind": "REGISTER_HYPOTHESIS",
-                "hypothesis": hypothesis,
-            },
-        )
+        try:
+            updated_ledger = _apply_operation(
+                updated_ledger,
+                operation={
+                    "operation_id": f"OP-{validated['pilot_id']}-REGISTER-{factor_id}",
+                    "kind": "REGISTER_HYPOTHESIS",
+                    "hypothesis": hypothesis,
+                },
+            )
+        except ValueError:
+            return _accounting_failure_result(
+                validated=validated,
+                previous_ledger=previous_ledger,
+                updated_ledger=updated_ledger,
+                runtime_metadata=runtime_metadata,
+                dataset_metadata=dataset_metadata,
+                parity=parity,
+                factor_screen=factor_screen,
+                hypothesis_ids=hypothesis_ids,
+                experiment_ids=experiment_ids,
+                attempted_factor_ids=list(feature_columns),
+                accounted_factor_ids=accounted_factor_ids,
+            )
+        hypothesis_ids.append(hypothesis_id)
         factor_result = factor_screen["factors"][factor_id]
         trial_status = (
             "WALK_FORWARD_COMPLETE"
@@ -207,22 +219,34 @@ def run_real_qlib_eodhd_edge_discovery_pilot_v1(
             catalog_metadata=catalog_metadata,
             factor_screen=factor_screen,
         )
-        updated_ledger = _apply_operation(
-            updated_ledger,
-            operation={
-                "operation_id": f"OP-{validated['pilot_id']}-APPEND-{factor_id}",
-                "kind": "APPEND_TRIAL",
-                "trial": trial,
-            },
-        )
-        hypothesis_ids.append(hypothesis_id)
+        try:
+            updated_ledger = _apply_operation(
+                updated_ledger,
+                operation={
+                    "operation_id": f"OP-{validated['pilot_id']}-APPEND-{factor_id}",
+                    "kind": "APPEND_TRIAL",
+                    "trial": trial,
+                },
+            )
+        except ValueError:
+            return _accounting_failure_result(
+                validated=validated,
+                previous_ledger=previous_ledger,
+                updated_ledger=updated_ledger,
+                runtime_metadata=runtime_metadata,
+                dataset_metadata=dataset_metadata,
+                parity=parity,
+                factor_screen=factor_screen,
+                hypothesis_ids=hypothesis_ids,
+                experiment_ids=experiment_ids,
+                attempted_factor_ids=list(feature_columns),
+                accounted_factor_ids=accounted_factor_ids,
+            )
         experiment_ids.append(experiment_id)
-        expected_statuses[experiment_id] = trial_status
+        accounted_factor_ids.append(factor_id)
 
     trial_lookup = {trial["experiment_id"]: trial for trial in updated_ledger["trials"]}
     new_trials = [copy.deepcopy(trial_lookup[experiment_id]) for experiment_id in experiment_ids]
-    if any(trial_lookup[experiment_id]["trial_status"] != expected_statuses[experiment_id] for experiment_id in experiment_ids):
-        raise ValueError(LEDGER_BINDING_FAILED)
     hypothesis_lookup = {
         hypothesis["hypothesis_id"]: hypothesis for hypothesis in updated_ledger.get("hypotheses", [])
     }
@@ -235,6 +259,10 @@ def run_real_qlib_eodhd_edge_discovery_pilot_v1(
         "new_hypothesis_count": len(new_hypotheses),
         "new_experiment_ids": experiment_ids,
         "new_hypothesis_ids": hypothesis_ids,
+        "new_trial_statuses_by_factor": {
+            factor_id: trial_lookup[f"{validated['pilot_id']}-{factor_id}"]["trial_status"]
+            for factor_id in feature_columns
+        },
         "dataset_manifest_sha256": validated["expected_dataset_manifest_sha256"],
         "updated_ledger_sha256": updated_ledger["canonical_ledger_sha256"],
         "sealed_oos_consumptions": 0,
@@ -259,6 +287,9 @@ def run_real_qlib_eodhd_edge_discovery_pilot_v1(
         "new_trials": new_trials,
         "new_hypothesis_count": 8,
         "new_trial_count": 8,
+        "attempted_factor_ids": list(feature_columns),
+        "accounted_factor_ids": accounted_factor_ids,
+        "accounting_complete": True,
         **copy.deepcopy(_SAFETY),
     }
     result["canonical_result_sha256"] = _canonical_sha256(result)
@@ -342,15 +373,13 @@ def _read_and_preflight_ledger(request: dict[str, Any]) -> dict[str, Any]:
         {key: value for key, value in raw.items() if key != "canonical_ledger_sha256"}
     ) != expected:
         raise ValueError(LEDGER_BINDING_FAILED)
-    if raw.get("sealed_oos_consumption_records") or any(
-        trial.get("sealed_oos_consumption_state") == "CONSUMED" for trial in raw.get("trials", [])
-    ):
-        raise ValueError(SEALED_OOS_CONTAMINATION)
     policy = raw.get("policy")
     trials = raw.get("trials")
     hypotheses = raw.get("hypotheses", [])
     if not isinstance(policy, dict) or not isinstance(trials, list) or not isinstance(hypotheses, list):
         raise ValueError(LEDGER_BINDING_FAILED)
+    if _sealed_oos_contaminates_request(raw, request):
+        raise ValueError(SEALED_OOS_CONTAMINATION)
     family_count = sum(trial.get("strategy_family_id") == STRATEGY_FAMILY_ID for trial in trials)
     if (
         policy.get("max_global_trials", 0) - len(trials) < 8
@@ -361,22 +390,51 @@ def _read_and_preflight_ledger(request: dict[str, Any]) -> dict[str, Any]:
     return copy.deepcopy(raw)
 
 
-def _runtime_metadata(runtime: object | None) -> dict[str, object]:
-    if runtime is None:
-        return build_real_qlib_runtime_metadata_v1()
-    is_real = getattr(runtime, "is_real_qlib", None) is True
-    qlib_version = getattr(runtime, "qlib_version", "UNAVAILABLE")
-    if not isinstance(qlib_version, str):
-        qlib_version = "UNAVAILABLE"
-    result: dict[str, object] = {
-        "version": "real_qlib_runtime_v1",
-        "status": "AVAILABLE" if is_real else QLIB_RUNTIME_UNAVAILABLE,
-        "is_real_qlib": is_real,
-        "qlib_version": qlib_version,
-        "python_version": platform.python_version(),
-    }
-    result["runtime_sha256"] = _canonical_sha256(result)
-    return result
+def _sealed_oos_contaminates_request(
+    ledger: dict[str, Any],
+    request: dict[str, Any],
+) -> bool:
+    records = ledger.get("sealed_oos_consumption_records", [])
+    trials = ledger.get("trials", [])
+    if not isinstance(records, list) or not isinstance(trials, list):
+        return True
+    trial_lookup: dict[str, list[dict[str, Any]]] = {}
+    for trial in trials:
+        if not isinstance(trial, dict) or not isinstance(trial.get("experiment_id"), str):
+            return True
+        trial_lookup.setdefault(trial["experiment_id"], []).append(trial)
+    sealed = request["sealed_oos_interval"]
+    recorded_trial_ids: set[str] = set()
+    for record in records:
+        if not isinstance(record, dict) or not isinstance(record.get("trial_id"), str):
+            return True
+        matches = trial_lookup.get(record["trial_id"], [])
+        if len(matches) != 1:
+            return True
+        trial = matches[0]
+        recorded_trial_ids.add(record["trial_id"])
+        if trial.get("strategy_family_id") == STRATEGY_FAMILY_ID:
+            return True
+        if record.get("dataset_version") == sealed["dataset_version"]:
+            return True
+        if (
+            record.get("interval_start") == sealed["start"]
+            and record.get("interval_end") == sealed["end"]
+        ):
+            return True
+    consumed_statuses = {"SEALED_OOS_CONSUMED", "SEALED_OOS_CONTAMINATED"}
+    for trial in trials:
+        consumed = (
+            trial.get("sealed_oos_consumption_state") == "CONSUMED"
+            or trial.get("trial_status") in consumed_statuses
+        )
+        if not consumed:
+            continue
+        if trial.get("strategy_family_id") == STRATEGY_FAMILY_ID:
+            return True
+        if trial["experiment_id"] not in recorded_trial_ids:
+            return True
+    return False
 
 
 def _build_hypothesis(
@@ -497,6 +555,85 @@ def _apply_operation(previous: dict[str, object], *, operation: dict[str, object
         )
     except ValueError as exc:
         raise ValueError(LEDGER_BINDING_FAILED) from exc
+
+
+def _accounting_failure_result(
+    *,
+    validated: dict[str, Any],
+    previous_ledger: dict[str, object],
+    updated_ledger: dict[str, object],
+    runtime_metadata: dict[str, object],
+    dataset_metadata: dict[str, object],
+    parity: dict[str, object],
+    factor_screen: dict[str, object],
+    hypothesis_ids: list[str],
+    experiment_ids: list[str],
+    attempted_factor_ids: list[str],
+    accounted_factor_ids: list[str],
+) -> dict[str, object]:
+    """Preserve observed attempts when ledger accounting fails partway through."""
+
+    hypothesis_lookup = {
+        item["hypothesis_id"]: item for item in updated_ledger.get("hypotheses", [])
+    }
+    trial_lookup = {item["experiment_id"]: item for item in updated_ledger.get("trials", [])}
+    new_hypotheses = [
+        copy.deepcopy(hypothesis_lookup[item]) for item in hypothesis_ids if item in hypothesis_lookup
+    ]
+    new_trials = [copy.deepcopy(trial_lookup[item]) for item in experiment_ids if item in trial_lookup]
+    factor_metrics: dict[str, object] = {}
+    for factor_id in attempted_factor_ids:
+        metrics = copy.deepcopy(factor_screen["factors"][factor_id])
+        metrics["decision"] = "FACTOR_STOP"
+        metrics["failure_taxonomy"] = sorted(
+            set(metrics.get("failure_taxonomy", [])) | {LEDGER_BINDING_FAILED}
+        )
+        metrics["ledger_trial_status"] = (
+            trial_lookup[f"{validated['pilot_id']}-{factor_id}"]["trial_status"]
+            if factor_id in accounted_factor_ids
+            else "UNACCOUNTED_DUE_TO_LEDGER_FAILURE"
+        )
+        factor_metrics[factor_id] = metrics
+    economic_scorecard: dict[str, object] = {
+        "version": "edge_discovery_scorecard_v1",
+        "status": LEDGER_BINDING_FAILED,
+        "next_authorized_milestone": "MANUAL_ACCOUNTING_REVIEW_REQUIRED",
+        "factor_screen_sha256": factor_screen["canonical_screen_sha256"],
+        "dataset_manifest_sha256": validated["expected_dataset_manifest_sha256"],
+        "updated_ledger_sha256": updated_ledger["canonical_ledger_sha256"],
+        "factor_metrics": factor_metrics,
+        "continuing_factor_ids": [],
+        "stopped_factor_ids": list(attempted_factor_ids),
+        "attempted_factor_ids": list(attempted_factor_ids),
+        "accounted_factor_ids": list(accounted_factor_ids),
+        "accounting_complete": False,
+        "promotion_authorized": False,
+        "production_runtime_supported": False,
+        "sealed_oos_opened": False,
+    }
+    economic_scorecard["canonical_scorecard_sha256"] = _canonical_sha256(economic_scorecard)
+    result: dict[str, object] = {
+        "version": PILOT_VERSION,
+        "pilot_id": validated["pilot_id"],
+        "status": LEDGER_BINDING_FAILED,
+        "dataset_metadata": copy.deepcopy(dataset_metadata),
+        "qlib_runtime": copy.deepcopy(runtime_metadata),
+        "reference_parity": copy.deepcopy(parity),
+        "factor_screen": copy.deepcopy(factor_screen),
+        "economic_scorecard": economic_scorecard,
+        "updated_ledger": copy.deepcopy(updated_ledger),
+        "previous_ledger_sha256": previous_ledger["canonical_ledger_sha256"],
+        "new_hypotheses": new_hypotheses,
+        "new_trials": new_trials,
+        "new_hypothesis_count": len(new_hypotheses),
+        "new_trial_count": len(new_trials),
+        "attempted_factor_ids": list(attempted_factor_ids),
+        "accounted_factor_ids": list(accounted_factor_ids),
+        "accounting_complete": False,
+        **copy.deepcopy(_SAFETY),
+    }
+    result["canonical_result_sha256"] = _canonical_sha256(result)
+    return result
 
 
 def _fail_closed_result(

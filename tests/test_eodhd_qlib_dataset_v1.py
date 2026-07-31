@@ -165,6 +165,19 @@ def test_delisted_instrument_is_ineligible_after_listing_end(tmp_path: Path) -> 
     assert metadata["delisted_instrument_count"] == 1
 
 
+def test_rejects_rows_before_declared_listing_start(tmp_path: Path) -> None:
+    dates = pd.bdate_range("2020-01-02", periods=300)
+    rows = _rows(dates)
+    _, request = _write_manifest(
+        tmp_path,
+        rows,
+        instrument_updates={"listing_start": dates[100].date().isoformat()},
+    )
+
+    with pytest.raises(ValueError, match="precedes listing_start"):
+        load_eodhd_qlib_development_frame_v1(request)
+
+
 @pytest.mark.parametrize("corruption", ["hash", "escape", "symlink", "duplicate", "unknown"])
 def test_rejects_manifest_identity_and_path_corruption(
     corruption: str,

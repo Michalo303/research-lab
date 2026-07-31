@@ -32,7 +32,7 @@ def _factor_screen(*, continuing: int) -> dict[str, object]:
         factor_id: {
             "factor_id": factor_id,
             "decision": "FACTOR_CONTINUE" if index < continuing else "FACTOR_STOP",
-            "failure_taxonomy": [] if index < continuing else ["INSUFFICIENT_EDGE_MAGNITUDE"],
+            "failure_taxonomy": [] if index < continuing else ["WEAK_RANK_IC_AND_ECONOMIC_SPREAD"],
             "median_rank_ic": 0.02 if index < continuing else 0.0,
             "stress_net_spread": 0.001 if index < continuing else -0.001,
         }
@@ -94,6 +94,10 @@ def _ledger_summary(*, trials: int = 8, hypotheses: int = 8) -> dict[str, object
         "new_hypothesis_count": hypotheses,
         "new_experiment_ids": [f"QLIB-PV-001-{index:02d}" for index in range(trials)],
         "new_hypothesis_ids": [f"H-QLIB-PV-001-{index:02d}" for index in range(hypotheses)],
+        "new_trial_statuses_by_factor": {
+            factor_id: "WALK_FORWARD_COMPLETE" if index == 0 else "STRATEGY_GATE_FAIL"
+            for index, factor_id in enumerate(FACTOR_IDS[:trials])
+        },
         "dataset_manifest_sha256": "5" * 64,
         "updated_ledger_sha256": "6" * 64,
         "sealed_oos_consumptions": 0,
@@ -127,6 +131,22 @@ def test_no_edge_when_every_factor_stops() -> None:
     assert result["status"] == "NO_PRICE_VOLUME_EDGE"
     assert result["continuing_factor_ids"] == []
     assert result["next_authorized_milestone"] == "SHARADAR_FUNDAMENTAL_EDGE_DISCOVERY_V1"
+
+
+def test_duplicate_ledger_classification_stops_an_observed_factor() -> None:
+    ledger = _ledger_summary()
+    ledger["new_trial_statuses_by_factor"]["MOM_12_1"] = "REJECTED_DUPLICATE"
+
+    result = build_edge_discovery_scorecard_v1(
+        _factor_screen(continuing=1),
+        qlib_runtime_metadata=_runtime(),
+        preparation_parity=_parity(),
+        ledger_summary=ledger,
+    )
+
+    assert result["status"] == "NO_PRICE_VOLUME_EDGE"
+    assert result["factor_metrics"]["MOM_12_1"]["decision"] == "FACTOR_STOP"
+    assert "REJECTED_DUPLICATE" in result["factor_metrics"]["MOM_12_1"]["failure_taxonomy"]
 
 
 @pytest.mark.parametrize(

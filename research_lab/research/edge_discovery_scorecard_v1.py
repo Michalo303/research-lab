@@ -17,6 +17,7 @@ _LEDGER_FIELDS = {
     "new_hypothesis_count",
     "new_experiment_ids",
     "new_hypothesis_ids",
+    "new_trial_statuses_by_factor",
     "dataset_manifest_sha256",
     "updated_ledger_sha256",
     "sealed_oos_consumptions",
@@ -38,6 +39,17 @@ def build_edge_discovery_scorecard_v1(
     ledger = _validate_ledger_summary(ledger_summary)
     factor_ids = tuple(screen["ordered_factor_ids"])
     ordered_factors = {factor_id: copy.deepcopy(screen["factors"][factor_id]) for factor_id in factor_ids}
+    ledger_statuses = ledger["new_trial_statuses_by_factor"]
+    if set(ledger_statuses) != set(factor_ids):
+        raise ValueError("ledger trial statuses do not cover every factor.")
+    for factor_id in factor_ids:
+        ledger_status = ledger_statuses[factor_id]
+        ordered_factors[factor_id]["ledger_trial_status"] = ledger_status
+        if ledger_status in {"REJECTED_DUPLICATE", "REJECTED_NEAR_DUPLICATE"}:
+            ordered_factors[factor_id]["decision"] = "FACTOR_STOP"
+            ordered_factors[factor_id]["failure_taxonomy"] = sorted(
+                set(ordered_factors[factor_id]["failure_taxonomy"]) | {ledger_status}
+            )
     continuing = [
         factor_id for factor_id in factor_ids if ordered_factors[factor_id]["decision"] == "FACTOR_CONTINUE"
     ]
@@ -166,6 +178,7 @@ def _validate_ledger_summary(raw: Any) -> dict[str, Any]:
         raise ValueError("trial counts do not reconcile.")
     experiment_ids = raw.get("new_experiment_ids")
     hypothesis_ids = raw.get("new_hypothesis_ids")
+    trial_statuses = raw.get("new_trial_statuses_by_factor")
     if (
         not isinstance(experiment_ids, list)
         or len(experiment_ids) != 8
@@ -175,6 +188,20 @@ def _validate_ledger_summary(raw: Any) -> dict[str, Any]:
         or len(hypothesis_ids) != 8
         or len(set(hypothesis_ids)) != 8
         or not all(isinstance(value, str) and value for value in hypothesis_ids)
+        or not isinstance(trial_statuses, dict)
+        or len(trial_statuses) != 8
+        or not all(
+            isinstance(key, str)
+            and key
+            and value
+            in {
+                "WALK_FORWARD_COMPLETE",
+                "STRATEGY_GATE_FAIL",
+                "REJECTED_DUPLICATE",
+                "REJECTED_NEAR_DUPLICATE",
+            }
+            for key, value in trial_statuses.items()
+        )
     ):
         raise ValueError("new attempt identities are invalid.")
     if raw.get("sealed_oos_consumptions") != 0:

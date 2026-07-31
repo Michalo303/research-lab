@@ -50,7 +50,7 @@ def _predictive_frame(
     *,
     weeks: int = 180,
     instruments: int = 40,
-    return_scale: float = 0.006,
+    return_scale: float = 0.010,
 ) -> pd.DataFrame:
     dates = pd.date_range("2019-01-04", periods=weeks, freq="W-FRI")
     names = [f"S{index:03d}" for index in range(instruments)]
@@ -85,6 +85,7 @@ def test_predictive_factor_continues_and_inverse_factor_stops() -> None:
     assert result["factors"]["PREDICTIVE"]["decision"] == "FACTOR_CONTINUE"
     assert result["factors"]["NOISE"]["decision"] == "FACTOR_STOP"
     assert result["factors"]["PREDICTIVE"]["stress_net_spread"] > 0.0
+    assert result["factors"]["PREDICTIVE"]["stress_net_top_minus_universe_return"] > 0.0
     assert result["factors"]["PREDICTIVE"]["single_year_profit_share"] <= 0.40
     assert result["factors"]["PREDICTIVE"]["single_instrument_profit_share"] <= 0.20
     assert result["sector_concentration_evaluated"] is False
@@ -120,16 +121,16 @@ def test_screen_uses_last_eligible_session_of_each_week() -> None:
 
 
 def test_factor_stops_when_stress_cost_destroys_edge() -> None:
-    frame = _predictive_frame(return_scale=0.0025)
-    # For a uniform [-1, 1] cross-section, this puts the top-bottom spread between
-    # the base 30 bps round trip and stress 60 bps round trip.
-    frame["forward_return_5d"] *= 1.0
+    frame = _predictive_frame(return_scale=0.005)
+    # The long-short diagnostic remains positive under stress, but the actual
+    # long-only top-quintile excess over the universe does not cover stress costs.
 
     result = run_qlib_factor_screen_v1(frame, factor_metadata=_metadata(), costs=COSTS)
 
     predictive = result["factors"]["PREDICTIVE"]
-    assert predictive["base_net_spread"] > 0.0
-    assert predictive["stress_net_spread"] <= 0.0
+    assert predictive["base_net_top_minus_universe_return"] > 0.0
+    assert predictive["stress_net_spread"] > 0.0
+    assert predictive["stress_net_top_minus_universe_return"] <= 0.0
     assert predictive["decision"] == "FACTOR_STOP"
     assert "EDGE_DESTROYED_BY_STRESS_COSTS" in predictive["failure_taxonomy"]
 
@@ -152,9 +153,9 @@ def test_factor_stops_when_profit_is_concentrated(concentration: str) -> None:
 
     assert predictive["decision"] == "FACTOR_STOP"
     expected = (
-        "SINGLE_YEAR_PROFIT_CONCENTRATION"
+        "ISOLATED_PERIOD_DOMINANCE"
         if concentration == "year"
-        else "SINGLE_INSTRUMENT_PROFIT_CONCENTRATION"
+        else "SINGLE_INSTRUMENT_DOMINANCE"
     )
     assert expected in predictive["failure_taxonomy"]
 

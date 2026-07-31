@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import inspect
 import json
 from pathlib import Path
 
@@ -10,6 +11,7 @@ import pytest
 
 import research_lab.research.real_qlib_eodhd_edge_discovery_pilot_v1 as pilot_module
 from research_lab.research.global_experiment_ledger_v1 import (
+    apply_global_experiment_ledger_operation_v1,
     build_global_experiment_ledger_policy_v1,
     build_global_experiment_ledger_v1,
 )
@@ -162,7 +164,7 @@ def _screen(*, continuing: int = 1) -> dict[str, object]:
         factor_id: {
             "factor_id": factor_id,
             "decision": "FACTOR_CONTINUE" if index < continuing else "FACTOR_STOP",
-            "failure_taxonomy": [] if index < continuing else ["INSUFFICIENT_EDGE_MAGNITUDE"],
+            "failure_taxonomy": [] if index < continuing else ["WEAK_RANK_IC_AND_ECONOMIC_SPREAD"],
             "median_rank_ic": 0.02 if index < continuing else 0.0,
             "stress_net_spread": 0.001 if index < continuing else -0.001,
         }
@@ -190,46 +192,48 @@ def _screen(*, continuing: int = 1) -> dict[str, object]:
     return result
 
 
-class FakeRuntime:
-    is_real_qlib = True
-    qlib_version = "0.9.7"
-
-    def __init__(self, *, alter_prepared_value: bool = False) -> None:
-        self.alter_prepared_value = alter_prepared_value
-
-    def prepare_segments(
-        self,
-        frame: pd.DataFrame,
-        *,
-        feature_columns: tuple[str, ...],
-        label_column: str,
-        segments: dict[str, tuple[str, str]],
-    ) -> dict[str, pd.DataFrame]:
-        dates = frame.index.get_level_values("datetime")
-        result = {
-            name: frame.loc[
-                (dates >= pd.Timestamp(start)) & (dates <= pd.Timestamp(end)),
-                [*feature_columns, label_column],
-            ].copy()
-            for name, (start, end) in segments.items()
-        }
-        if self.alter_prepared_value:
-            result["development"].iloc[0, 0] += 1.0
-        return result
+def _runtime_metadata(*, available: bool = True) -> dict[str, object]:
+    result: dict[str, object] = {
+        "version": "real_qlib_runtime_v1",
+        "status": "AVAILABLE" if available else "QLIB_RUNTIME_UNAVAILABLE",
+        "is_real_qlib": available,
+        "qlib_version": "0.9.7" if available else "UNAVAILABLE",
+        "python_version": "3.12.13",
+    }
+    result["runtime_sha256"] = _sha(result)
+    return result
 
 
-class UnavailableRuntime:
-    is_real_qlib = False
-    qlib_version = "UNAVAILABLE"
+def _prepare_segments(
+    frame: pd.DataFrame,
+    *,
+    feature_columns: tuple[str, ...],
+    label_column: str,
+    segments: dict[str, tuple[str, str]],
+) -> dict[str, pd.DataFrame]:
+    dates = frame.index.get_level_values("datetime")
+    return {
+        name: frame.loc[
+            (dates >= pd.Timestamp(start)) & (dates <= pd.Timestamp(end)),
+            [*feature_columns, label_column],
+        ].copy()
+        for name, (start, end) in segments.items()
+    }
 
 
 def _patch_pipeline(monkeypatch: pytest.MonkeyPatch, request: dict[str, object]) -> None:
+    monkeypatch.setattr(
+        pilot_module,
+        "build_real_qlib_runtime_metadata_v1",
+        lambda: _runtime_metadata(),
+    )
     monkeypatch.setattr(
         pilot_module,
         "load_eodhd_qlib_development_frame_v1",
         lambda loader_request: (_source_frame(), _dataset_metadata(request["expected_dataset_manifest_sha256"])),
     )
     monkeypatch.setattr(pilot_module, "compute_price_volume_factor_frame_v1", lambda source: _factor_frame())
+    monkeypatch.setattr(pilot_module, "prepare_real_qlib_segments_v1", _prepare_segments)
     monkeypatch.setattr(
         pilot_module,
         "run_qlib_factor_screen_v1",
@@ -245,7 +249,7 @@ def test_pilot_registers_eight_hypotheses_and_trials_without_mutating_previous(
     original = copy.deepcopy(previous)
     _patch_pipeline(monkeypatch, request)
 
-    result = run_real_qlib_eodhd_edge_discovery_pilot_v1(request, runtime=FakeRuntime())
+    result = run_real_qlib_eodhd_edge_discovery_pilot_v1(request)
 
     assert result["status"] == "EDGE_CANDIDATE_FOUND"
     assert result["new_hypothesis_count"] == 8
@@ -264,7 +268,7 @@ def test_each_trial_binds_dataset_catalog_intervals_costs_and_factor(
     request, _ = _write_request(tmp_path)
     _patch_pipeline(monkeypatch, request)
 
-    result = run_real_qlib_eodhd_edge_discovery_pilot_v1(request, runtime=FakeRuntime())
+    result = run_real_qlib_eodhd_edge_discovery_pilot_v1(request)
 
     for factor_id, trial in zip(FACTOR_IDS, result["new_trials"]):
         assert trial["parent_hypothesis_id"] == f"H-QLIB-PV-001-{factor_id}"
@@ -297,7 +301,7 @@ def test_rejects_wrong_ledger_hash_or_insufficient_budget_before_dataset_load(
     )
 
     with pytest.raises(ValueError, match="LEDGER_BINDING_FAILED"):
-        run_real_qlib_eodhd_edge_discovery_pilot_v1(request, runtime=FakeRuntime())
+        run_real_qlib_eodhd_edge_discovery_pilot_v1(request)
 
 
 def test_rejects_any_previous_sealed_oos_consumption(
@@ -311,13 +315,86 @@ def test_rejects_any_previous_sealed_oos_consumption(
     request, _ = _write_request(tmp_path, ledger)
 
     with pytest.raises(ValueError, match="SEALED_OOS_CONTAMINATION"):
-        run_real_qlib_eodhd_edge_discovery_pilot_v1(request, runtime=FakeRuntime())
+        run_real_qlib_eodhd_edge_discovery_pilot_v1(request)
 
 
-def test_unavailable_runtime_returns_fail_closed_without_writes(tmp_path: Path) -> None:
+def test_unrelated_family_sealed_consumption_does_not_block_this_lineage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seed_root = tmp_path / "seed"
+    seed_root.mkdir()
+    seed_request, _ = _write_request(seed_root)
+    _patch_pipeline(monkeypatch, seed_request)
+    seed = run_real_qlib_eodhd_edge_discovery_pilot_v1(seed_request)
+    unrelated_trial = copy.deepcopy(seed["new_trials"][0])
+    unrelated_trial.pop("canonical_trial_sha256")
+    unrelated_trial["experiment_id"] = "UNRELATED-EXP-001"
+    unrelated_trial["strategy_family_id"] = "UNRELATED_FAMILY"
+    unrelated_trial["parent_hypothesis_id"] = "UNRELATED-HYP-001"
+    unrelated_trial["trial_status"] = "PARAMETERS_FROZEN"
+    unrelated_trial["canonical_trial_fingerprint"] = "a" * 64
+    unrelated_ledger = build_global_experiment_ledger_v1(
+        {
+            "version": "global_experiment_ledger_request_v1",
+            "ledger_id": "SHARED-GLOBAL-LEDGER-V1",
+            "policy": _policy(),
+            "trials": [unrelated_trial],
+            "m32a_contract_version": "research_objective_promotion_gate_v1",
+            "m32a_policy_sha256": "f" * 64,
+            "provenance": {"source": "unit_test"},
+        }
+    )
+    unrelated_ledger = apply_global_experiment_ledger_operation_v1(
+        {
+            "version": "global_experiment_ledger_operation_request_v1",
+            "previous_ledger": unrelated_ledger,
+            "previous_ledger_sha256": unrelated_ledger["canonical_ledger_sha256"],
+            "operation": {
+                "operation_id": "OP-UNRELATED-OOS",
+                "kind": "RECORD_SEALED_OOS_CONSUMPTION",
+                "consumption": {
+                    "trial_id": "UNRELATED-EXP-001",
+                    "dataset_id": "UNRELATED-DATASET",
+                    "dataset_version": "UNRELATED-V1",
+                    "dataset_sha256": "b" * 64,
+                    "interval_start": "1990-01-01",
+                    "interval_end": "1991-12-31",
+                    "strategy_specification_sha256": "c" * 64,
+                    "semantic_strategy_fingerprint": unrelated_trial["strategy_fingerprint"],
+                    "frozen_parameter_sha256": "d" * 64,
+                },
+            },
+            "provenance": {"source": "unit_test"},
+        }
+    )
+    run_root = tmp_path / "run"
+    run_root.mkdir()
+    request, _ = _write_request(run_root, unrelated_ledger)
+    _patch_pipeline(monkeypatch, request)
+
+    result = run_real_qlib_eodhd_edge_discovery_pilot_v1(request)
+
+    assert result["status"] in {"EDGE_CANDIDATE_FOUND", "NO_PRICE_VOLUME_EDGE"}
+    assert result["new_trial_count"] == 8
+
+
+def test_public_pilot_has_no_caller_runtime_injection() -> None:
+    assert "runtime" not in inspect.signature(run_real_qlib_eodhd_edge_discovery_pilot_v1).parameters
+
+
+def test_unavailable_runtime_returns_fail_closed_without_writes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     request, previous = _write_request(tmp_path)
+    monkeypatch.setattr(
+        pilot_module,
+        "build_real_qlib_runtime_metadata_v1",
+        lambda: _runtime_metadata(available=False),
+    )
 
-    result = run_real_qlib_eodhd_edge_discovery_pilot_v1(request, runtime=UnavailableRuntime())
+    result = run_real_qlib_eodhd_edge_discovery_pilot_v1(request)
 
     assert result["status"] == "QLIB_RUNTIME_UNAVAILABLE"
     assert result["new_hypothesis_count"] == 0
@@ -332,11 +409,16 @@ def test_preparation_parity_failure_prevents_ledger_operations(
 ) -> None:
     request, previous = _write_request(tmp_path)
     _patch_pipeline(monkeypatch, request)
+    original_prepare = pilot_module.prepare_real_qlib_segments_v1
 
-    result = run_real_qlib_eodhd_edge_discovery_pilot_v1(
-        request,
-        runtime=FakeRuntime(alter_prepared_value=True),
-    )
+    def alter_prepared(*args: object, **kwargs: object) -> dict[str, pd.DataFrame]:
+        prepared = original_prepare(*args, **kwargs)
+        prepared["development"].iloc[0, 0] += 1.0
+        return prepared
+
+    monkeypatch.setattr(pilot_module, "prepare_real_qlib_segments_v1", alter_prepared)
+
+    result = run_real_qlib_eodhd_edge_discovery_pilot_v1(request)
 
     assert result["status"] == "QLIB_PREPARATION_PARITY_FAILED"
     assert result["new_hypothesis_count"] == 0
@@ -351,7 +433,7 @@ def test_success_has_zero_forbidden_action_counters(
     request, _ = _write_request(tmp_path)
     _patch_pipeline(monkeypatch, request)
 
-    result = run_real_qlib_eodhd_edge_discovery_pilot_v1(request, runtime=FakeRuntime())
+    result = run_real_qlib_eodhd_edge_discovery_pilot_v1(request)
 
     assert result["provider_calls_used"] == 0
     assert result["broker_calls_used"] == 0
@@ -360,3 +442,105 @@ def test_success_has_zero_forbidden_action_counters(
     assert result["knihomol_used"] is False
     assert result["rd_agent_used"] is False
     assert result["sealed_oos_opened"] is False
+
+
+def test_second_semantically_identical_pilot_is_durably_rejected_as_duplicate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_root = tmp_path / "first"
+    first_root.mkdir()
+    first_request, _ = _write_request(first_root)
+    _patch_pipeline(monkeypatch, first_request)
+    first = run_real_qlib_eodhd_edge_discovery_pilot_v1(first_request)
+
+    second_root = tmp_path / "second"
+    second_root.mkdir()
+    second_request, _ = _write_request(second_root, first["updated_ledger"])
+    second_request["pilot_id"] = "QLIB-PV-002"
+    _patch_pipeline(monkeypatch, second_request)
+
+    second = run_real_qlib_eodhd_edge_discovery_pilot_v1(second_request)
+
+    assert second["status"] == "NO_PRICE_VOLUME_EDGE"
+    assert second["new_trial_count"] == 8
+    assert {trial["trial_status"] for trial in second["new_trials"]} == {"REJECTED_DUPLICATE"}
+    assert second["economic_scorecard"]["continuing_factor_ids"] == []
+    assert all(
+        "REJECTED_DUPLICATE" in metrics["failure_taxonomy"]
+        for metrics in second["economic_scorecard"]["factor_metrics"].values()
+    )
+
+
+def test_materially_changed_repeat_is_durably_rejected_as_near_duplicate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_root = tmp_path / "first"
+    first_root.mkdir()
+    first_request, _ = _write_request(first_root)
+    _patch_pipeline(monkeypatch, first_request)
+    first = run_real_qlib_eodhd_edge_discovery_pilot_v1(first_request)
+    prior_trial = copy.deepcopy(first["new_trials"][0])
+    prior_trial.pop("canonical_trial_sha256")
+    prior_trial["experiment_id"] = "PRIOR-MOM-12-1"
+    prior_trial["parent_hypothesis_id"] = "PRIOR-HYP-MOM-12-1"
+    prior_trial["parameter_configuration"]["legacy_variant"] = "A"
+    prior_trial["parameter_space_sha256"] = _sha(prior_trial["parameter_configuration"])
+    prior_trial["canonical_trial_fingerprint"] = "a" * 64
+    prior_ledger = build_global_experiment_ledger_v1(
+        {
+            "version": "global_experiment_ledger_request_v1",
+            "ledger_id": "QLIB-PV-NEAR-LEDGER-V1",
+            "policy": _policy(),
+            "trials": [prior_trial],
+            "m32a_contract_version": "research_objective_promotion_gate_v1",
+            "m32a_policy_sha256": "f" * 64,
+            "provenance": {"source": "unit_test"},
+        }
+    )
+
+    second_root = tmp_path / "second"
+    second_root.mkdir()
+    second_request, _ = _write_request(second_root, prior_ledger)
+    second_request["pilot_id"] = "QLIB-PV-002"
+    _patch_pipeline(monkeypatch, second_request)
+
+    second = run_real_qlib_eodhd_edge_discovery_pilot_v1(second_request)
+
+    assert second["status"] == "NO_PRICE_VOLUME_EDGE"
+    assert second["new_trials"][0]["trial_status"] == "REJECTED_NEAR_DUPLICATE"
+    assert "REJECTED_NEAR_DUPLICATE" in second["economic_scorecard"]["factor_metrics"][
+        FACTOR_IDS[0]
+    ]["failure_taxonomy"]
+
+
+def test_mid_loop_ledger_failure_returns_durable_accounting_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request, _ = _write_request(tmp_path)
+    _patch_pipeline(monkeypatch, request)
+    original_apply = pilot_module._apply_operation
+    call_count = 0
+
+    def fail_fourth(previous: dict[str, object], *, operation: dict[str, object]) -> dict[str, object]:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 4:
+            raise ValueError("LEDGER_BINDING_FAILED")
+        return original_apply(previous, operation=operation)
+
+    monkeypatch.setattr(pilot_module, "_apply_operation", fail_fourth)
+
+    result = run_real_qlib_eodhd_edge_discovery_pilot_v1(request)
+
+    assert result["status"] == "LEDGER_BINDING_FAILED"
+    assert result["accounting_complete"] is False
+    assert result["attempted_factor_ids"] == list(FACTOR_IDS)
+    assert result["accounted_factor_ids"] == [FACTOR_IDS[0]]
+    assert result["new_hypothesis_count"] == 2
+    assert result["new_trial_count"] == 1
+    assert result["factor_screen"]["factor_count"] == 8
+    assert result["economic_scorecard"]["status"] == "LEDGER_BINDING_FAILED"
+    assert len(result["canonical_result_sha256"]) == 64
