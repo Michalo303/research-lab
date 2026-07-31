@@ -33,6 +33,9 @@ from research_lab.research.minervini_immutable_pilot_artifacts_v1 import (
 from research_lab.research.real_qlib_eodhd_edge_discovery_pilot_v1 import (
     run_real_qlib_eodhd_edge_discovery_pilot_v1,
 )
+from research_lab.research.eodhd_us_equity_universe_acquisition_v1 import (
+    run_eodhd_us_equity_universe_acquisition_v1,
+)
 
 __all__ = [
     "MinerviniCoreConfigV1",
@@ -48,6 +51,7 @@ __all__ = [
     "run_minervini_eodhd_acquisition_pilot_v2",
     "run_minervini_portfolio_v1",
     "run_real_qlib_eodhd_edge_discovery_pilot_v1",
+    "run_eodhd_us_equity_universe_acquisition_v1",
     "replay_minervini_pilot_artifacts_v1",
     "validate_minervini_symbol_splits_v2",
 ]
