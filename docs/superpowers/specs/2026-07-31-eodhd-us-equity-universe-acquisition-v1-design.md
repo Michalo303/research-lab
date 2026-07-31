@@ -64,7 +64,7 @@ Artifacts include:
 
 Endpoint identities never contain the API token. Errors, logs, checkpoints, manifests, and returned results never contain credentials or unsanitized URLs.
 
-Every response is validated before normalization: HTTPS host and path, HTTP status, response size, UTF-8 JSON, strictly ordered unique dates, requested interval, finite positive OHLC and adjusted close, non-negative volume, and valid OHLC relationships. Empty histories are recorded as resolved empty coverage rather than silently omitted. Schema-invalid data is rejected.
+Every response is validated before normalization: HTTPS host and path, HTTP status, response size, UTF-8 JSON, strictly ordered unique dates, and requested interval. Finite positive OHLC and adjusted close, non-negative volume, and valid OHLC relationships are mandatory for SPY, symbol histories, and bulk rows on supported major exchanges. Bulk rows on excluded exchanges are validated only for identity, uniqueness, and requested date because their prices are never admitted to membership or the dataset. Empty histories are recorded as resolved empty coverage rather than silently omitted. Schema-invalid data inside the admitted universe is rejected.
 
 ## 5. Resume and failure behavior
 

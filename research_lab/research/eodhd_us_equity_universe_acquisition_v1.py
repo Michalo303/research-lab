@@ -671,9 +671,12 @@ def _validate_bulk_response(raw: bytes, *, expected_date: str) -> tuple[list[dic
         if identity in seen_codes:
             raise ValueError("bulk identities must be unique.")
         seen_codes.add(identity)
+        if exchange not in SUPPORTED_EXCHANGE_MICS:
+            _validate_eod_date(item, expected_date=expected_date)
+            continue
         validated = _normalize_eod_row(item, expected_date=expected_date)
         normalized.append({"code": code, "exchange_short_name": exchange, **validated})
-    return normalized, len(normalized)
+    return normalized, len(payload)
 
 
 def _normalize_eod_row(
@@ -681,14 +684,7 @@ def _normalize_eod_row(
     *,
     expected_date: str | None,
 ) -> dict[str, object]:
-    day = item.get("date")
-    if not isinstance(day, str):
-        raise ValueError("EOD date is invalid.")
-    parsed = date.fromisoformat(day)
-    if not date.fromisoformat(START_DATE) <= parsed <= date.fromisoformat(END_DATE):
-        raise ValueError("EOD date is outside the approved interval.")
-    if expected_date is not None and day != expected_date:
-        raise ValueError("EOD date does not match the requested date.")
+    day = _validate_eod_date(item, expected_date=expected_date)
     values = {
         field: _finite_number(item.get(field), field)
         for field in ("open", "high", "low", "close", "adjusted_close", "volume")
@@ -706,6 +702,22 @@ def _normalize_eod_row(
     ):
         raise ValueError("EOD OHLC relationship is invalid.")
     return {"date": day, **values}
+
+
+def _validate_eod_date(
+    item: Mapping[str, object],
+    *,
+    expected_date: str | None,
+) -> str:
+    day = item.get("date")
+    if not isinstance(day, str):
+        raise ValueError("EOD date is invalid.")
+    parsed = date.fromisoformat(day)
+    if not date.fromisoformat(START_DATE) <= parsed <= date.fromisoformat(END_DATE):
+        raise ValueError("EOD date is outside the approved interval.")
+    if expected_date is not None and day != expected_date:
+        raise ValueError("EOD date does not match the requested date.")
+    return day
 
 
 def _json_list(raw: bytes) -> list[Any]:

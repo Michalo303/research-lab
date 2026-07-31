@@ -119,7 +119,7 @@ Use a private downloader monkeypatch; the public function accepts no API key or 
 - a token, encoded token, and token-bearing URL never occur in output, exceptions, checkpoint rows, or captured stdout;
 - HTTP 429/5xx/timeout retries once, HTTP 4xx other than 429 does not retry, and no third attempt occurs;
 - the executor refuses the next request before its call cost would exceed 90,000;
-- response-size, host/path drift, malformed JSON, unordered/duplicate/out-of-range dates, non-finite or invalid OHLC, non-positive adjusted close, and negative volume fail closed;
+- response-size, host/path drift, malformed JSON, unordered/duplicate/out-of-range dates, and non-finite or invalid OHLC on admitted major-exchange rows fail closed; excluded-exchange bulk rows validate identity/date only and cannot enter membership;
 - zero-row history becomes `RESOLVED_EMPTY`, while an unresolved response remains a failure;
 - resume verifies the canonical request hash and all existing artifact hashes before skipping a request;
 - altered staged evidence returns `STAGING_HASH_MISMATCH` without overwriting it.
