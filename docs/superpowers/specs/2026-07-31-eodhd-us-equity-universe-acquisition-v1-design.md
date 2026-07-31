@@ -36,16 +36,16 @@ The request sequence is:
 1. active common-stock list;
 2. delisted common-stock list;
 3. SPY daily history used only to derive the last observed US session of each month;
-4. 204 US bulk EOD snapshots for those month-end sessions from 2006 through 2022;
+4. 612 exchange-specific bulk EOD snapshots: NASDAQ, NYSE, and AMEX for each of the 204 month-end sessions from 2006 through 2022;
 5. one full EOD history request for every unambiguous major-exchange common-stock code.
 
-The nominal consumption is approximately 43,168 call units. Retrying every request once remains below the 90,000 ceiling. The executor stops before a request that would breach the ceiling.
+The nominal consumption is approximately 83,968 call units. The remaining approximately 6,000 units are a bounded retry reserve; one transient retry is allowed per request only while the global 90,000-unit ceiling still has capacity. The executor atomically refuses the next request that would breach the ceiling.
 
 ## 3. Identity and point-in-time membership
 
 Active and delisted lists are normalized by provider code, exchange, currency, type, and ISIN. Exact duplicates collapse. A code with more than one distinct identity, conflicting active/delisted status, unsafe characters, non-USD currency, non-common-stock type, or unsupported exchange is excluded and reported; it is never guessed.
 
-Monthly bulk snapshots provide historical `exchange_short_name`. A code is eligible for the final dataset only if it appears on a supported major exchange in at least one snapshot. Its normalized CSV is conservatively trimmed to the interval from its first verified major-exchange month-end through its last verified major-exchange month-end. A material internal membership gap while EOD observations continue rejects that identity as ambiguous. This avoids treating known pre-uplisting or post-delisting rows as major-exchange observations.
+Monthly bulk snapshot endpoint identity provides the historical exchange: separate requests target NASDAQ, NYSE, and AMEX. EODHD labels rows inside each response with the aggregate value `US`, so that payload field is never treated as granular exchange authority. A code is eligible only if it appears in at least one exchange-specific snapshot. Its normalized CSV is conservatively trimmed to the interval from its first verified major-exchange month-end through its last verified major-exchange month-end. Appearance on multiple exchange endpoints for one month or a material internal membership gap rejects the identity as ambiguous. This avoids treating known pre-uplisting or post-delisting rows as major-exchange observations.
 
 Monthly membership is an approximation, not exact daily listing history. The result must disclose this limitation and may not claim exact point-in-time exchange membership. The one-month conservative lag and ambiguity rejection are preferred to inventing missing daily exchange lineage.
 
@@ -64,7 +64,7 @@ Artifacts include:
 
 Endpoint identities never contain the API token. Errors, logs, checkpoints, manifests, and returned results never contain credentials or unsanitized URLs.
 
-Every response is validated before normalization: HTTPS host and path, HTTP status, response size, UTF-8 JSON, strictly ordered unique dates, and requested interval. Finite positive OHLC and adjusted close, non-negative volume, and valid OHLC relationships are mandatory for SPY, symbol histories, and bulk rows on supported major exchanges. Bulk rows on excluded exchanges are validated only for identity, uniqueness, and requested date because their prices are never admitted to membership or the dataset. Empty histories are recorded as resolved empty coverage rather than silently omitted. Schema-invalid data inside the admitted universe is rejected.
+Every response is validated before normalization: HTTPS host and exact exchange-specific path, HTTP status, response size, UTF-8 JSON, strictly ordered unique dates, and requested interval. Finite positive OHLC and adjusted close, non-negative volume, and valid OHLC relationships are mandatory for SPY and every per-symbol history used by the dataset. Monthly bulk responses are membership evidence only: their bounded code, uniqueness, aggregate `US` marker, requested date, and exchange-specific endpoint identity are validated, while their unused price fields are not treated as authoritative. Index, fund, or OTC codes cannot enter membership because membership is intersected with the approved active/delisted common-stock identity universe. Empty histories are recorded as resolved empty coverage rather than silently omitted. Schema-invalid data used by the dataset is rejected.
 
 ## 5. Resume and failure behavior
 

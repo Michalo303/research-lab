@@ -17,6 +17,7 @@ from research_lab.research.eodhd_qlib_dataset_v1 import (
     _validate_manifest,
 )
 from research_lab.research.eodhd_us_equity_universe_acquisition_v1 import (
+    BULK_EXCHANGES,
     END_DATE,
     SUPPORTED_EXCHANGE_MICS,
 )
@@ -154,25 +155,43 @@ def build_point_in_time_qlib_manifest_v1(
         raise ValueError("development SPY session coverage is empty.")
 
     bulk_by_date: dict[str, dict[str, str]] = {}
-    for bulk_path in sorted((root / "raw" / "bulk").glob("*.json.gz")):
+    snapshots_by_date: dict[str, set[str]] = {}
+    for bulk_path in sorted((root / "raw" / "bulk").rglob("*.json.gz")):
+        relative = bulk_path.relative_to(root / "raw" / "bulk")
+        if len(relative.parts) != 2 or relative.parts[0] not in BULK_EXCHANGES:
+            raise ValueError("bulk exchange snapshot identity is invalid.")
+        exchange = relative.parts[0]
         month_end = bulk_path.name.removesuffix(".json.gz")
         payload = json.loads(gzip.decompress(bulk_path.read_bytes()).decode("utf-8"))
         if not isinstance(payload, list):
             raise ValueError("bulk artifact is invalid.")
-        by_code: dict[str, str] = {}
-        duplicates: set[str] = set()
+        if exchange in snapshots_by_date.setdefault(month_end, set()):
+            raise ValueError("duplicate bulk exchange snapshot is invalid.")
+        snapshots_by_date[month_end].add(exchange)
+        by_code = bulk_by_date.setdefault(month_end, {})
+        seen_in_file: set[str] = set()
         for row in payload:
             if not isinstance(row, dict):
                 raise ValueError("bulk row is invalid.")
             code = str(row.get("code", "")).strip().upper()
-            exchange = str(row.get("exchange_short_name", "")).strip().upper()
-            if code in by_code and by_code[code] != exchange:
-                duplicates.add(code)
-            by_code[code] = exchange
-        for code in duplicates:
-            by_code[code] = "AMBIGUOUS"
-        bulk_by_date[month_end] = by_code
+            provider_exchange = str(row.get("exchange_short_name", "")).strip().upper()
+            if not code or provider_exchange != "US" or code in seen_in_file:
+                raise ValueError("bulk row identity is invalid.")
+            seen_in_file.add(code)
+            if code not in identity_by_code:
+                continue
+            previous_exchange = by_code.get(code)
+            by_code[code] = (
+                exchange
+                if previous_exchange in {None, exchange}
+                else "AMBIGUOUS"
+            )
     month_ends = sorted(bulk_by_date)
+    if any(
+        snapshots_by_date.get(month_end) != set(BULK_EXCHANGES)
+        for month_end in month_ends
+    ):
+        raise ValueError("bulk exchange snapshot coverage is incomplete.")
     membership = _build_membership_intervals(
         identities=identities,
         month_ends=month_ends,
