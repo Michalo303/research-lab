@@ -266,6 +266,19 @@ def apply_global_experiment_ledger_operation_v1(request: dict[str, object]) -> d
     result.pop("canonical_ledger_sha256", None); result["canonical_ledger_sha256"] = _sha(result)
     return copy.deepcopy(result)
 
+
+def validate_global_experiment_ledger_v1(ledger: dict[str, object]) -> dict[str, object]:
+    """Validate the full canonical ledger and every nested authority binding."""
+
+    value = _map(ledger, "ledger")
+    declared = _required_hash(value.get("canonical_ledger_sha256"), "canonical_ledger_sha256")
+    material = copy.deepcopy(value)
+    material.pop("canonical_ledger_sha256")
+    if declared != _sha(material):
+        raise ValueError("canonical_ledger_sha256 mismatch.")
+    _validate_previous_ledger(value)
+    return copy.deepcopy(value)
+
 def build_semantic_strategy_fingerprint_v1(semantics: dict[str, object]) -> str:
     value = _map(semantics, "semantics")
     required = {"economic_mechanism", "participant_game_hypothesis", "market_scope", "instrument_types", "timeframe", "universe_rules", "ranking_rules", "entry_rules", "exit_rules", "sizing_rules", "regime_rules", "feature_requirements", "display_name", "parameters"}

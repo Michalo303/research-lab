@@ -15,6 +15,7 @@ RUNTIME_VERSION = "real_qlib_runtime_v1"
 PARITY_VERSION = "real_qlib_preparation_parity_v1"
 QLIB_RUNTIME_UNAVAILABLE = "QLIB_RUNTIME_UNAVAILABLE"
 QLIB_PREPARATION_PARITY_FAILED = "QLIB_PREPARATION_PARITY_FAILED"
+PINNED_QLIB_VERSION = "0.9.7"
 
 
 class QlibRuntimeUnavailable(RuntimeError):
@@ -83,11 +84,13 @@ def build_real_qlib_runtime_metadata_v1() -> dict[str, object]:
         version = getattr(runtime.qlib, "__version__", None)
         if not isinstance(version, str) or not version.strip():
             raise QlibRuntimeUnavailable(QLIB_RUNTIME_UNAVAILABLE)
+        observed_version = version.strip()
+        available = observed_version == PINNED_QLIB_VERSION
         result = {
             "version": RUNTIME_VERSION,
-            "status": "AVAILABLE",
-            "is_real_qlib": True,
-            "qlib_version": version.strip(),
+            "status": "AVAILABLE" if available else QLIB_RUNTIME_UNAVAILABLE,
+            "is_real_qlib": available,
+            "qlib_version": observed_version,
             "python_version": platform.python_version(),
         }
     result["runtime_sha256"] = _canonical_sha256(result)
@@ -107,6 +110,8 @@ def prepare_real_qlib_segments_v1(
     selected_runtime = _load_real_runtime()
     if getattr(selected_runtime, "is_real_qlib", None) is not True:
         raise ValueError("runtime must identify itself as real Qlib.")
+    if getattr(getattr(selected_runtime, "qlib", None), "__version__", None) != PINNED_QLIB_VERSION:
+        raise QlibRuntimeUnavailable(QLIB_RUNTIME_UNAVAILABLE)
     prepare = getattr(selected_runtime, "prepare_segments", None)
     if not callable(prepare):
         raise QlibRuntimeUnavailable(QLIB_RUNTIME_UNAVAILABLE)

@@ -304,7 +304,31 @@ def test_rejects_wrong_ledger_hash_or_insufficient_budget_before_dataset_load(
         run_real_qlib_eodhd_edge_discovery_pilot_v1(request)
 
 
-def test_rejects_any_previous_sealed_oos_consumption(
+def test_rejects_rehashed_ledger_with_corrupt_inner_policy_before_observing_data(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger = _ledger()
+    ledger["policy"]["max_global_trials"] = 99
+    ledger.pop("canonical_ledger_sha256")
+    ledger["canonical_ledger_sha256"] = _sha(ledger)
+    request, _ = _write_request(tmp_path, ledger)
+    monkeypatch.setattr(
+        pilot_module,
+        "build_real_qlib_runtime_metadata_v1",
+        lambda: _runtime_metadata(),
+    )
+    monkeypatch.setattr(
+        pilot_module,
+        "load_eodhd_qlib_development_frame_v1",
+        lambda loader_request: pytest.fail("corrupt ledger must fail before dataset observation"),
+    )
+
+    with pytest.raises(ValueError, match="LEDGER_BINDING_FAILED"):
+        run_real_qlib_eodhd_edge_discovery_pilot_v1(request)
+
+
+def test_rejects_malformed_sealed_oos_record_as_invalid_ledger(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -313,6 +337,60 @@ def test_rejects_any_previous_sealed_oos_consumption(
     ledger.pop("canonical_ledger_sha256")
     ledger["canonical_ledger_sha256"] = _sha(ledger)
     request, _ = _write_request(tmp_path, ledger)
+
+    with pytest.raises(ValueError, match="LEDGER_BINDING_FAILED"):
+        run_real_qlib_eodhd_edge_discovery_pilot_v1(request)
+
+
+def test_rejects_valid_sealed_consumption_from_this_strategy_lineage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seed_root = tmp_path / "seed"
+    seed_root.mkdir()
+    seed_request, _ = _write_request(seed_root)
+    _patch_pipeline(monkeypatch, seed_request)
+    seed = run_real_qlib_eodhd_edge_discovery_pilot_v1(seed_request)
+    consumed_trial = copy.deepcopy(seed["new_trials"][0])
+    consumed_trial.pop("canonical_trial_sha256")
+    consumed_trial["trial_status"] = "PARAMETERS_FROZEN"
+    ledger = build_global_experiment_ledger_v1(
+        {
+            "version": "global_experiment_ledger_request_v1",
+            "ledger_id": "QLIB-PV-CONSUMED-LEDGER-V1",
+            "policy": _policy(),
+            "trials": [consumed_trial],
+            "m32a_contract_version": "research_objective_promotion_gate_v1",
+            "m32a_policy_sha256": "f" * 64,
+            "provenance": {"source": "unit_test"},
+        }
+    )
+    ledger = apply_global_experiment_ledger_operation_v1(
+        {
+            "version": "global_experiment_ledger_operation_request_v1",
+            "previous_ledger": ledger,
+            "previous_ledger_sha256": ledger["canonical_ledger_sha256"],
+            "operation": {
+                "operation_id": "OP-THIS-LINEAGE-OOS",
+                "kind": "RECORD_SEALED_OOS_CONSUMPTION",
+                "consumption": {
+                    "trial_id": consumed_trial["experiment_id"],
+                    "dataset_id": "SEALED-PV",
+                    "dataset_version": "SEALED-PV-V1",
+                    "dataset_sha256": "b" * 64,
+                    "interval_start": "2023-01-01",
+                    "interval_end": "2026-06-30",
+                    "strategy_specification_sha256": "c" * 64,
+                    "semantic_strategy_fingerprint": consumed_trial["strategy_fingerprint"],
+                    "frozen_parameter_sha256": "d" * 64,
+                },
+            },
+            "provenance": {"source": "unit_test"},
+        }
+    )
+    run_root = tmp_path / "run"
+    run_root.mkdir()
+    request, _ = _write_request(run_root, ledger)
 
     with pytest.raises(ValueError, match="SEALED_OOS_CONTAMINATION"):
         run_real_qlib_eodhd_edge_discovery_pilot_v1(request)
@@ -358,8 +436,8 @@ def test_unrelated_family_sealed_consumption_does_not_block_this_lineage(
                     "dataset_id": "UNRELATED-DATASET",
                     "dataset_version": "UNRELATED-V1",
                     "dataset_sha256": "b" * 64,
-                    "interval_start": "1990-01-01",
-                    "interval_end": "1991-12-31",
+                    "interval_start": "2023-01-01",
+                    "interval_end": "2026-06-30",
                     "strategy_specification_sha256": "c" * 64,
                     "semantic_strategy_fingerprint": unrelated_trial["strategy_fingerprint"],
                     "frozen_parameter_sha256": "d" * 64,

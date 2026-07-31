@@ -10,7 +10,10 @@ import pandas as pd
 
 from research_lab.research.edge_discovery_scorecard_v1 import build_edge_discovery_scorecard_v1
 from research_lab.research.eodhd_qlib_dataset_v1 import load_eodhd_qlib_development_frame_v1
-from research_lab.research.global_experiment_ledger_v1 import apply_global_experiment_ledger_operation_v1
+from research_lab.research.global_experiment_ledger_v1 import (
+    apply_global_experiment_ledger_operation_v1,
+    validate_global_experiment_ledger_v1,
+)
 from research_lab.research.price_volume_factor_catalog_v1 import (
     FACTOR_DEFINITIONS_V1,
     build_price_volume_factor_catalog_metadata_v1,
@@ -373,6 +376,10 @@ def _read_and_preflight_ledger(request: dict[str, Any]) -> dict[str, Any]:
         {key: value for key, value in raw.items() if key != "canonical_ledger_sha256"}
     ) != expected:
         raise ValueError(LEDGER_BINDING_FAILED)
+    try:
+        raw = validate_global_experiment_ledger_v1(raw)
+    except ValueError as exc:
+        raise ValueError(LEDGER_BINDING_FAILED) from exc
     policy = raw.get("policy")
     trials = raw.get("trials")
     hypotheses = raw.get("hypotheses", [])
@@ -416,11 +423,6 @@ def _sealed_oos_contaminates_request(
         if trial.get("strategy_family_id") == STRATEGY_FAMILY_ID:
             return True
         if record.get("dataset_version") == sealed["dataset_version"]:
-            return True
-        if (
-            record.get("interval_start") == sealed["start"]
-            and record.get("interval_end") == sealed["end"]
-        ):
             return True
     consumed_statuses = {"SEALED_OOS_CONSUMED", "SEALED_OOS_CONTAMINATED"}
     for trial in trials:

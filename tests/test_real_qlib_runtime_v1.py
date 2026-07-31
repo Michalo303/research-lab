@@ -80,6 +80,7 @@ def test_internally_loaded_real_runtime_prepares_closed_segments(
 ) -> None:
     class FakeRuntime:
         is_real_qlib = True
+        qlib = type("Qlib", (), {"__version__": "0.9.7"})()
 
         @staticmethod
         def prepare_segments(
@@ -131,6 +132,34 @@ def test_runtime_metadata_is_deterministic_and_path_free(
     assert len(first["runtime_sha256"]) == 64
     assert str(tmp_path) not in encoded
     assert "do-not-leak" not in encoded
+
+
+def test_drifted_qlib_version_is_unavailable_before_preparation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class DriftedRuntime:
+        is_real_qlib = True
+        qlib = type("Qlib", (), {"__version__": "0.9.8"})()
+
+        @staticmethod
+        def prepare_segments(*args: object, **kwargs: object) -> dict[str, pd.DataFrame]:
+            pytest.fail("drifted Qlib must not prepare data")
+
+    monkeypatch.setattr("importlib.util.find_spec", lambda name: object())
+    monkeypatch.setattr(runtime_module, "_load_real_runtime", lambda: DriftedRuntime())
+
+    metadata = build_real_qlib_runtime_metadata_v1()
+
+    assert metadata["status"] == "QLIB_RUNTIME_UNAVAILABLE"
+    assert metadata["is_real_qlib"] is False
+    assert metadata["qlib_version"] == "0.9.8"
+    with pytest.raises(QlibRuntimeUnavailable, match="QLIB_RUNTIME_UNAVAILABLE"):
+        prepare_real_qlib_segments_v1(
+            _frame(),
+            feature_columns=("MOM_6_1",),
+            label_column="forward_return_5d",
+            segments=SEGMENTS,
+        )
 
 
 def test_preparation_parity_passes_only_for_exact_segments() -> None:

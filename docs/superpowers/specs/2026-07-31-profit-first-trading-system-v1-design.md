@@ -184,7 +184,7 @@ The final development candidate must pass rolling walk-forward analysis, DSR, PB
 
 The candidate is frozen before sealed OOS: code SHA, data hashes, universe rules, factor definitions, model, parameters, portfolio rules, risk rules, costs, and trial accounting.
 
-Sealed OOS is opened once. Failure does not authorize repair against sealed results. `MINIMUM_VIABLE_PORTFOLIO_GATE_PASS` is the lowest state that can proceed to shadow review; live scale beyond the initial bounded pilot requires the stricter applicable promotion and human-approval gates.
+Sealed OOS is opened once per immutable dataset/strategy lineage. Contamination matching uses explicit lineage or dataset identity, never date equality alone. Failure does not authorize repair against sealed results. `MINIMUM_VIABLE_PORTFOLIO_GATE_PASS` is the lowest state that can proceed to shadow review; live scale beyond the initial bounded pilot requires the stricter applicable promotion and human-approval gates.
 
 ## 12. Bounded use of existing agents and orchestration
 

@@ -207,7 +207,7 @@ def build_real_qlib_preparation_parity_v1(
 
 The production runtime must import `qlib`, `DataHandlerLP`, and `DatasetH`; set `is_real_qlib = True`; convert columns to Qlib's `feature` and `label` column groups; build `DataHandlerLP.from_df(grouped_frame)`; build `DatasetH(handler=handler, segments=segments)`; and call `dataset.prepare(segment, col_set=["feature", "label"], data_key=DataHandlerLP.DK_L)` for each segment. The returned frames must restore flat feature names plus the single label name, sort `(datetime, instrument)`, and contain no row beyond that segment's end. Qlib owns segment preparation, while the explicit factor equations remain independently inspectable. Before screening, parity must compare every expected segment index, ordered column, finite/non-finite mask, and value bit-for-bit with the direct pandas interval slice; there is no numerical tolerance. The pilot must then deterministically left-join the original boolean `eligible` series back onto each prepared segment by `(datetime, instrument)` and reject missing or duplicate joins.
 
-Runtime metadata must include only `version`, `status`, `is_real_qlib`, `qlib_version`, `python_version`, and `runtime_sha256`. Parity metadata must include only version, `status=PASS`, segment row counts, source/prepared frame hashes, and its canonical SHA-256. Do not include paths or environment values. A missing package returns `QLIB_RUNTIME_UNAVAILABLE`; an import/runtime failure raises `QlibRuntimeUnavailable` with a bounded message that contains no filesystem path.
+Runtime metadata must include only `version`, `status`, `is_real_qlib`, `qlib_version`, `python_version`, and `runtime_sha256`. Parity metadata must include only version, `status=PASS`, segment row counts, source/prepared frame hashes, and its canonical SHA-256. Do not include paths or environment values. A missing package or any installed version other than exactly `0.9.7` returns `QLIB_RUNTIME_UNAVAILABLE` before data loading; direct segment preparation enforces the same pin. An import/runtime failure raises `QlibRuntimeUnavailable` with a bounded message that contains no filesystem path.
 
 - [ ] **Step 5: Run tests and verify GREEN**
 
@@ -642,7 +642,7 @@ def run_real_qlib_eodhd_edge_discovery_pilot_v1(
 The function must:
 
 1. validate the frozen top-level request schema and exact default universe/cost values;
-2. read and canonical-hash-verify the previous ledger without mutating it;
+2. read and canonical-hash-verify the previous ledger without mutating it, including its canonical policy, M32A binding, every trial/hypothesis hash, and every sealed-consumption hash before runtime or data loading;
 3. reject fewer than eight remaining global trial slots, `PRICE_VOLUME_FACTOR` family slots, or total hypothesis allocations;
 4. load the development-only EODHD frame;
 5. compute the frozen factor catalog and label;
