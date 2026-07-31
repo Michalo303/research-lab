@@ -14,6 +14,7 @@ from research_lab.research.global_experiment_ledger_v1 import (
     build_material_trial_configuration_sha256_v1,
     build_semantic_strategy_fingerprint_v1,
     export_multiple_testing_accounting_v1,
+    validate_global_experiment_ledger_v1,
 )
 
 
@@ -90,6 +91,18 @@ def _request() -> dict[str, object]:
         "m32a_policy_sha256": "f" * 64,
         "provenance": {"source": "unit_test"},
     }
+
+
+def test_authoritative_validator_rejects_rehashed_outer_ledger_with_corrupt_inner_trial() -> None:
+    ledger = build_global_experiment_ledger_v1(_request())
+    ledger["trials"][0]["metrics"]["sharpe"] = 99.0
+    ledger.pop("canonical_ledger_sha256")
+    ledger["canonical_ledger_sha256"] = hashlib.sha256(
+        json.dumps(ledger, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    ).hexdigest()
+
+    with pytest.raises(ValueError, match="canonical_trial_sha256"):
+        validate_global_experiment_ledger_v1(ledger)
 
 
 def _replace_policy(request: dict[str, object], **changes: object) -> None:
