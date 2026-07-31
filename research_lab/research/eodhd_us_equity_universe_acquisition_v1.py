@@ -1,10 +1,19 @@
 from __future__ import annotations
 
 import hashlib
+import csv
+import gzip
+import io
 import json
+import math
+import os
 import re
+import sqlite3
+import urllib.error
 import urllib.parse
+import urllib.request
 from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -45,6 +54,16 @@ _REQUEST_FIELDS = {
     "provenance",
 }
 _CODE_RE = re.compile(r"^[A-Z0-9][A-Z0-9._-]{0,31}$")
+
+
+class RetryableProviderFailure(RuntimeError):
+    """A redacted provider failure that may consume one bounded retry."""
+
+
+class _AcquisitionFailure(RuntimeError):
+    def __init__(self, status: str):
+        super().__init__(status)
+        self.status = status
 
 
 def build_eodhd_us_equity_acquisition_plan_v1(
@@ -118,6 +137,131 @@ def build_eodhd_us_equity_acquisition_plan_v1(
     return result
 
 
+def run_eodhd_us_equity_universe_acquisition_v1(
+    request: dict[str, object],
+) -> dict[str, object]:
+    """Execute or resume the exact local acquisition and stop before selection."""
+
+    try:
+        plan = build_eodhd_us_equity_acquisition_plan_v1(request)
+    except ValueError:
+        return _failure_result("REQUEST_VALIDATION_FAILED", call_units=0, http_requests=0)
+    api_key = os.getenv("EODHD_API_KEY", "").strip()
+    if not api_key:
+        return _failure_result("EODHD_API_KEY_UNAVAILABLE", call_units=0, http_requests=0)
+    output_dir = Path(str(plan["output_dir"]))
+    if output_dir.exists() or output_dir.is_symlink():
+        return _failure_result("OUTPUT_ALREADY_EXISTS", call_units=0, http_requests=0)
+    staging = output_dir.with_name(
+        f".{ACQUISITION_ID}-{str(plan['request_sha256'])[:12]}.partial"
+    )
+    try:
+        staging.mkdir(parents=True, exist_ok=True)
+        connection = _open_state(staging / "state.sqlite", str(plan["request_sha256"]))
+    except (OSError, sqlite3.Error):
+        return _failure_result("STAGING_IO_FAILED", call_units=0, http_requests=0)
+    try:
+        if not _verify_staged_artifacts(staging, connection):
+            return _state_result("STAGING_HASH_MISMATCH", staging, connection)
+        initial = {str(item["kind"]): item for item in plan["initial_requests"]}
+        active_raw = _obtain_response(
+            connection=connection,
+            staging=staging,
+            api_key=api_key,
+            ordinal=1,
+            kind="ACTIVE_COMMON_STOCKS",
+            endpoint_identity=str(initial["ACTIVE_COMMON_STOCKS"]["endpoint_identity"]),
+            call_units=1,
+            relative_raw_path="raw/universe/active.json.gz",
+            max_response_bytes=MAXIMUM_SYMBOL_RESPONSE_BYTES,
+            validator=_validate_identity_response,
+        )
+        delisted_raw = _obtain_response(
+            connection=connection,
+            staging=staging,
+            api_key=api_key,
+            ordinal=2,
+            kind="DELISTED_COMMON_STOCKS",
+            endpoint_identity=str(initial["DELISTED_COMMON_STOCKS"]["endpoint_identity"]),
+            call_units=1,
+            relative_raw_path="raw/universe/delisted.json.gz",
+            max_response_bytes=MAXIMUM_SYMBOL_RESPONSE_BYTES,
+            validator=_validate_identity_response,
+        )
+        spy_raw = _obtain_response(
+            connection=connection,
+            staging=staging,
+            api_key=api_key,
+            ordinal=3,
+            kind="SPY_SESSION_PROXY",
+            endpoint_identity=str(initial["SPY_SESSION_PROXY"]["endpoint_identity"]),
+            call_units=1,
+            relative_raw_path="raw/session-proxy/spy.json.gz",
+            max_response_bytes=MAXIMUM_SYMBOL_RESPONSE_BYTES,
+            validator=lambda raw: _validate_eod_response(raw, expected_date=None),
+        )
+        active = _json_list(active_raw)
+        delisted = _json_list(delisted_raw)
+        identity_result = _normalize_identity_universe(active, delisted)
+        identities = list(identity_result["identities"])
+        spy_rows = _json_list(spy_raw)
+        month_ends = _last_spy_session_per_month(spy_rows, start=START_DATE, end=END_DATE)
+        if len(month_ends) != 204:
+            raise _AcquisitionFailure("SESSION_PROXY_COVERAGE_INVALID")
+        worst_case_units = _worst_case_call_units(
+            identity_count=len(identities),
+            month_end_count=len(month_ends),
+        )
+        if worst_case_units > MAXIMUM_CALL_UNITS:
+            raise _AcquisitionFailure("CALL_BUDGET_PREFLIGHT_FAILED")
+
+        ordinal = 4
+        for month_end in month_ends:
+            endpoint = _endpoint_identity(
+                "/api/eod-bulk-last-day/US",
+                {"date": month_end, "fmt": "json"},
+            )
+            _obtain_response(
+                connection=connection,
+                staging=staging,
+                api_key=api_key,
+                ordinal=ordinal,
+                kind="MONTH_END_BULK",
+                endpoint_identity=endpoint,
+                call_units=100,
+                relative_raw_path=f"raw/bulk/{month_end}.json.gz",
+                max_response_bytes=MAXIMUM_BULK_RESPONSE_BYTES,
+                validator=lambda raw, expected=month_end: _validate_bulk_response(
+                    raw, expected_date=expected
+                ),
+            )
+            ordinal += 1
+
+        _download_symbol_histories(
+            identities=identities,
+            ordinal_start=ordinal,
+            staging=staging,
+            api_key=api_key,
+        )
+        return {
+            **_state_result("DOWNLOAD_COMPLETE_PENDING_SELECTION", staging, connection),
+            "identity_count": len(identities),
+            "month_end_count": len(month_ends),
+            "identity_sha256": identity_result["canonical_identity_sha256"],
+            "request_sha256": plan["request_sha256"],
+            "sealed_oos_opened": False,
+            "broker_calls_used": 0,
+            "registry_write_performed": False,
+            "deployment_performed": False,
+        }
+    except _AcquisitionFailure as exc:
+        return _state_result(exc.status, staging, connection)
+    except (OSError, sqlite3.Error, ValueError):
+        return _state_result("ACQUISITION_VALIDATION_FAILED", staging, connection)
+    finally:
+        connection.close()
+
+
 def _validate_request(raw: Any) -> dict[str, object]:
     if not isinstance(raw, dict) or set(raw) != _REQUEST_FIELDS:
         raise ValueError("request fields are invalid.")
@@ -156,6 +300,486 @@ def _validate_request(raw: Any) -> dict[str, object]:
     else:
         raise ValueError("output_dir must remain outside the repository.")
     return {**expected, "output_dir": str(resolved)}
+
+
+def _open_state(path: Path, request_sha256: str) -> sqlite3.Connection:
+    connection = sqlite3.connect(path)
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS requests (
+            endpoint_identity TEXT PRIMARY KEY,
+            ordinal INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            call_units INTEGER NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL,
+            subject TEXT,
+            raw_path TEXT,
+            raw_sha256 TEXT,
+            normalized_path TEXT,
+            normalized_sha256 TEXT,
+            response_bytes INTEGER,
+            row_count INTEGER
+        )
+        """
+    )
+    existing = connection.execute(
+        "SELECT value FROM meta WHERE key='request_sha256'"
+    ).fetchone()
+    if existing is not None and existing[0] != request_sha256:
+        connection.close()
+        raise _AcquisitionFailure("STAGING_REQUEST_MISMATCH")
+    connection.execute(
+        "INSERT OR IGNORE INTO meta(key, value) VALUES('request_sha256', ?)",
+        (request_sha256,),
+    )
+    connection.execute(
+        "INSERT OR IGNORE INTO meta(key, value) VALUES('provider_call_units_used', '0')"
+    )
+    connection.execute(
+        "INSERT OR IGNORE INTO meta(key, value) VALUES('provider_http_requests_used', '0')"
+    )
+    connection.commit()
+    return connection
+
+
+def _verify_staged_artifacts(staging: Path, connection: sqlite3.Connection) -> bool:
+    rows = connection.execute(
+        """
+        SELECT raw_path, raw_sha256, normalized_path, normalized_sha256
+        FROM requests WHERE status IN ('COMPLETE', 'RESOLVED_EMPTY')
+        ORDER BY ordinal
+        """
+    ).fetchall()
+    for raw_path, raw_sha256, normalized_path, normalized_sha256 in rows:
+        if raw_path is not None:
+            path = staging / str(raw_path)
+            if not path.is_file() or _file_sha256(path) != raw_sha256:
+                return False
+        if normalized_path is not None:
+            path = staging / str(normalized_path)
+            if not path.is_file() or _file_sha256(path) != normalized_sha256:
+                return False
+    return True
+
+
+def _obtain_response(
+    *,
+    connection: sqlite3.Connection,
+    staging: Path,
+    api_key: str,
+    ordinal: int,
+    kind: str,
+    endpoint_identity: str,
+    call_units: int,
+    relative_raw_path: str,
+    max_response_bytes: int,
+    validator,
+    relative_normalized_path: str | None = None,
+    subject: str | None = None,
+) -> bytes:
+    existing = connection.execute(
+        """
+        SELECT status, raw_path FROM requests WHERE endpoint_identity=?
+        """,
+        (endpoint_identity,),
+    ).fetchone()
+    if existing is not None and existing[0] in {"COMPLETE", "RESOLVED_EMPTY"}:
+        return gzip.decompress((staging / str(existing[1])).read_bytes())
+    connection.execute(
+        """
+        INSERT OR IGNORE INTO requests(
+            endpoint_identity, ordinal, kind, call_units, attempts, status, subject
+        ) VALUES(?, ?, ?, ?, 0, 'PLANNED', ?)
+        """,
+        (endpoint_identity, ordinal, kind, call_units, subject),
+    )
+    connection.commit()
+    attempts = int(
+        connection.execute(
+            "SELECT attempts FROM requests WHERE endpoint_identity=?", (endpoint_identity,)
+        ).fetchone()[0]
+    )
+    while attempts < MAXIMUM_ATTEMPTS_PER_REQUEST:
+        _reserve_attempt(connection, endpoint_identity, call_units)
+        attempts += 1
+        try:
+            raw, metadata = _download_raw(
+                _authorized_url(endpoint_identity, api_key),
+                timeout_seconds=TIMEOUT_SECONDS,
+                max_response_bytes=max_response_bytes,
+            )
+            secret_encodings = {
+                api_key.encode("utf-8"),
+                urllib.parse.quote(api_key, safe="").encode("ascii"),
+                urllib.parse.quote_plus(api_key).encode("ascii"),
+            }
+            if any(secret and secret in raw for secret in secret_encodings):
+                raise _AcquisitionFailure("PROVIDER_RESPONSE_CONTAINED_SECRET")
+            _validate_response_metadata(metadata, endpoint_identity, len(raw), max_response_bytes)
+            payload, row_count = validator(raw)
+        except RetryableProviderFailure:
+            if attempts >= MAXIMUM_ATTEMPTS_PER_REQUEST:
+                raise _AcquisitionFailure("RETRYABLE_PROVIDER_FAILURE_EXHAUSTED")
+            continue
+        except (ValueError, json.JSONDecodeError, UnicodeDecodeError):
+            raise _AcquisitionFailure("PROVIDER_RESPONSE_INVALID")
+
+        raw_relative = Path(relative_raw_path)
+        raw_encoded = gzip.compress(raw, compresslevel=6, mtime=0)
+        raw_sha256 = _write_verified(staging / raw_relative, raw_encoded)
+        normalized_sha256 = None
+        normalized_relative: Path | None = None
+        status = "RESOLVED_EMPTY" if row_count == 0 else "COMPLETE"
+        if relative_normalized_path is not None and row_count > 0:
+            normalized_relative = Path(relative_normalized_path)
+            normalized_sha256 = _write_verified(
+                staging / normalized_relative,
+                _eod_csv_bytes(payload),
+            )
+        connection.execute(
+            """
+            UPDATE requests SET status=?, raw_path=?, raw_sha256=?, normalized_path=?,
+                normalized_sha256=?, response_bytes=?, row_count=?
+            WHERE endpoint_identity=?
+            """,
+            (
+                status,
+                raw_relative.as_posix(),
+                raw_sha256,
+                None if normalized_relative is None else normalized_relative.as_posix(),
+                normalized_sha256,
+                len(raw),
+                row_count,
+                endpoint_identity,
+            ),
+        )
+        connection.commit()
+        return raw
+    raise _AcquisitionFailure("RETRYABLE_PROVIDER_FAILURE_EXHAUSTED")
+
+
+def _reserve_attempt(
+    connection: sqlite3.Connection,
+    endpoint_identity: str,
+    call_units: int,
+) -> None:
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        used = int(
+            connection.execute(
+                "SELECT value FROM meta WHERE key='provider_call_units_used'"
+            ).fetchone()[0]
+        )
+        requests = int(
+            connection.execute(
+                "SELECT value FROM meta WHERE key='provider_http_requests_used'"
+            ).fetchone()[0]
+        )
+        if used + call_units > MAXIMUM_CALL_UNITS:
+            raise _AcquisitionFailure("CALL_BUDGET_EXHAUSTED")
+        connection.execute(
+            "UPDATE meta SET value=? WHERE key='provider_call_units_used'",
+            (str(used + call_units),),
+        )
+        connection.execute(
+            "UPDATE meta SET value=? WHERE key='provider_http_requests_used'",
+            (str(requests + 1),),
+        )
+        connection.execute(
+            "UPDATE requests SET attempts=attempts+1, status='IN_PROGRESS' WHERE endpoint_identity=?",
+            (endpoint_identity,),
+        )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+
+
+def _validate_response_metadata(
+    metadata: Any,
+    endpoint_identity: str,
+    response_bytes: int,
+    maximum_bytes: int,
+) -> None:
+    if not isinstance(metadata, Mapping) or metadata.get("http_status") != 200:
+        raise ValueError("provider metadata is invalid.")
+    if response_bytes > maximum_bytes:
+        raise ValueError("provider response exceeds the byte cap.")
+    final_url = metadata.get("final_url")
+    if not isinstance(final_url, str):
+        raise ValueError("provider final URL is invalid.")
+    final = urllib.parse.urlparse(final_url)
+    expected = urllib.parse.urlparse(endpoint_identity)
+    if final.scheme != "https" or final.hostname != "eodhd.com" or final.path != expected.path:
+        raise ValueError("provider redirect or path drift is invalid.")
+
+
+def _validate_identity_response(raw: bytes) -> tuple[list[dict[str, object]], int]:
+    payload = _json_list(raw)
+    if not payload or not all(isinstance(item, dict) for item in payload):
+        raise ValueError("identity response is invalid.")
+    return payload, len(payload)
+
+
+def _validate_eod_response(
+    raw: bytes,
+    *,
+    expected_date: str | None,
+) -> tuple[list[dict[str, object]], int]:
+    payload = _json_list(raw)
+    normalized: list[dict[str, object]] = []
+    previous: str | None = None
+    for item in payload:
+        if not isinstance(item, Mapping):
+            raise ValueError("EOD row is invalid.")
+        day = item.get("date")
+        if not isinstance(day, str):
+            raise ValueError("EOD date is invalid.")
+        parsed = date.fromisoformat(day)
+        if not date.fromisoformat(START_DATE) <= parsed <= date.fromisoformat(END_DATE):
+            raise ValueError("EOD date is outside the approved interval.")
+        if expected_date is not None and day != expected_date:
+            raise ValueError("EOD date does not match the requested date.")
+        if previous is not None and day <= previous:
+            raise ValueError("EOD rows must be strictly ordered and unique.")
+        values = {field: _finite_number(item.get(field), field) for field in (
+            "open", "high", "low", "close", "adjusted_close", "volume"
+        )}
+        if any(values[field] <= 0.0 for field in ("open", "high", "low", "close", "adjusted_close")):
+            raise ValueError("EOD prices must be positive.")
+        if values["volume"] < 0.0:
+            raise ValueError("EOD volume must be non-negative.")
+        if (
+            values["high"] < max(values["open"], values["low"], values["close"])
+            or values["low"] > min(values["open"], values["high"], values["close"])
+        ):
+            raise ValueError("EOD OHLC relationship is invalid.")
+        normalized.append({"date": day, **values})
+        previous = day
+    return normalized, len(normalized)
+
+
+def _validate_bulk_response(raw: bytes, *, expected_date: str) -> tuple[list[dict[str, object]], int]:
+    payload = _json_list(raw)
+    if not payload:
+        raise ValueError("bulk response is empty.")
+    normalized: list[dict[str, object]] = []
+    seen_codes: set[tuple[str, str]] = set()
+    for item in payload:
+        if not isinstance(item, Mapping):
+            raise ValueError("bulk row is invalid.")
+        code = str(item.get("code", "")).strip().upper()
+        exchange = str(item.get("exchange_short_name", "")).strip().upper()
+        if not _CODE_RE.fullmatch(code) or not exchange:
+            raise ValueError("bulk identity is invalid.")
+        identity = (code, exchange)
+        if identity in seen_codes:
+            raise ValueError("bulk identities must be unique.")
+        seen_codes.add(identity)
+        one_row = {key: value for key, value in item.items() if key not in {"code", "exchange_short_name"}}
+        validated, count = _validate_eod_response(
+            json.dumps([one_row], separators=(",", ":")).encode("utf-8"),
+            expected_date=expected_date,
+        )
+        if count != 1:
+            raise ValueError("bulk row is invalid.")
+        normalized.append({"code": code, "exchange_short_name": exchange, **validated[0]})
+    return normalized, len(normalized)
+
+
+def _json_list(raw: bytes) -> list[Any]:
+    payload = json.loads(raw.decode("utf-8"))
+    if not isinstance(payload, list):
+        raise ValueError("provider response must be a JSON array.")
+    return payload
+
+
+def _eod_csv_bytes(rows: Sequence[Mapping[str, object]]) -> bytes:
+    stream = io.StringIO(newline="")
+    writer = csv.writer(stream, lineterminator="\n")
+    writer.writerow(["timestamp", "open", "high", "low", "close", "adjusted_close", "volume"])
+    for row in rows:
+        writer.writerow(
+            [
+                row["date"],
+                row["open"],
+                row["high"],
+                row["low"],
+                row["close"],
+                row["adjusted_close"],
+                row["volume"],
+            ]
+        )
+    return stream.getvalue().encode("utf-8")
+
+
+def _write_verified(path: Path, body: bytes) -> str:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_bytes(body)
+    observed = temporary.read_bytes()
+    if observed != body:
+        raise OSError("staged artifact verification failed.")
+    os.replace(temporary, path)
+    return hashlib.sha256(body).hexdigest()
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _instrument_id(identity: Mapping[str, object]) -> str:
+    return f"EODHD-US-{identity['exchange_mic']}-{identity['code']}"
+
+
+def _download_symbol_histories(
+    *,
+    identities: Sequence[Mapping[str, object]],
+    ordinal_start: int,
+    staging: Path,
+    api_key: str,
+) -> None:
+    def execute(index_and_identity: tuple[int, Mapping[str, object]]) -> None:
+        index, identity = index_and_identity
+        instrument_id = _instrument_id(identity)
+        digest = hashlib.sha256(instrument_id.encode("utf-8")).hexdigest()
+        endpoint = _endpoint_identity(
+            f"/api/eod/{urllib.parse.quote(str(identity['symbol']), safe='')}",
+            {
+                "fmt": "json",
+                "from": START_DATE,
+                "period": "d",
+                "to": END_DATE,
+            },
+        )
+        worker_connection = sqlite3.connect(staging / "state.sqlite", timeout=30.0)
+        worker_connection.execute("PRAGMA busy_timeout=30000")
+        try:
+            _obtain_response(
+                connection=worker_connection,
+                staging=staging,
+                api_key=api_key,
+                ordinal=ordinal_start + index,
+                kind="SYMBOL_HISTORY",
+                endpoint_identity=endpoint,
+                call_units=1,
+                relative_raw_path=f"raw/history/{digest[:2]}/{digest}.json.gz",
+                max_response_bytes=MAXIMUM_SYMBOL_RESPONSE_BYTES,
+                validator=lambda raw: _validate_eod_response(raw, expected_date=None),
+                relative_normalized_path=f"ohlcv/{digest[:2]}/{digest}.csv",
+                subject=instrument_id,
+            )
+        finally:
+            worker_connection.close()
+
+    with ThreadPoolExecutor(max_workers=HISTORY_CONCURRENCY) as executor:
+        futures = [executor.submit(execute, item) for item in enumerate(identities)]
+        for future in futures:
+            future.result()
+
+
+def _worst_case_call_units(*, identity_count: int, month_end_count: int) -> int:
+    if identity_count < 0 or month_end_count < 0:
+        raise ValueError("request counts must be non-negative.")
+    return MAXIMUM_ATTEMPTS_PER_REQUEST * (3 + month_end_count * 100 + identity_count)
+
+
+def _authorized_url(endpoint_identity: str, api_key: str) -> str:
+    parsed = urllib.parse.urlparse(endpoint_identity)
+    query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+    query.append(("api_token", api_key))
+    return urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(query)))
+
+
+def _download_raw(
+    url: str,
+    *,
+    timeout_seconds: int,
+    max_response_bytes: int,
+) -> tuple[bytes, dict[str, object]]:
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            raise ValueError("redirects are forbidden.")
+
+    request = urllib.request.Request(
+        url,
+        headers={"User-Agent": "research-lab-eodhd-acquisition/1"},
+    )
+    opener = urllib.request.build_opener(_NoRedirect)
+    try:
+        with opener.open(request, timeout=timeout_seconds) as response:
+            raw = response.read(max_response_bytes + 1)
+            if len(raw) > max_response_bytes:
+                raise ValueError("response exceeds byte cap.")
+            return raw, {
+                "http_status": int(getattr(response, "status", 200)),
+                "final_url": response.geturl(),
+                "response_bytes": len(raw),
+            }
+    except urllib.error.HTTPError as exc:
+        if exc.code == 429 or 500 <= exc.code <= 599:
+            raise RetryableProviderFailure("retryable provider failure") from None
+        raise ValueError("permanent provider failure") from None
+    except (TimeoutError, urllib.error.URLError):
+        raise RetryableProviderFailure("retryable provider failure") from None
+
+
+def _finite_number(raw: Any, name: str) -> float:
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        raise ValueError(f"{name} must be numeric.")
+    value = float(raw)
+    if not math.isfinite(value):
+        raise ValueError(f"{name} must be finite.")
+    return value
+
+
+def _state_result(
+    status: str,
+    staging: Path,
+    connection: sqlite3.Connection,
+) -> dict[str, object]:
+    call_units = int(
+        connection.execute(
+            "SELECT value FROM meta WHERE key='provider_call_units_used'"
+        ).fetchone()[0]
+    )
+    http_requests = int(
+        connection.execute(
+            "SELECT value FROM meta WHERE key='provider_http_requests_used'"
+        ).fetchone()[0]
+    )
+    return {
+        "version": "eodhd_us_equity_universe_acquisition_result_v1",
+        "status": status,
+        "staging_dir": str(staging),
+        "provider_call_units_used": call_units,
+        "provider_http_requests_used": http_requests,
+        "sealed_oos_opened": False,
+        "broker_calls_used": 0,
+        "registry_write_performed": False,
+        "deployment_performed": False,
+    }
+
+
+def _failure_result(status: str, *, call_units: int, http_requests: int) -> dict[str, object]:
+    return {
+        "version": "eodhd_us_equity_universe_acquisition_result_v1",
+        "status": status,
+        "provider_call_units_used": call_units,
+        "provider_http_requests_used": http_requests,
+        "sealed_oos_opened": False,
+        "broker_calls_used": 0,
+        "registry_write_performed": False,
+        "deployment_performed": False,
+    }
 
 
 def _normalize_identity_universe(
