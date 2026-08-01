@@ -180,6 +180,42 @@ def test_manifest_builder_streams_point_in_time_union_and_writes_loader_contract
     connection.close()
 
 
+def test_manifest_builder_reads_history_by_source_identity_after_exchange_change(
+    tmp_path: Path,
+) -> None:
+    staging, connection = _build_selection_fixture(tmp_path)
+    identity_path = staging / "identity_universe.json"
+    identity_payload = json.loads(identity_path.read_text(encoding="utf-8"))
+    changed = identity_payload["identities"][0]
+    assert changed["code"] == "S00"
+    changed["exchange"] = "NYSE"
+    changed["exchange_mic"] = "XNYS"
+    identity_path.write_text(
+        json.dumps(identity_payload, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    historical_id = "EODHD-US-XNAS-S00"
+    source_id = "EODHD-US-XNYS-S00"
+    historical_digest = hashlib.sha256(historical_id.encode("utf-8")).hexdigest()
+    source_digest = hashlib.sha256(source_id.encode("utf-8")).hexdigest()
+    historical_path = staging / "ohlcv-full" / historical_digest[:2] / f"{historical_digest}.csv"
+    source_path = staging / "ohlcv-full" / source_digest[:2] / f"{source_digest}.csv"
+    source_path.parent.mkdir(parents=True, exist_ok=True)
+    historical_path.replace(source_path)
+
+    result = build_point_in_time_qlib_manifest_v1(
+        staging_root=staging,
+        state_connection=connection,
+    )
+
+    manifest = json.loads(Path(result["manifest_path"]).read_text(encoding="utf-8"))
+    instrument = next(item for item in manifest["instruments"] if item["qlib_instrument"] == "S00")
+    assert instrument["instrument_id"] == historical_id
+    assert instrument["exchange_mic"] == "XNAS"
+    assert (staging / instrument["ohlcv_path"]).is_file()
+    connection.close()
+
+
 def test_manifest_builder_rejects_any_sealed_row(tmp_path: Path) -> None:
     staging, connection = _build_selection_fixture(tmp_path)
     path = next((staging / "ohlcv-full").rglob("*.csv"))

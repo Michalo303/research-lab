@@ -220,10 +220,12 @@ def build_point_in_time_qlib_manifest_v1(
     resolved_empty_histories = 0
     for code, interval in sorted(intervals.items()):
         identity = identity_by_code[code]
+        source_instrument_id = _instrument_id(identity, str(identity["exchange_mic"]))
         instrument_id = _instrument_id(identity, str(interval["exchange_mic"]))
-        digest = hashlib.sha256(instrument_id.encode("utf-8")).hexdigest()
-        full_path = root / "ohlcv-full" / digest[:2] / f"{digest}.csv"
-        history_status = history_status_by_subject.get(instrument_id)
+        source_digest = hashlib.sha256(source_instrument_id.encode("utf-8")).hexdigest()
+        output_digest = hashlib.sha256(instrument_id.encode("utf-8")).hexdigest()
+        full_path = root / "ohlcv-full" / source_digest[:2] / f"{source_digest}.csv"
+        history_status = history_status_by_subject.get(source_instrument_id)
         if not full_path.is_file() or full_path.is_symlink():
             if history_status == "RESOLVED_EMPTY":
                 exclusions[code] = "RESOLVED_EMPTY_HISTORY"
@@ -272,7 +274,7 @@ def build_point_in_time_qlib_manifest_v1(
             "identity": identity,
             "interval": interval,
             "full_path": full_path,
-            "digest": digest,
+            "output_digest": output_digest,
         }
     if unresolved_histories / max(1, len(identities)) > 0.01:
         raise ValueError("unresolved history failures exceed one percent.")
@@ -299,7 +301,8 @@ def build_point_in_time_qlib_manifest_v1(
         ].copy()
         if output.empty:
             raise ValueError("selected instrument has no retained rows.")
-        relative = Path("ohlcv") / str(metadata["digest"])[:2] / f"{metadata['digest']}.csv"
+        output_digest = str(metadata["output_digest"])
+        relative = Path("ohlcv") / output_digest[:2] / f"{output_digest}.csv"
         body = output.to_csv(index=False, lineterminator="\n").encode("utf-8")
         observed_sha256 = _write_verified(root / relative, body)
         instruments.append(
