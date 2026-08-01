@@ -36,6 +36,15 @@ from research_lab.research.real_qlib_eodhd_edge_discovery_pilot_v1 import (
 from research_lab.research.eodhd_us_equity_universe_acquisition_v1 import (
     run_eodhd_us_equity_universe_acquisition_v1,
 )
+from research_lab.research.massive_fundamental_acquisition_v1 import (
+    run_massive_fundamental_acquisition_v1,
+)
+from research_lab.research.massive_fundamental_edge_discovery_v1 import (
+    run_massive_fundamental_edge_discovery_v1,
+)
+from research_lab.research.massive_sec_filing_audit_v1 import (
+    run_massive_sec_filing_audit_v1,
+)
 
 __all__ = [
     "MinerviniCoreConfigV1",
@@ -52,6 +61,9 @@ __all__ = [
     "run_minervini_portfolio_v1",
     "run_real_qlib_eodhd_edge_discovery_pilot_v1",
     "run_eodhd_us_equity_universe_acquisition_v1",
+    "run_massive_fundamental_acquisition_v1",
+    "run_massive_fundamental_edge_discovery_v1",
+    "run_massive_sec_filing_audit_v1",
     "replay_minervini_pilot_artifacts_v1",
     "validate_minervini_symbol_splits_v2",
 ]
