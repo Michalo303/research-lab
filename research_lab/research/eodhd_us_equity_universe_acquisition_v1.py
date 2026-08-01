@@ -393,10 +393,18 @@ def _open_state(path: Path, request_sha256: str) -> sqlite3.Connection:
             normalized_path TEXT,
             normalized_sha256 TEXT,
             response_bytes INTEGER,
-            row_count INTEGER
+            row_count INTEGER,
+            rejected_row_count INTEGER NOT NULL DEFAULT 0
         )
         """
     )
+    request_columns = {
+        str(row[1]) for row in connection.execute("PRAGMA table_info(requests)").fetchall()
+    }
+    if "rejected_row_count" not in request_columns:
+        connection.execute(
+            "ALTER TABLE requests ADD COLUMN rejected_row_count INTEGER NOT NULL DEFAULT 0"
+        )
     existing = connection.execute(
         "SELECT value FROM meta WHERE key='request_sha256'"
     ).fetchone()
@@ -466,14 +474,26 @@ def _obtain_response(
 ) -> bytes:
     existing = connection.execute(
         """
-        SELECT status, raw_path FROM requests WHERE endpoint_identity=?
+        SELECT status, raw_path, attempts, kind FROM requests WHERE endpoint_identity=?
         """,
         (endpoint_identity,),
     ).fetchone()
     if existing is not None and existing[0] in {"COMPLETE", "RESOLVED_EMPTY"}:
         return gzip.decompress((staging / str(existing[1])).read_bytes())
     if existing is not None and str(existing[0]).startswith("FAILED_"):
-        raise _AcquisitionFailure(str(existing[0]).removeprefix("FAILED_"))
+        retryable_after_validator_repair = (
+            existing[0] == "FAILED_PROVIDER_RESPONSE_INVALID"
+            and existing[3] == "SYMBOL_HISTORY"
+            and int(existing[2]) < MAXIMUM_ATTEMPTS_PER_REQUEST
+        )
+        if retryable_after_validator_repair:
+            connection.execute(
+                "UPDATE requests SET status='PLANNED' WHERE endpoint_identity=?",
+                (endpoint_identity,),
+            )
+            connection.commit()
+        else:
+            raise _AcquisitionFailure(str(existing[0]).removeprefix("FAILED_"))
     connection.execute(
         """
         INSERT OR IGNORE INTO requests(
@@ -507,7 +527,20 @@ def _obtain_response(
             if any(secret and secret in raw for secret in secret_encodings):
                 raise _AcquisitionFailure("PROVIDER_RESPONSE_CONTAINED_SECRET")
             _validate_response_metadata(metadata, endpoint_identity, len(raw), max_response_bytes)
-            payload, row_count = validator(raw)
+            validation_result = validator(raw)
+            if not isinstance(validation_result, tuple) or len(validation_result) not in {2, 3}:
+                raise ValueError("provider validator result is invalid.")
+            payload, row_count = validation_result[:2]
+            rejected_row_count = validation_result[2] if len(validation_result) == 3 else 0
+            if (
+                isinstance(row_count, bool)
+                or not isinstance(row_count, int)
+                or row_count < 0
+                or isinstance(rejected_row_count, bool)
+                or not isinstance(rejected_row_count, int)
+                or rejected_row_count < 0
+            ):
+                raise ValueError("provider validator counts are invalid.")
         except RetryableProviderFailure:
             if attempts >= MAXIMUM_ATTEMPTS_PER_REQUEST:
                 _mark_request_failed(
@@ -539,7 +572,7 @@ def _obtain_response(
         connection.execute(
             """
             UPDATE requests SET status=?, raw_path=?, raw_sha256=?, normalized_path=?,
-                normalized_sha256=?, response_bytes=?, row_count=?
+                normalized_sha256=?, response_bytes=?, row_count=?, rejected_row_count=?
             WHERE endpoint_identity=?
             """,
             (
@@ -550,6 +583,7 @@ def _obtain_response(
                 normalized_sha256,
                 len(raw),
                 row_count,
+                rejected_row_count,
                 endpoint_identity,
             ),
         )
@@ -662,6 +696,34 @@ def _validate_eod_response(
         normalized.append(row)
         previous = day
     return normalized, len(normalized)
+
+
+def _validate_symbol_history_response(
+    raw: bytes,
+) -> tuple[list[dict[str, object]], int, int]:
+    """Drop a tightly bounded number of corrupt daily rows without hiding bad series."""
+
+    payload = _json_list(raw)
+    if not payload:
+        return [], 0, 0
+    normalized: list[dict[str, object]] = []
+    rejected = 0
+    previous: str | None = None
+    for item in payload:
+        if not isinstance(item, Mapping):
+            raise ValueError("EOD row is invalid.")
+        day = _validate_eod_date(item, expected_date=None)
+        if previous is not None and day <= previous:
+            raise ValueError("EOD rows must be strictly ordered and unique.")
+        previous = day
+        try:
+            normalized.append(_normalize_eod_row(item, expected_date=None))
+        except ValueError:
+            rejected += 1
+    rejection_limit = min(5, max(1, len(payload) // 100))
+    if rejected > rejection_limit or not normalized:
+        raise ValueError("symbol history rejected-row limit exceeded.")
+    return normalized, len(normalized), rejected
 
 
 def _validate_bulk_response(
@@ -834,7 +896,7 @@ def _download_symbol_histories(
                     call_units=1,
                     relative_raw_path=f"raw/history/{digest[:2]}/{digest}.json.gz",
                     max_response_bytes=_response_size_cap("SYMBOL_HISTORY"),
-                    validator=lambda raw: _validate_eod_response(raw, expected_date=None),
+                    validator=_validate_symbol_history_response,
                     relative_normalized_path=f"ohlcv-full/{digest[:2]}/{digest}.csv",
                     subject=instrument_id,
                     before_request=limiter.acquire,
