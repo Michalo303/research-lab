@@ -138,6 +138,7 @@ def build_point_in_time_qlib_manifest_v1(
     spy_payload = json.loads(gzip.decompress(spy_path.read_bytes()).decode("utf-8"))
     if not isinstance(spy_payload, list):
         raise ValueError("SPY session proxy is invalid.")
+    verified_session_timestamps: set[pd.Timestamp] = set()
     expected_development_sessions = []
     previous_spy_date: str | None = None
     for row in spy_payload:
@@ -146,6 +147,7 @@ def build_point_in_time_qlib_manifest_v1(
         spy_date = str(row["date"])
         if previous_spy_date is not None and spy_date <= previous_spy_date:
             raise ValueError("SPY session proxy must be strictly ordered.")
+        verified_session_timestamps.add(pd.Timestamp(spy_date))
         if "2019-01-01" <= spy_date <= END_DATE:
             expected_development_sessions.append(spy_date)
         if spy_date > END_DATE:
@@ -247,6 +249,7 @@ def build_point_in_time_qlib_manifest_v1(
         trimmed = frame.loc[
             (frame["timestamp"] >= pd.Timestamp(str(interval["first"])))
             & (frame["timestamp"] <= pd.Timestamp(str(interval["last"])))
+            & frame["timestamp"].isin(verified_session_timestamps)
         ].copy()
         if trimmed.empty:
             exclusions[code] = "NO_ROWS_DURING_VERIFIED_MEMBERSHIP"
@@ -298,6 +301,7 @@ def build_point_in_time_qlib_manifest_v1(
         output = original.loc[
             (timestamps >= pd.Timestamp(str(interval["first"])))
             & (timestamps <= pd.Timestamp(str(interval["last"])))
+            & timestamps.isin(verified_session_timestamps)
         ].copy()
         if output.empty:
             raise ValueError("selected instrument has no retained rows.")
