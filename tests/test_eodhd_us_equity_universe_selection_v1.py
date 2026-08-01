@@ -216,6 +216,28 @@ def test_manifest_builder_reads_history_by_source_identity_after_exchange_change
     connection.close()
 
 
+def test_manifest_builder_excludes_provider_rows_outside_spy_sessions(tmp_path: Path) -> None:
+    staging, connection = _build_selection_fixture(tmp_path)
+    holiday = "2021-12-24"
+    spy_path = staging / "raw" / "session-proxy" / "spy.json.gz"
+    spy_rows = json.loads(gzip.decompress(spy_path.read_bytes()).decode("utf-8"))
+    assert any(row["date"] == holiday for row in spy_rows)
+    _write_json_gzip(spy_path, [row for row in spy_rows if row["date"] != holiday])
+
+    result = build_point_in_time_qlib_manifest_v1(
+        staging_root=staging,
+        state_connection=connection,
+    )
+
+    manifest = json.loads(Path(result["manifest_path"]).read_text(encoding="utf-8"))
+    for instrument in manifest["instruments"]:
+        frame = pd.read_csv(staging / instrument["ohlcv_path"])
+        assert holiday not in set(frame["timestamp"])
+    report = json.loads((staging / "selection_report.json").read_text(encoding="utf-8"))
+    assert holiday not in report["daily_selected_counts"]
+    connection.close()
+
+
 def test_manifest_builder_rejects_any_sealed_row(tmp_path: Path) -> None:
     staging, connection = _build_selection_fixture(tmp_path)
     path = next((staging / "ohlcv-full").rglob("*.csv"))
