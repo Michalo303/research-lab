@@ -87,6 +87,7 @@ def test_raw_manifest_preserves_only_sanitized_endpoint_identity(tmp_path: Path)
     manifest = cli_module._build_raw_manifest(connection)
 
     assert manifest["records"][0]["endpoint_identity"] == "https://eodhd.com/api/eod/AAA.US?fmt=json"
+    assert manifest["records"][0]["rejected_row_count"] == 0
     assert "api_token" not in repr(manifest)
     connection.execute(
         "UPDATE requests SET endpoint_identity=?",

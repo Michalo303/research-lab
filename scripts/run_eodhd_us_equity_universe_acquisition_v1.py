@@ -143,7 +143,7 @@ def _build_raw_manifest(connection: sqlite3.Connection) -> dict[str, object]:
         """
         SELECT endpoint_identity, ordinal, kind, call_units, attempts, status, subject,
                raw_path, raw_sha256, normalized_path, normalized_sha256,
-               response_bytes, row_count
+               response_bytes, row_count, rejected_row_count
         FROM requests ORDER BY ordinal
         """
     ).fetchall()
@@ -165,6 +165,7 @@ def _build_raw_manifest(connection: sqlite3.Connection) -> dict[str, object]:
                 "normalized_sha256": row[10],
                 "response_bytes": row[11],
                 "row_count": row[12],
+                "rejected_row_count": row[13],
             }
         )
     result: dict[str, object] = {

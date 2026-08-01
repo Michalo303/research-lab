@@ -528,6 +528,38 @@ def test_bulk_validator_validates_rows_directly_without_per_row_json_roundtrip(
     assert normalized[-1]["code"] == "S0999"
 
 
+def test_symbol_history_validator_drops_one_bounded_bad_row_and_accounts_for_it() -> None:
+    rows = [
+        _eod_row(timestamp.date().isoformat(), 20.0 + index / 100.0)
+        for index, timestamp in enumerate(pd.bdate_range("2022-01-03", periods=100))
+    ]
+    rows[50]["open"] = 0.0
+    raw = json.dumps(rows, separators=(",", ":")).encode("utf-8")
+
+    normalized, row_count, rejected_row_count = (
+        acquisition_module._validate_symbol_history_response(raw)
+    )
+
+    assert row_count == 99
+    assert rejected_row_count == 1
+    assert len(normalized) == 99
+    assert normalized[49]["date"] < normalized[50]["date"]
+
+
+def test_symbol_history_validator_rejects_excessive_bad_rows() -> None:
+    rows = [
+        _eod_row(timestamp.date().isoformat(), 20.0 + index / 100.0)
+        for index, timestamp in enumerate(pd.bdate_range("2022-01-03", periods=100))
+    ]
+    rows[20]["open"] = 0.0
+    rows[80]["high"] = 1.0
+
+    with pytest.raises(ValueError, match="rejected-row limit"):
+        acquisition_module._validate_symbol_history_response(
+            json.dumps(rows, separators=(",", ":")).encode("utf-8")
+        )
+
+
 def test_exchange_bulk_validator_uses_endpoint_exchange_and_ignores_non_authoritative_prices() -> None:
     invalid_ohlc = {
         "date": "2022-12-30",
@@ -675,7 +707,7 @@ def test_resume_does_not_retry_a_terminal_permanent_symbol_failure(
     connection.execute(
         """
         INSERT INTO requests(endpoint_identity, ordinal, kind, call_units, attempts, status, subject)
-        VALUES(?, 208, 'SYMBOL_HISTORY', 1, 1, 'FAILED_PROVIDER_RESPONSE_INVALID', 'I1')
+        VALUES(?, 208, 'SYMBOL_HISTORY', 1, 1, 'FAILED_PERMANENT_PROVIDER_FAILURE', 'I1')
         """,
         (endpoint,),
     )
@@ -701,10 +733,64 @@ def test_resume_does_not_retry_a_terminal_permanent_symbol_failure(
             subject="I1",
         )
 
-    assert error.value.status == "PROVIDER_RESPONSE_INVALID"
+    assert error.value.status == "PERMANENT_PROVIDER_FAILURE"
     assert connection.execute(
         "SELECT attempts FROM requests WHERE endpoint_identity=?", (endpoint,)
     ).fetchone()[0] == 1
+    connection.close()
+
+
+def test_resume_retries_one_prior_invalid_symbol_response_and_records_rejected_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    staging = tmp_path / "stage"
+    staging.mkdir()
+    connection = acquisition_module._open_state(staging / "state.sqlite", "a" * 64)
+    endpoint = acquisition_module._endpoint_identity(
+        "/api/eod/AAA.US",
+        {"fmt": "json", "from": "2006-01-01", "period": "d", "to": "2022-12-31"},
+    )
+    connection.execute(
+        """
+        INSERT INTO requests(endpoint_identity, ordinal, kind, call_units, attempts, status, subject)
+        VALUES(?, 208, 'SYMBOL_HISTORY', 1, 1, 'FAILED_PROVIDER_RESPONSE_INVALID', 'I1')
+        """,
+        (endpoint,),
+    )
+    connection.commit()
+    rows = [_eod_row(timestamp.date().isoformat()) for timestamp in pd.bdate_range("2022-01-03", periods=100)]
+    rows[50]["close"] = 0.0
+    raw = json.dumps(rows, separators=(",", ":")).encode("utf-8")
+    monkeypatch.setattr(
+        acquisition_module,
+        "_download_raw",
+        lambda url, **kwargs: (
+            raw,
+            {"http_status": 200, "final_url": url, "response_bytes": len(raw)},
+        ),
+    )
+
+    observed = acquisition_module._obtain_response(
+        connection=connection,
+        staging=staging,
+        api_key="secret",
+        ordinal=208,
+        kind="SYMBOL_HISTORY",
+        endpoint_identity=endpoint,
+        call_units=1,
+        relative_raw_path="raw/a.json.gz",
+        max_response_bytes=2_000_000,
+        validator=acquisition_module._validate_symbol_history_response,
+        relative_normalized_path="ohlcv/a.csv",
+        subject="I1",
+    )
+
+    assert observed == raw
+    assert connection.execute(
+        "SELECT attempts, status, row_count, rejected_row_count FROM requests WHERE endpoint_identity=?",
+        (endpoint,),
+    ).fetchone() == (2, "COMPLETE", 99, 1)
     connection.close()
 
 
