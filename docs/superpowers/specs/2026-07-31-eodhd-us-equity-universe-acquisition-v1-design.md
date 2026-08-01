@@ -70,7 +70,7 @@ Every response is validated before normalization: HTTPS host and exact exchange-
 
 Long acquisition must be safely resumable. Each completed artifact is written to a temporary file, reread, hashed, and atomically renamed. The checkpoint records request ordinal, sanitized endpoint identity, attempts, response hash, normalized hash, and terminal status. Resume first validates the request hash and every existing artifact hash; mismatch stops without redownloading or overwriting evidence.
 
-One retry is allowed for timeout, HTTP 429, and HTTP 5xx. Permanent HTTP errors, invalid schemas, hash conflicts, exhausted call budget, insufficient disk, or request-identity drift fail closed. No completed final directory is published after such a failure. The staging directory remains for inspection and exact resume.
+One retry is allowed for bounded socket/transport failures, total-response timeout, HTTP 429, and HTTP 5xx. Each response has both a short socket-idle timeout and a 90-second total wall-clock limit. Permanent HTTP errors, invalid schemas, hash conflicts, exhausted call budget, insufficient disk, or request-identity drift fail closed. No completed final directory is published after such a failure. The staging directory remains for inspection and exact resume.
 
 ## 6. Memory-bounded universe reduction
 

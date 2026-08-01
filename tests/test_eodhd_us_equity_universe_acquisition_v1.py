@@ -425,6 +425,53 @@ def test_response_metadata_rejects_public_query_drift() -> None:
         )
 
 
+def test_download_raw_maps_transport_oserror_to_retryable_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class BrokenResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self, size: int) -> bytes:
+            raise OSError("connection reset")
+
+    class BrokenOpener:
+        def open(self, request, timeout: float):
+            assert timeout <= 15.0
+            return BrokenResponse()
+
+    monkeypatch.setattr(acquisition_module.urllib.request, "build_opener", lambda *args: BrokenOpener())
+
+    with pytest.raises(RetryableProviderFailure):
+        acquisition_module._download_raw(
+            "https://eodhd.com/api/eod/AAA.US?api_token=secret&fmt=json",
+            timeout_seconds=90,
+            max_response_bytes=1_000,
+        )
+
+
+def test_bounded_http_body_enforces_total_elapsed_time() -> None:
+    now = [0.0]
+
+    class DripResponse:
+        def read(self, size: int) -> bytes:
+            now[0] += 1.0
+            return b"x"
+
+    with pytest.raises(TimeoutError):
+        acquisition_module._read_bounded_http_body(
+            DripResponse(),
+            maximum_bytes=1_000,
+            timeout_seconds=2,
+            monotonic=lambda: now[0],
+        )
+
+
 def test_history_rate_limiter_allows_eight_request_burst_then_caps_start_rate() -> None:
     now = [0.0]
     sleeps: list[float] = []

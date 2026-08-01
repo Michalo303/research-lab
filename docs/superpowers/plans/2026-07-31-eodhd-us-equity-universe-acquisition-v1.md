@@ -142,7 +142,7 @@ Partition symbol files by the first two characters of SHA-256(instrument ID) to 
 
 - [ ] **Step 4: Implement bounded network execution**
 
-Read the token only from `EODHD_API_KEY`. Use HTTPS, an exact host/path allowlist, no redirects, response byte caps, fixed timeouts, and sanitized fixed failures. Active/delisted/SPY/bulk phases are sequential. Symbol histories use `ThreadPoolExecutor(max_workers=8)` while the main thread owns call reservation, state commits, and deterministic artifact ordinals.
+Read the token only from `EODHD_API_KEY`. Use HTTPS, an exact host/path allowlist, no redirects, response byte caps, a short socket-idle timeout plus a 90-second total wall-clock response limit, and sanitized fixed failures. Active/delisted/SPY/bulk phases are sequential. Symbol histories use `ThreadPoolExecutor(max_workers=8)` while the main thread owns call reservation, state commits, and deterministic artifact ordinals.
 
 The nominal three-exchange plan must fit under 90,000 before any bulk request starts. Remaining capacity is a retry reserve. Each transient request may retry once, but the atomic global call-budget reservation always refuses an attempt that would exceed 90,000. If the live identity count makes the nominal plan impossible, return `CALL_BUDGET_PREFLIGHT_FAILED` before bulk or history calls.
 
