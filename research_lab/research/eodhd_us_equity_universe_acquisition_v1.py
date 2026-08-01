@@ -917,10 +917,12 @@ def _download_raw(
     )
     opener = urllib.request.build_opener(_NoRedirect)
     try:
-        with opener.open(request, timeout=timeout_seconds) as response:
-            raw = response.read(max_response_bytes + 1)
-            if len(raw) > max_response_bytes:
-                raise ValueError("response exceeds byte cap.")
+        with opener.open(request, timeout=min(float(timeout_seconds), 15.0)) as response:
+            raw = _read_bounded_http_body(
+                response,
+                maximum_bytes=max_response_bytes,
+                timeout_seconds=timeout_seconds,
+            )
             return raw, {
                 "http_status": int(getattr(response, "status", 200)),
                 "final_url": response.geturl(),
@@ -930,8 +932,30 @@ def _download_raw(
         if exc.code == 429 or 500 <= exc.code <= 599:
             raise RetryableProviderFailure("retryable provider failure") from None
         raise ValueError("permanent provider failure") from None
-    except (TimeoutError, urllib.error.URLError):
+    except (TimeoutError, urllib.error.URLError, OSError):
         raise RetryableProviderFailure("retryable provider failure") from None
+
+
+def _read_bounded_http_body(
+    response: Any,
+    *,
+    maximum_bytes: int,
+    timeout_seconds: int,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> bytes:
+    if maximum_bytes <= 0 or timeout_seconds <= 0:
+        raise ValueError("response limits must be positive.")
+    started = monotonic()
+    body = bytearray()
+    while True:
+        if monotonic() - started >= timeout_seconds:
+            raise TimeoutError("response exceeded total time limit")
+        block = response.read(min(64 * 1024, maximum_bytes + 1 - len(body)))
+        if not block:
+            return bytes(body)
+        body.extend(block)
+        if len(body) > maximum_bytes:
+            raise ValueError("response exceeds byte cap.")
 
 
 def _finite_number(raw: Any, name: str) -> float:
